@@ -35,7 +35,7 @@ BIF_DECL(Op_Array)
 		_f_return(arr);
 	_f_throw_oom;
 }
-	
+
 
 //
 // IsObject
@@ -125,7 +125,7 @@ BIF_DECL(BIF_ObjPtr)
 	{
 		auto obj = ParamIndexToObject(0);
 		if (!obj)
-			_f_throw_type(_T("object"), *aParam[0]);
+			_f_throw_type(_T("Object"), *aParam[0]);
 		if (_f_callee_id == FID_ObjPtrAddRef)
 			obj->AddRef();
 		_f_return((UINT_PTR)obj);
@@ -187,7 +187,7 @@ BIF_DECL(BIF_HasBase)
 {
 	auto that_base = ParamIndexToObject(1);
 	if (!that_base)
-		_f_throw_type(_T("object"), *aParam[1]);
+		_f_throw_type(_T("Object"), *aParam[1]);
 	_f_return_b(Object::HasBase(*aParam[0], that_base));
 }
 
@@ -209,7 +209,7 @@ BIF_DECL(BIF_HasProp)
 	auto obj = ParamToObjectOrBase(*aParam[0]);
 	if (obj == Object::sComObjectPrototype)
 		_f_throw_param(0);
-	_f_return_b(obj->HasProp(ParamIndexToString(1, _f_number_buf)));
+	_f_return_i(obj->HasProp(ParamIndexToString(1, _f_number_buf)));
 }
 
 
@@ -237,4 +237,27 @@ BIF_DECL(BIF_GetMethod)
 		_f__ret(aResultToken.UnknownMemberError(*aParam[0], IT_CALL, method_name));
 	method->AddRef();
 	_f_return(method);
+}
+
+BIF_DECL(BIF_UArray)
+{
+	if (auto arr = Array::Create(aParam, aParamCount, true))
+		_f_return(arr);
+	_f_throw_oom;
+}
+
+
+BIF_DECL(BIF_UMap)
+{
+	if (auto arr = Map::Create(aParam, aParamCount, true))
+		_f_return(arr);
+	_f_throw_oom;
+}
+
+
+BIF_DECL(BIF_UObject)
+{
+	if (IObject *obj = Object::Create(aParam, aParamCount, &aResultToken, true))
+		_f_return(obj);
+	//else: an error was already thrown.
 }

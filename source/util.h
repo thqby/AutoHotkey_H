@@ -20,6 +20,8 @@ GNU General Public License for more details.
 #include "stdafx.h" // pre-compiled headers
 #include "defines.h"
 
+#include <WinCrypt.h> // DecompressBuffer
+#include "lib_double/double/double-conversion.h"
 
 #ifdef _WIN64
 #define Exp32or64(a,b) (b)
@@ -505,7 +507,10 @@ inline double ATOF(LPCTSTR buf)
 // such as "0xFF" automatically.  So this macro must check for hex because some callers rely on that.
 // Also, it uses _strtoi64() vs. strtol() so that more of a double's capacity can be utilized:
 {
-	return IsHex(buf) ? (double)_tcstoi64(buf, NULL, 16) : _tstof(buf);
+	static double_conversion::StringToDoubleConverter converter(5, 0, __builtin_nan("0"), 0, 0);
+	int l = 2147483647;
+	return converter.StringToDouble(buf, l, &l);
+	//return IsHex(buf) ? (double)_tcstoi64(buf, NULL, 16) : _tstof(buf);
 }
 
 int FTOA(double aValue, LPTSTR aBuf, int aBufSize);
@@ -749,5 +754,96 @@ inline int popcount8(unsigned char c)
 #if defined(_MSC_VER) && defined(_DEBUG)
 void OutputDebugStringFormat(LPCTSTR fmt, ...); // put debug message to the "Output" panel of Visual Studio.
 #endif
+
+bool isUTF8(BYTE* mBuffer, DWORD mLength);
+DWORD CryptAES(LPVOID lp, DWORD sz, LPTSTR pwd, bool aEncrypt = true, DWORD aSID = 256);
+DWORD DecompressBuffer(void* buffer, LPVOID& aDataBuf, DWORD sz, LPTSTR pwd = NULL);
+DWORD CompressBuffer(BYTE* buffer, LPVOID& aDataBuf, DWORD sz, LPTSTR pwd = NULL);
+short IsDefaultType(LPTSTR aTypeDef);
+
+// =============================================================================
+namespace crypt {
+	// =============================================================================
+
+	// compile-time seed
+#define XSTR_SEED ((__TIME__[7] - '0') * 1ull    + (__TIME__[6] - '0') * 10ull  + \
+                   (__TIME__[4] - '0') * 60ull   + (__TIME__[3] - '0') * 600ull + \
+                   (__TIME__[1] - '0') * 3600ull + (__TIME__[0] - '0') * 36000ull)
+
+// -----------------------------------------------------------------------------
+
+// @return a pseudo random number clamped at 0xFFFFFFFF
+	constexpr unsigned long long linear_congruent_generator(unsigned rounds) {
+		return 1013904223ull + (1664525ull * ((rounds > 0) ? linear_congruent_generator(rounds - 1) : (XSTR_SEED))) % 0xFFFFFFFF;
+	}
+
+	// -----------------------------------------------------------------------------
+
+#define Random() linear_congruent_generator(10)
+#define XSTR_RANDOM_NUMBER(Min, Max) (Min + (Random() % (Max - Min + 1)))
+
+// -----------------------------------------------------------------------------
+
+	constexpr const unsigned long long XORKEY = XSTR_RANDOM_NUMBER(0, 0xFF);
+
+	// -----------------------------------------------------------------------------
+
+	template<typename Char >
+	constexpr Char encrypt_character(const Char character, int index) {
+		return character ^ (static_cast<Char>(XORKEY) + index);
+	}
+
+	// -----------------------------------------------------------------------------
+
+	template <unsigned size, typename Char>
+	class Xor_string {
+	public:
+		const unsigned _nb_chars = (size - 1);
+		Char _string[size];
+
+		// if every goes alright this constructor should be executed at compile time
+		inline constexpr Xor_string(const Char* string)
+			: _string{}
+		{
+			for (unsigned i = 0u; i < size; ++i)
+				_string[i] = encrypt_character<Char>(string[i], i);
+		}
+
+		// This is executed at runtime.
+		// HACK: although decrypt() is const we modify '_string' in place
+		const Char* decrypt() const
+		{
+			Char* string = const_cast<Char*>(_string);
+			for (unsigned t = 0; t < _nb_chars; t++) {
+				string[t] = string[t] ^ (static_cast<Char>(XORKEY) + t);
+			}
+			string[_nb_chars] = '\0';
+			return string;
+		}
+
+	};
+
+}// END crypt NAMESPACE ========================================================
+
+#define XorAS(name, my_string)    constexpr crypt::Xor_string<(sizeof(my_string)/sizeof(char)), char> name(my_string)
+// Because of a limitation/bug in msvc 2017 we need to declare crypt::Xor_string() as a constexpr 
+// otherwise the constructor is not evaluated at compile time. The lambda function is here to allow this declaration inside the macro
+// because there is no such thing as casting to 'constexpr' (and casting to const does not solve this bug).
+#define XorAString(my_string) []{ constexpr crypt::Xor_string<(sizeof(my_string)/sizeof(char)), char> expr(my_string); return expr; }().decrypt()
+
+// Crypt normal string char*
+#define _ca( string ) XorAString( string )
+
+#define XorWS(name, my_string)       constexpr crypt::Xor_string<(sizeof(my_string)/sizeof(wchar_t)), wchar_t> name(my_string)
+#define XorWideString(my_string) []{ constexpr crypt::Xor_string<(sizeof(my_string)/sizeof(wchar_t)), wchar_t> expr(my_string); return expr; }().decrypt()
+
+// crypt  wide characters
+#define _cw( string ) XorWideString( string )
+
+#ifdef UNICODE
+#define _c _cw
+#else
+#define _c _ca
+#endif // UNICODE
 
 #endif

@@ -20,6 +20,7 @@ GNU General Public License for more details.
 #include "window.h" // for IF_USE_FOREGROUND_WINDOW
 #include "application.h" // for MsgSleep()
 #include "script_func_impl.h"
+#include "script_com.h"
 #include "abi.h"
 
 
@@ -107,9 +108,9 @@ bif_impl FResult TrayTip(LPCTSTR aText, LPCTSTR aTitle, LPCTSTR aOptions)
 		//if (g_os.IsWin10OrLater())
 		//	nic.dwInfoFlags |= NIIF_LARGE_ICON;
 		if (nic.dwInfoFlags & NIIF_LARGE_ICON)
-			nic.hBalloonIcon = g_script.mCustomIcon ? g_script.mCustomIcon : g_IconLarge;
+			nic.hBalloonIcon = g_script->mCustomIcon ? g_script->mCustomIcon : g_IconLarge;
 		else
-			nic.hBalloonIcon = g_script.mCustomIconSmall ? g_script.mCustomIconSmall : g_IconSmall;
+			nic.hBalloonIcon = g_script->mCustomIconSmall ? g_script->mCustomIconSmall : g_IconSmall;
 	}
 	tcslcpy(nic.szInfoTitle, aTitle, _countof(nic.szInfoTitle)); // Empty title omits the title line entirely.
 	tcslcpy(nic.szInfo, aText, _countof(nic.szInfo));	// Empty text removes the balloon.
@@ -130,7 +131,7 @@ bif_impl FResult TrayTip(LPCTSTR aText, LPCTSTR aTitle, LPCTSTR aOptions)
 
 BIF_DECL(BIF_TraySetIcon)
 {
-	if (!g_script.SetTrayIcon(
+	if (!g_script->SetTrayIcon(
 		ParamIndexToOptionalString(0, _f_number_buf) // buf is provided for error-reporting purposes.
 		, ParamIndexToOptionalInt(1, 1)
 		, ParamIndexIsOmitted(2) ? NEUTRAL : ParamIndexToBOOL(2) ? TOGGLED_ON : TOGGLED_OFF))
@@ -139,6 +140,9 @@ BIF_DECL(BIF_TraySetIcon)
 }
 
 
+
+void callFuncDll(FuncAndToken* aFuncAndToken, bool throwerr = true);
+void callPromise(Promise* aPromise, HWND replyHwnd);
 
 /////////////////
 // Main Window //
@@ -150,9 +154,12 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 	// and beyond, since the feature was never properly implemented in Win95:
 	static UINT WM_TASKBARCREATED = RegisterWindowMessage(_T("TaskbarCreated"));
 
+	if (iMsg == WM_NULL) // && g_FirstThreadID != g_MainThreadID)
+		SleepEx(0, true); // used to exit thread
+
 	// See GuiWindowProc() for details about this first section:
 	LRESULT msg_reply;
-	if (g_MsgMonitor.Count() // Count is checked here to avoid function-call overhead.
+	if (g_MsgMonitor && g_MsgMonitor->Count() // Count is checked here to avoid function-call overhead.
 		&& (!g->CalledByIsDialogMessageOrDispatch || g->CalledByIsDialogMessageOrDispatchMsg != iMsg) // v1.0.44.11: If called by IsDialog or Dispatch but they changed the message number, check if the script is monitoring that new number.
 		&& MsgMonitor(hWnd, iMsg, wParam, lParam, NULL, msg_reply))
 		return msg_reply; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
@@ -175,12 +182,12 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 // the lines most recently executed, and many people who compile scripts don't want their users
 // to see the contents of the script:
 		case WM_LBUTTONDOWN:
-			if (g_script.mTrayMenu->mClickCount != 1) // Activating tray menu's default item requires double-click.
+			if (g_script->mTrayMenu->mClickCount != 1) // Activating tray menu's default item requires double-click.
 				break; // Let default proc handle it (since that's what used to happen, it seems safest).
 			//else fall through to the next case.
 		case WM_LBUTTONDBLCLK:
-			if (g_script.mTrayMenu->mDefault)
-				PostMessage(hWnd, WM_COMMAND, g_script.mTrayMenu->mDefault->mMenuID, 0); // WM_COMMAND vs POST_AHK_USER_MENU to support the Standard menu items.
+			if (g_script->mTrayMenu->mDefault)
+				PostMessage(hWnd, WM_COMMAND, g_script->mTrayMenu->mDefault->mMenuID, 0); // WM_COMMAND vs POST_AHK_USER_MENU to support the Standard menu items.
 			return 0;
 		case WM_RBUTTONUP:
 			// v1.0.30.03:
@@ -193,7 +200,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			// by the old open-tray-on-mouse-down method:
 			//MButton::Send {RButton down}
 			//MButton up::Send {RButton up}
-			g_script.mTrayMenu->Display(false);
+			g_script->mTrayMenu->Display(false);
 			return 0;
 		} // Inner switch()
 		break;
@@ -282,7 +289,10 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		// *LCtrl up::Send {Blind}{Alt up}
 		PostMessage(NULL, iMsg, wParam, lParam);
 		if (IsInterruptible())
-			MsgSleep(-1, RETURN_AFTER_MESSAGES_SPECIAL_FILTER);
+			if (g_MainThreadID == CURRENT_THREADID)
+				MsgSleep(-1, RETURN_AFTER_MESSAGES_SPECIAL_FILTER);
+			else
+				Sleep(SLEEP_INTERVAL);
 		//else let the other pump discard this hotkey event since in most cases it would do more harm than good
 		// (see comments above for why the message is posted even when it is 90% certain it will be discarded
 		// in all cases where MsgSleep isn't done).
@@ -360,7 +370,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			// DestroyWindow() upon termination so that the WM_DESTROY message winds up being
 			// received and process in this function (which is probably necessary for a clean
 			// termination of the app and all its windows):
-			g_script.ExitApp(EXIT_CLOSE);
+			g_script->ExitApp(EXIT_CLOSE);
 			return 0;  // Verified correct.
 		}
 		// Otherwise, some window of ours other than our main window was destroyed.
@@ -368,17 +378,17 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		break;
 
 	case WM_ENDSESSION: // MSDN: "A window receives this message through its WindowProc function."
-		if (wParam) // The session is being ended.
-			g_script.ExitApp((lParam & ENDSESSION_LOGOFF) ? EXIT_LOGOFF : EXIT_SHUTDOWN);
+		if (wParam && g_FirstThreadID == g_MainThreadID)
+			g_script->ExitApp((lParam & ENDSESSION_LOGOFF) ? EXIT_LOGOFF : EXIT_SHUTDOWN);
 		//else a prior WM_QUERYENDSESSION was aborted; i.e. the session really isn't ending.
 		return 0;  // Verified correct.
 
 	case AHK_EXIT_BY_RELOAD:
-		g_script.ExitApp(EXIT_RELOAD);
+		g_script->ExitApp(EXIT_RELOAD);
 		return 0; // Whether ExitApp() terminates depends on whether there's an OnExit function and what it does.
 
 	case AHK_EXIT_BY_SINGLEINSTANCE:
-		g_script.ExitApp(EXIT_SINGLEINSTANCE);
+		g_script->ExitApp(EXIT_SINGLEINSTANCE);
 		return 0; // Whether ExitApp() terminates depends on whether there's an OnExit function and what it does.
 
 	case WM_DESTROY:
@@ -392,7 +402,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 				// the OnExit function, if present, even without a main window (testing on an earlier
 				// versions shows that most commands work fine without the window). For EXIT_DESTROY,
 				// it always terminates after running the OnExit callback:
-				g_script.ExitApp(EXIT_DESTROY);
+				g_script->ExitApp(EXIT_DESTROY);
 			// Do not do PostQuitMessage() here because we don't know the proper exit code.
 			// MSDN: "The exit value returned to the system must be the wParam parameter of
 			// the WM_QUIT message."
@@ -412,9 +422,11 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		return 0;
 
 	case WM_WINDOWPOSCHANGED:
-		if (hWnd == g_hWnd && (LPWINDOWPOS(lParam)->flags & SWP_HIDEWINDOW) && g_script.mIsReadyToExecute)
+		if (hWnd == g_hWnd && (LPWINDOWPOS(lParam)->flags & SWP_HIDEWINDOW) && g_script->mIsReadyToExecute)
 		{
-			g_script.ExitIfNotPersistent(EXIT_CLOSE);
+			// HotKeyIt: call only if we are not already exiting -> g_hWnd == NULL
+			if (g_hWnd)
+				g_script->ExitIfNotPersistent(EXIT_CLOSE);
 			return 0;
 		}
 		break; // Let DWP handle it.
@@ -443,7 +455,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		break;
 
 	case WM_CLIPBOARDUPDATE:
-		if (g_script.mOnClipboardChange.Count()) // In case it's a bogus msg, it's our responsibility to avoid posting the msg if there's no function to call.
+		if (g_script->mOnClipboardChange.Count()) // In case it's a bogus msg, it's our responsibility to avoid posting the msg if there's no function to call.
 			PostMessage(g_hWnd, AHK_CLIPBOARD_CHANGE, 0, 0); // It's done this way to buffer it when the script is uninterruptible, etc.  v1.0.44: Post to g_hWnd vs. NULL so that notifications aren't lost when script is displaying a MsgBox or other dialog.
 		return 0;
 
@@ -467,7 +479,76 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			if ((WPARAM)cp == wParam)
 				return cp->Eval((LPTSTR)lParam);
 		return 0;
-
+	case AHK_EXECUTE_LABEL: 
+		if (wParam)
+			wParam = (WPARAM)((Label*)wParam)->mJumpToLine, lParam = UNTIL_RETURN;
+	case AHK_EXECUTE:   // sent from dll host # Naveen N9
+		if (wParam)
+			((Line*)wParam)->ExecUntil(lParam == ONLY_ONE_LINE ? ONLY_ONE_LINE : lParam == UNTIL_BLOCK_END ? UNTIL_BLOCK_END : UNTIL_RETURN);
+		 return 0;
+	case AHK_EXECUTE_FUNCTION:
+		if (lParam < 65536) {
+			if (auto token = (FuncAndToken*)wParam) {
+				callFuncDll(token);
+				if (token->mResult->symbol == SYM_OBJECT) {
+					if (lParam) {
+						auto obj = token->mResult->object;
+						MarshalObjectToToken(obj, *token->mResult);
+						obj->Release();
+					}
+					else
+						token->mResult->Free();
+				}
+			}
+		}
+		else {
+			auto p = (Promise*)lParam;
+			if (p->mState & 4)
+				p->Release();
+			else {
+				p->mReply = (HWND)wParam;
+				g_script->UpdateOrCreateTimer(p->ToBoundFunc(), true, -1, true, p->mPriority);
+				// callPromise(p, (HWND)wParam);
+			}
+		}
+		return 1;
+	case AHK_THREADVAR:
+	{
+		LPSTREAM stream;
+		IUnknown* obj;
+		IObject* pobj;
+		IEnumVARIANT* penum;
+		if (!wParam)
+			return 0;
+		if (lParam < 65536) {
+			if (lParam && SUCCEEDED(CoMarshalInterThreadInterfaceInStream(IID_IDispatch, (LPUNKNOWN)wParam, &stream)))
+				return (LRESULT)stream;
+			if (SUCCEEDED(CoMarshalInterThreadInterfaceInStream(IID_IUnknown, (LPUNKNOWN)wParam, &stream)))
+				return (LRESULT)stream;
+			return 0;
+		}
+		else {
+			auto token = (ExprTokenType*)wParam;
+			if (token->symbol == SYM_STREAM) {
+				token->symbol = SYM_INTEGER;
+				if (SUCCEEDED(CoGetInterfaceAndReleaseStream(stream = (LPSTREAM)token->value_int64, IID_IUnknown, (LPVOID*)&obj))) {
+					if (SUCCEEDED(obj->QueryInterface(IID_IObjectComCompatible, (LPVOID*)&pobj)))
+						obj->Release();
+					else if (SUCCEEDED(obj->QueryInterface(IID_IDispatch, (LPVOID*)&pobj)) || SUCCEEDED(obj->QueryInterface(IID__Object, (LPVOID*)&pobj)))
+						pobj = new ComObject(pobj), obj->Release();
+					else if (SUCCEEDED(obj->QueryInterface(IID_IEnumVARIANT, (void**)&penum)))
+						pobj = new ComEnum(penum), obj->Release();
+					else pobj = new ComObject((__int64)obj, VT_UNKNOWN);
+					return ((Var*)lParam)->AssignSkipAddRef(pobj) == OK;
+				}
+				else CoReleaseMarshalData(stream), stream->Release();
+				return 0;
+			}
+			else
+				return ((Var*)lParam)->Assign(*token) == OK;
+		}
+		break;
+	}
 	case WM_ENTERMENULOOP:
 		CheckMenuItem(GetMenu(g_hWnd), ID_FILE_PAUSE, g->IsPaused ? MF_CHECKED : MF_UNCHECKED); // This is the menu bar in the main window; the tray menu's checkmark is updated only when the tray menu is actually displayed.
 		if (!g_MenuIsVisible) // See comments in similar code in GuiWindowProc().
@@ -482,8 +563,8 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		// This message is sent when data arrives on the debugger's socket.  It allows the
 		// debugger to respond to commands which are sent while the script is sleeping or
 		// waiting for messages.
-		if (g_Debugger.IsConnected() && (g_Debugger.HasPendingCommand() || LOWORD(lParam) == FD_CLOSE))
-			g_Debugger.ProcessCommands();
+		if (g_Debugger->IsConnected() && (g_Debugger->HasPendingCommand() || LOWORD(lParam) == FD_CLOSE))
+			g_Debugger->ProcessCommands();
 		break;
 #endif
 
@@ -496,13 +577,14 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			//     In this case, the taskbar icon doesn't exist yet, so NIM_MODIFY would fail.
 			//  2) The screen DPI has just changed.  Our icon already exists, but has probably
 			//     been resized by the system.  If we don't refresh it, it becomes blurry.
-			g_script.UpdateTrayIcon(true);
+			g_script->UpdateTrayIcon(true);
 			// And now pass this iMsg on to DefWindowProc() in case it does anything with it.
 		}
 		
 #ifdef CONFIG_DEBUGGER
 		static UINT sAttachDebuggerMessage = RegisterWindowMessage(_T("AHK_ATTACH_DEBUGGER"));
-		if (iMsg == sAttachDebuggerMessage && !g_Debugger.IsConnected())
+		static BOOL __init = ChangeWindowMessageFilter(sAttachDebuggerMessage, MSGFLT_ADD);
+		if (iMsg == sAttachDebuggerMessage && !g_script->mEncrypt && !g_Debugger->IsConnected())
 		{
 			char dbg_host[16] = "localhost"; // IPv4 max string len
 			char dbg_port[6] = "9000";
@@ -519,8 +601,8 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 				// Convert 16-bit port number to string for Debugger::Connect().
 				_itoa(LOWORD(lParam), dbg_port, 10);
 
-			if (g_Debugger.Connect(dbg_host, dbg_port) == DEBUGGER_E_OK)
-				g_Debugger.Break();
+			if (g_Debugger->Connect(dbg_host, dbg_port) == DEBUGGER_E_OK)
+				g_Debugger->Break();
 		}
 #endif
 
@@ -540,7 +622,7 @@ bool FindAutoHotkeyUtilSub(LPTSTR aFile, LPTSTR aDir)
 bool FindAutoHotkeyUtil(LPTSTR aFile, bool &aFoundOurs)
 {
 	// Always try our directory first, in case it has different utils to the installed version.
-	if (  !(aFoundOurs = FindAutoHotkeyUtilSub(aFile, g_script.mOurEXEDir))  )
+	if (  !(aFoundOurs = FindAutoHotkeyUtilSub(aFile, g_script->mOurEXEDir))  )
 	{
 		// Try GetAHKInstallDir() so that compiled scripts running on machines that happen
 		// to have AHK installed will still be able to fetch the help file and Window Spy:
@@ -564,12 +646,12 @@ void LaunchAutoHotkeyUtil(LPTSTR aFile, bool aIsScript)
 	if (aIsScript && our_file)
 	{
 		sntprintf(buf, _countof(buf), _T("/script %s"), aFile);
-		file = g_script.mOurEXE;
+		file = g_script->mOurEXE;
 		args = buf;
 	}
 	//else it's not a script or it's the installed copy of WindowSpy.ahk, so just run it.
 #endif
-	if (!g_script.ActionExec(file, args, NULL, false))
+	if (!g_script->ActionExec(file, args, NULL, false))
 	{
 		TCHAR buf_file[64];
 		sntprintf(buf_file, _countof(buf_file), _T("Could not launch %s"), aFile);
@@ -601,11 +683,11 @@ bool HandleMenuItem(HWND aHwnd, WORD aMenuItemID, HWND aGuiHwnd)
 		return true;
 	case ID_TRAY_EDITSCRIPT:
 	case ID_FILE_EDITSCRIPT:
-		g_script.Edit();
+		g_script->Edit();
 		return true;
 	case ID_TRAY_RELOADSCRIPT:
 	case ID_FILE_RELOADSCRIPT:
-		if (!g_script.Reload(false))
+		if (!g_script->Reload(false))
 			MsgBox(_T("The script could not be reloaded."));
 		return true;
 	case ID_TRAY_WINDOWSPY:
@@ -627,11 +709,11 @@ bool HandleMenuItem(HWND aHwnd, WORD aMenuItemID, HWND aGuiHwnd)
 		else
 			++g_nPausedThreads; // For this purpose the idle thread is counted as a paused thread.
 		g->IsPaused = !g->IsPaused;
-		g_script.UpdateTrayIcon();
+		g_script->UpdateTrayIcon();
 		return true;
 	case ID_TRAY_EXIT:
 	case ID_FILE_EXIT:
-		g_script.ExitApp(EXIT_MENU);  // More reliable than PostQuitMessage(), which has been known to fail in rare cases.
+		g_script->ExitApp(EXIT_MENU);  // More reliable than PostQuitMessage(), which has been known to fail in rare cases.
 		return true; // If there is an OnExit function, the above might not actually exit.
 	case ID_VIEW_LINES:
 		ShowMainWindow(MAIN_MODE_LINES);
@@ -649,15 +731,15 @@ bool HandleMenuItem(HWND aHwnd, WORD aMenuItemID, HWND aGuiHwnd)
 		ShowMainWindow(MAIN_MODE_REFRESH);
 		return true;
 	case ID_HELP_WEBSITE:
-		if (!g_script.ActionExec(_T(AHK_WEBSITE), _T(""), NULL, false))
+		if (!g_script->ActionExec(_T(AHK_WEBSITE), _T(""), NULL, false))
 			MsgBox(_T("Could not open URL ") _T(AHK_WEBSITE) _T(" in default browser."));
 		return true;
 	default:
 		// See if this command ID is one of the user's custom menu items.  Due to the possibility
 		// that some items have been deleted from the menu, can't rely on comparing
-		// aMenuItemID to g_script.mMenuItemCount in any way.  Just look up the ID to make sure
+		// aMenuItemID to g_script->mMenuItemCount in any way.  Just look up the ID to make sure
 		// there really is a menu item for it:
-		if (!g_script.FindMenuItemByID(aMenuItemID)) // Do nothing, let caller try to handle it some other way.
+		if (!g_script->FindMenuItemByID(aMenuItemID)) // Do nothing, let caller try to handle it some other way.
 			return false;
 		// It seems best to treat the selection of a custom menu item in a way similar
 		// to how hotkeys are handled by the hook. See comments near the definition of
@@ -710,7 +792,7 @@ ResultType ShowMainWindow(MainWindowModes aMode, bool aRestricted)
 	TCHAR buf_temp[65534];  // Formerly 32767.
 	*buf_temp = '\0';
 	bool jump_to_bottom = false;  // Set default behavior for edit control.
-	static MainWindowModes current_mode = MAIN_MODE_NO_CHANGE;
+	thread_local static MainWindowModes current_mode = MAIN_MODE_NO_CHANGE;
 
 	// If we were called from a restricted place, such as via the Tray Menu or the Main Menu,
 	// don't allow potentially sensitive info such as script lines and variables to be shown.
@@ -748,13 +830,13 @@ ResultType ShowMainWindow(MainWindowModes aMode, bool aRestricted)
 		jump_to_bottom = true;
 		break;
 	case MAIN_MODE_VARS:
-		g_script.ListVars(buf_temp, _countof(buf_temp));
+		g_script->ListVars(buf_temp, _countof(buf_temp));
 		break;
 	case MAIN_MODE_HOTKEYS:
 		Hotkey::ListHotkeys(buf_temp, _countof(buf_temp));
 		break;
 	case MAIN_MODE_KEYHISTORY:
-		g_script.ListKeyHistory(buf_temp, _countof(buf_temp));
+		g_script->ListKeyHistory(buf_temp, _countof(buf_temp));
 		break;
 	case MAIN_MODE_REFRESH:
 		// Rather than do a recursive call to self, which might stress the stack if the script is heavily recursed:
@@ -765,13 +847,13 @@ ResultType ShowMainWindow(MainWindowModes aMode, bool aRestricted)
 			jump_to_bottom = true;
 			break;
 		case MAIN_MODE_VARS:
-			g_script.ListVars(buf_temp, _countof(buf_temp));
+			g_script->ListVars(buf_temp, _countof(buf_temp));
 			break;
 		case MAIN_MODE_HOTKEYS:
 			Hotkey::ListHotkeys(buf_temp, _countof(buf_temp));
 			break;
 		case MAIN_MODE_KEYHISTORY:
-			g_script.ListKeyHistory(buf_temp, _countof(buf_temp));
+			g_script->ListKeyHistory(buf_temp, _countof(buf_temp));
 			// Special mode for when user refreshes, so that new keys can be seen without having
 			// to scroll down again:
 			jump_to_bottom = true;
@@ -931,7 +1013,7 @@ UserFunc* Script::CreateHotFunc()
 	g->CurrentFunc = func; // Must do this before calling AddVar
 
 	// Add one parameter to hold the name of the hotkey/hotstring when triggered:
-	func->mParam = SimpleHeap::Alloc<FuncParam>();
+	func->mParam = g_SimpleHeap->Alloc<FuncParam>();
 	if ( !(func->mParam[0].var = AddVar(_T("ThisHotkey"), 10, &func->mVars, 0, VAR_DECLARE_LOCAL | VAR_LOCAL_FUNCPARAM)) )
 		return nullptr;
 
@@ -1526,7 +1608,7 @@ FResult SetWorkingDir(LPCTSTR aNewDir)
 	// working dir can change.  The exception is FileSelect(), which changes the working
 	// dir as the user navigates from folder to folder.  However, the whole purpose of
 	// maintaining g_WorkingDir is to workaround that very issue.
-	if (g_script.mIsReadyToExecute) // Callers want this done only during script runtime.
+	if (g_script->mIsReadyToExecute) // Callers want this done only during script runtime.
 		UpdateWorkingDir(aNewDir);
 	return OK;
 }
@@ -1723,7 +1805,7 @@ bif_impl FResult FileSelect(LPCTSTR aOptions, LPCTSTR aWorkingDir, LPCTSTR aGree
 		// Use a more specific title so that the dialogs of different scripts can be distinguished
 		// from one another, which may help script automation in rare cases:
 		sntprintf(greeting, _countof(greeting), _T("Select %s - %s")
-			, (flags & FOS_PICKFOLDERS) ? _T("Folder") : _T("File"), g_script.DefaultDialogTitle());
+			, (flags & FOS_PICKFOLDERS) ? _T("Folder") : _T("File"), g_script->DefaultDialogTitle());
 
 	int options = ATOI(aOptions);
 	if (options & 0x20)
@@ -1807,7 +1889,7 @@ bif_impl FResult FileSelect(LPCTSTR aOptions, LPCTSTR aWorkingDir, LPCTSTR aGree
 		aResultToken.Return(files);
 		return OK;
 	}
-	
+
 	aResultToken.SetValue(_T(""), 0); // Set default.
 	IShellItem *psi;
 	if (SUCCEEDED(result) && SUCCEEDED(pfd->GetResult(&psi)))
@@ -1955,7 +2037,7 @@ bool Line::FileIsFilteredOut(LoopFilesStruct &aCurrentFile, FileLoopModeType aFi
 Label *Line::GetJumpTarget(bool aIsDereferenced)
 {
 	LPTSTR target_label = aIsDereferenced ? ARG1 : RAW_ARG1;
-	Label *label = g_script.FindLabel(target_label);
+	Label *label = g_script->FindLabel(target_label);
 	if (!label)
 	{
 		LineError(ERR_NO_LABEL, FAIL, target_label);
@@ -2142,7 +2224,7 @@ BIF_DECL(BIF_String)
 
 BIF_DECL(BIF_IsLabel)
 {
-	_f_return_b(g_script.FindLabel(ParamIndexToString(0, _f_number_buf)) ? 1 : 0);
+	_f_return_b(g_script->FindLabel(ParamIndexToString(0, _f_number_buf)) ? 1 : 0);
 }
 
 
@@ -2579,7 +2661,7 @@ BIF_DECL(BIF_SetTimer)
 		period = ParamIndexToInt64(1);
 		if (!period)
 		{
-			g_script.DeleteTimer(callback);
+			g_script->DeleteTimer(callback);
 			_f_return_empty;
 		}
 		update_period = true;
@@ -2589,7 +2671,7 @@ BIF_DECL(BIF_SetTimer)
 		priority = ParamIndexToInt(2);
 		update_priority = true;
 	}
-	g_script.UpdateOrCreateTimer(callback, update_period, period, update_priority, priority);
+	g_script->UpdateOrCreateTimer(callback, update_period, period, update_priority, priority);
 	_f_return_empty;
 }
 
@@ -2660,9 +2742,9 @@ bif_impl FResult Thread(LPCTSTR aCommand, int *aValue1, int *aValue2)
 	case THREAD_CMD_INTERRUPT:
 		// If either one is blank, leave that setting as it was before.
 		if (aValue1)
-			g_script.mUninterruptibleTime = *aValue1;  // 32-bit (for compatibility with DWORDs returned by GetTickCount).
+			g_script->mUninterruptibleTime = *aValue1;  // 32-bit (for compatibility with DWORDs returned by GetTickCount).
 		if (aValue2)
-			g_script.mUninterruptedLineCountMax = *aValue2;  // 32-bit also, to help performance (since huge values seem unnecessary).
+			g_script->mUninterruptedLineCountMax = *aValue2;  // 32-bit also, to help performance (since huge values seem unnecessary).
 		return OK;
 	case THREAD_CMD_NOTIMERS:
 		g->AllowTimers = (aValue1 && *aValue1 == 0); // Double-negative NoTimers=false -> allow timers.
@@ -2677,7 +2759,7 @@ bif_impl FResult Thread(LPCTSTR aCommand, int *aValue1, int *aValue2)
 bif_impl void OutputDebug(LPCTSTR aText)
 {
 #ifdef CONFIG_DEBUGGER
-	if (!g_Debugger.OutputStdErr(aText))
+	if (!g_Debugger->OutputStdErr(aText))
 #endif
 		OutputDebugString(aText);
 }
@@ -2700,15 +2782,20 @@ BIF_DECL(BIF_OnMessage)
 
 	// Prior validation has ensured there's at least two parameters:
 	UINT specified_msg = (UINT)ParamIndexToInt64(0); // Parameter #1
+	HWND specified_hwnd;
+	if (aParamCount > 1 && TokenToInt64(*aParam[1])) // Parameter #2
+		specified_hwnd = (HWND)TokenToInt64(*aParam[1]);
+	else
+		specified_hwnd = 0;
 
 	// Set defaults:
 	bool mode_is_delete = false;
 	int max_instances = 1;
 	bool call_it_last = true;
 
-	if (!ParamIndexIsOmitted(2)) // Parameter #3 is present.
+	if (!ParamIndexIsOmitted(specified_hwnd ? 3 : 2)) // Parameter #2 is present (#3 if func is present).
 	{
-		max_instances = (int)ParamIndexToInt64(2);
+		max_instances = (int)ParamIndexToInt64(specified_hwnd ? 3 : 2);
 		// For backward-compatibility, values between MAX_INSTANCES+1 and SHORT_MAX must be supported.
 		if (max_instances > MsgMonitorStruct::MAX_INSTANCES) // MAX_INSTANCES >= MAX_THREADS_LIMIT.
 			max_instances = MsgMonitorStruct::MAX_INSTANCES;
@@ -2721,13 +2808,19 @@ BIF_DECL(BIF_OnMessage)
 			mode_is_delete = true;
 	}
 
+	if (mode_is_delete && ParamIndexIsOmitted(specified_hwnd ? 2 : 1))
+	{  // delete all registered items
+
+		g_MsgMonitor->Delete(specified_msg, specified_hwnd);
+		_f_return_retval; // Yield the default return value set earlier (an empty string).
+	}
 	// Parameter #2: The callback to add or remove.  Must be an object.
-	IObject *callback = TokenToObject(*aParam[1]);
+	IObject *callback = TokenToObject(*aParam[specified_hwnd ? 2 : 1]);
 	if (!callback)
 		_f_throw_param(1, _T("object"));
 
 	// Check if this message already exists in the array:
-	MsgMonitorStruct *pmonitor = g_MsgMonitor.Find(specified_msg, callback);
+	MsgMonitorStruct *pmonitor = g_MsgMonitor->Find(specified_msg, specified_hwnd, callback);
 	bool item_already_exists = (pmonitor != NULL);
 	if (!item_already_exists)
 	{
@@ -2736,7 +2829,7 @@ BIF_DECL(BIF_OnMessage)
 		if (!ValidateFunctor(callback, 4, aResultToken))
 			return;
 		// From this point on, it is certain that an item will be added to the array.
-		pmonitor = g_MsgMonitor.Add(specified_msg, callback, call_it_last);
+		pmonitor = g_MsgMonitor->Add(specified_msg, specified_hwnd, callback, call_it_last);
 		if (!pmonitor)
 			_f_throw_oom;
 	}
@@ -2757,10 +2850,10 @@ BIF_DECL(BIF_OnMessage)
 			// The main disadvantage to deleting message filters from the array is that the deletion might
 			// occur while the monitor is currently running, which requires more complex handling within
 			// MsgMonitor() (see its comments for details).
-			g_MsgMonitor.Delete(pmonitor);
+			g_MsgMonitor->Delete(pmonitor);
 			_f_return_retval;
 		}
-		if (aParamCount < 2) // Single-parameter mode: Report existing item's function name.
+		if (aParamCount < (specified_hwnd ? 3 : 2)) // Single-parameter mode: Report existing item's function name.
 			_f_return_retval; // Everything was already set up above to yield the proper return value.
 		// Otherwise, an existing item is being assigned a new function or MaxThreads limit.
 		// Continue on to update this item's attributes.
@@ -2773,17 +2866,17 @@ BIF_DECL(BIF_OnMessage)
 	}
 
 	// Update those struct attributes that get the same treatment regardless of whether this is an update or creation.
-	if (!item_already_exists || !ParamIndexIsOmitted(2))
+	if (!item_already_exists || !ParamIndexIsOmitted(specified_hwnd ? 3 : 2))
 		monitor.max_instances = max_instances;
 	// Otherwise, the parameter was omitted so leave max_instances at its current value.
 	_f_return_retval;
 }
 
 
-MsgMonitorStruct *MsgMonitorList::Find(UINT aMsg, IObject *aCallback, UCHAR aMsgType)
+MsgMonitorStruct *MsgMonitorList::Find(UINT aMsg, HWND aHwnd, IObject *aCallback, UCHAR aMsgType)
 {
 	for (int i = 0; i < mCount; ++i)
-		if (mMonitor[i].msg == aMsg
+		if (mMonitor[i].msg == aMsg && mMonitor[i].hwnd == aHwnd
 			&& mMonitor[i].func == aCallback // No need to check is_method, since it's impossible for an object and string to exist at the same address.
 			&& mMonitor[i].msg_type == aMsgType) // Checked last because it's nearly always true.
 			return mMonitor + i;
@@ -2791,10 +2884,10 @@ MsgMonitorStruct *MsgMonitorList::Find(UINT aMsg, IObject *aCallback, UCHAR aMsg
 }
 
 
-MsgMonitorStruct *MsgMonitorList::Find(UINT aMsg, LPTSTR aMethodName, UCHAR aMsgType)
+MsgMonitorStruct *MsgMonitorList::Find(UINT aMsg, HWND aHwnd, LPTSTR aMethodName, UCHAR aMsgType)
 {
 	for (int i = 0; i < mCount; ++i)
-		if (mMonitor[i].msg == aMsg
+		if (mMonitor[i].msg == aMsg && mMonitor[i].hwnd == aHwnd
 			&& mMonitor[i].is_method && !_tcsicmp(aMethodName, mMonitor[i].method_name)
 			&& mMonitor[i].msg_type == aMsgType) // Checked last because it's nearly always true.
 			return mMonitor + i;
@@ -2802,7 +2895,7 @@ MsgMonitorStruct *MsgMonitorList::Find(UINT aMsg, LPTSTR aMethodName, UCHAR aMsg
 }
 
 
-MsgMonitorStruct *MsgMonitorList::AddInternal(UINT aMsg, bool aAppend)
+MsgMonitorStruct *MsgMonitorList::AddInternal(UINT aMsg, HWND aHwnd, bool aAppend)
 {
 	if (mCount == mCountMax)
 	{
@@ -2833,41 +2926,101 @@ MsgMonitorStruct *MsgMonitorList::AddInternal(UINT aMsg, bool aAppend)
 	++mCount;
 	new_mon->msg = aMsg;
 	new_mon->msg_type = 0; // Must be initialised to 0 for all callers except GUI.
+	new_mon->hwnd = aHwnd;
 	// These are initialised by OnMessage, since OnExit and OnClipboardChange don't use them:
 	//new_mon->instance_count = 0;
 	//new_mon->max_instances = 1;
 	return new_mon;
 }
 
-
-MsgMonitorStruct *MsgMonitorList::Add(UINT aMsg, IObject *aCallback, bool aAppend)
+//#ifdef _USRDLL
+void MsgMonitorList::RemoveAll()
 {
-	MsgMonitorStruct *new_mon = AddInternal(aMsg, aAppend);
+	for (int i = 0; i <= mCount; ++i)
+	{
+		MsgMonitorStruct *aMonitor = mMonitor + i;
+		int mon_index = int(aMonitor - mMonitor);
+		// Adjust the index of any active message monitors affected by this deletion.  This allows a
+		// message monitor to delete older message monitors while still allowing any remaining monitors
+		// of that message to be called (when there are multiple).
+		for (MsgMonitorInstance *inst = mTop; inst; inst = inst->previous)
+		{
+			if (inst->index >= mon_index && inst->index >= 0)
+				inst->index--; // So index+1 is the next item.
+			inst->count--;
+		}
+		// Remove the item from the array.
+		--mCount;  // Must be done prior to the below.
+		IObject *release_me = aMonitor->func;
+		if (mon_index < mCount) // An element other than the last is being removed. Shift the array to cover/delete it.
+			memmove(aMonitor, aMonitor + 1, (mCount - mon_index) * sizeof(MsgMonitorStruct));
+		release_me->Release(); // Must be called after the above in case it calls a __delete() meta-function.
+	}
+	free(mMonitor);
+	mTop = NULL;
+	mCountMax = 0;
+	mCount = 0;
+	mMonitor = NULL;
+}
+
+//#endif // _USRDLL
+
+MsgMonitorStruct *MsgMonitorList::Add(UINT aMsg, HWND aHwnd, IObject *aCallback, bool aAppend)
+{
+	MsgMonitorStruct *new_mon = AddInternal(aMsg, aHwnd, aAppend);
 	if (new_mon)
 	{
 		aCallback->AddRef();
 		new_mon->func = aCallback;
 		new_mon->is_method = false;
+		new_mon->hwnd = aHwnd;
 	}
 	return new_mon;
 }
 
 
-MsgMonitorStruct *MsgMonitorList::Add(UINT aMsg, LPTSTR aMethodName, bool aAppend)
+MsgMonitorStruct *MsgMonitorList::Add(UINT aMsg, HWND aHwnd, LPTSTR aMethodName, bool aAppend)
 {
 	if (  !(aMethodName = _tcsdup(aMethodName))  )
 		return NULL;
-	MsgMonitorStruct *new_mon = AddInternal(aMsg, aAppend);
+	MsgMonitorStruct *new_mon = AddInternal(aMsg, aHwnd, aAppend);
 	if (new_mon)
 	{
 		new_mon->method_name = aMethodName;
 		new_mon->is_method = true;
+		new_mon->hwnd = aHwnd;
 	}
 	else
 		free(aMethodName);
 	return new_mon;
 }
 
+
+void MsgMonitorList::Delete(UINT aMsg, HWND aHwnd)
+{
+	for (int i = 0; i <= mCount; ++i)
+	{
+		MsgMonitorStruct* aMonitor = mMonitor + i;
+		if (aMonitor->msg != aMsg || aMonitor->hwnd != aHwnd)
+			continue;
+		int mon_index = int(aMonitor - mMonitor);
+		// Adjust the index of any active message monitors affected by this deletion.  This allows a
+		// message monitor to delete older message monitors while still allowing any remaining monitors
+		// of that message to be called (when there are multiple).
+		for (MsgMonitorInstance* inst = mTop; inst; inst = inst->previous)
+		{
+			if (inst->index >= mon_index && inst->index >= 0)
+				inst->index--; // So index+1 is the next item.
+			inst->count--;
+		}
+		// Remove the item from the array.
+		--mCount;  // Must be done prior to the below.
+		IObject* release_me = aMonitor->func;
+		if (mon_index < mCount) // An element other than the last is being removed. Shift the array to cover/delete it.
+			memmove(aMonitor, aMonitor + 1, (mCount - mon_index) * sizeof(MsgMonitorStruct));
+		release_me->Release(); // Must be called after the above in case it calls a __delete() meta-function.
+	}
+}
 
 void MsgMonitorList::Delete(MsgMonitorStruct *aMonitor)
 {
@@ -2948,9 +3101,9 @@ BIF_DECL(BIF_On)
 	MsgMonitorList *phandlers;
 	switch (event_type)
 	{
-	case FID_OnError: phandlers = &g_script.mOnError; break;
-	case FID_OnClipboardChange: phandlers = &g_script.mOnClipboardChange; break;
-	default: phandlers = &g_script.mOnExit; break;
+	case FID_OnError: phandlers = &g_script->mOnError; break;
+	case FID_OnClipboardChange: phandlers = &g_script->mOnClipboardChange; break;
+	default: phandlers = &g_script->mOnExit; break;
 	}
 	MsgMonitorList &handlers = *phandlers;
 
@@ -2965,7 +3118,7 @@ BIF_DECL(BIF_On)
 	if (!ParamIndexIsOmitted(1))
 		mode = ParamIndexToInt(1);
 
-	MsgMonitorStruct *existing = handlers.Find(0, callback);
+	MsgMonitorStruct *existing = handlers.Find(0, 0, callback);
 
 	switch (mode)
 	{
@@ -2978,9 +3131,9 @@ BIF_DECL(BIF_On)
 			// Do this before adding the handler so that it won't be called as a result of the
 			// SetClipboardViewer() call on Windows XP.  This won't cause existing handlers to
 			// be called because in that case the clipboard listener is already enabled.
-			g_script.EnableClipboardListener(true);
+			g_script->EnableClipboardListener(true);
 		}
-		if (!handlers.Add(0, callback, mode == 1))
+		if (!handlers.Add(0, 0, callback, mode == 1))
 			_f_throw_oom;
 		break;
 	case  0:
@@ -2993,7 +3146,7 @@ BIF_DECL(BIF_On)
 	// In case the above enabled the clipboard listener but failed to add the handler,
 	// do this even if mode != 0:
 	if (event_type == FID_OnClipboardChange && !handlers.Count())
-		g_script.EnableClipboardListener(false);
+		g_script->EnableClipboardListener(false);
 }
 
 
@@ -3005,7 +3158,7 @@ BIF_DECL(BIF_On)
 
 BIF_DECL(BIF_MenuFromHandle)
 {
-	auto *menu = g_script.FindMenu((HMENU)ParamIndexToInt64(0));
+	auto *menu = g_script->FindMenu((HMENU)ParamIndexToInt64(0));
 	if (menu)
 	{
 		menu->AddRef();
@@ -3276,7 +3429,7 @@ void Object::Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 	LPTSTR message;
 	TCHAR what_buf[MAX_NUMBER_SIZE], extra_buf[MAX_NUMBER_SIZE];
 	LPCTSTR what = ParamIndexToOptionalString(1, what_buf);
-	Line *line = g_script.mCurrLine;
+	Line *line = g_script->mCurrLine;
 
 	if (aID == M_OSError__New && (ParamIndexIsOmitted(0) || ParamIndexIsNumeric(0)))
 	{
@@ -3305,7 +3458,7 @@ void Object::Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 		what = g->CurrentFunc->mName;
 	SetOwnProp(_T("Stack"), _T("")); // Avoid "unknown property" in compiled scripts.
 #else
-	DbgStack::Entry *stack_top = g_Debugger.mStack.mTop - 1;
+	DbgStack::Entry *stack_top = g_Debugger->mStack.mTop - 1;
 	if (stack_top->type == DbgStack::SE_BIF && _tcsicmp(what, stack_top->func->mName))
 		--stack_top;
 
@@ -3317,11 +3470,11 @@ void Object::Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 	else
 	{
 		int offset = ParamIndexIsNumeric(1) ? ParamIndexToInt(1) : 0;
-		for (auto se = stack_top; se >= g_Debugger.mStack.mBottom; --se)
+		for (auto se = stack_top; se >= g_Debugger->mStack.mBottom; --se)
 		{
 			if (++offset == 0 || *what && !_tcsicmp(se->Name(), what))
 			{
-				line = se > g_Debugger.mStack.mBottom ? se[-1].line : se->line;
+				line = se > g_Debugger->mStack.mBottom ? se[-1].line : se->line;
 				// se->line contains the line at the given offset from the top of the stack.
 				// Rather than returning the name of the function or sub which contains that
 				// line, return the name of the function or sub which that line called.
@@ -3392,6 +3545,9 @@ BOOL VarToBOOL(Var &aVar)
 	default:
 		// Even a string containing all whitespace would be considered non-numeric since it's a non-blank string
 		// that isn't equal to 0.
+		ComObject* aComObj = dynamic_cast<ComObject*>(aVar.ToObject());
+		if (aComObj)
+			return aComObj->mVarType == VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType != VT_NULL && aComObj->mVarType != VT_EMPTY;
 		return TRUE;
 	}
 }
@@ -3412,6 +3568,9 @@ BOOL TokenToBOOL(ExprTokenType &aToken)
 		return ResultToBOOL(aToken.marker);
 	default:
 		// The only remaining valid symbol is SYM_OBJECT, which is always TRUE.
+		ComObject* aComObj = dynamic_cast<ComObject *>(aToken.object);
+		if (aComObj)
+			return aComObj->mVarType==VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType!=VT_NULL && aComObj->mVarType != VT_EMPTY;
 		return TRUE;
 	}
 }

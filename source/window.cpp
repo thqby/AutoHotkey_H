@@ -118,6 +118,7 @@ HWND AttemptSetForeground(HWND aTargetWindow, HWND aForeWindow)
 	// Note: Increasing the sleep time below did not help with occurrences of "indicated success
 	// even though it failed", at least with metapad.exe being activated while command prompt
 	// and/or AutoIt2's InputBox were active or present on the screen:
+	DWORD aThreadID = CURRENT_THREADID;
 	SLEEP_WITHOUT_INTERRUPTION(SLEEP_INTERVAL); // Specify param so that it will try to specifically sleep that long.
 	HWND new_fore_window = GetForegroundWindow();
 	if (new_fore_window == aTargetWindow)
@@ -271,7 +272,7 @@ HWND SetForegroundWindowEx(HWND aTargetWindow)
 			is_attached_fore_to_target = AttachThreadInput(fore_thread, target_thread, TRUE) != 0;
 	}
 
-	static bool sTriedKeyUp = false;
+	thread_local static bool sTriedKeyUp = false;
 
 	// The log showed that it never seemed to need more than two tries.  But there's
 	// not much harm in trying a few extra times.  The number of tries needed might
@@ -505,6 +506,7 @@ HWND WinClose(HWND aWnd, int aTimeToWaitForClose, bool aKillIfHung)
 	// 1ms for a Window to be logically destroyed even if it hasn't physically been
 	// removed from the screen?) prior to returning the CPU to our thread:
 	DWORD start_time = GetTickCount(); // Before doing any MsgSleeps, set this.
+	DWORD aThreadID = CURRENT_THREADID;
     //MsgSleep(0); // Always do one small one, see above comments.
 	// UPDATE: It seems better just to always do one unspecified-interval sleep
 	// rather than MsgSleep(0), which often returns immediately, probably having
@@ -520,7 +522,10 @@ HWND WinClose(HWND aWnd, int aTimeToWaitForClose, bool aKillIfHung)
 	{
 		// Seems best to always do the first one regardless of the value 
 		// of aTimeToWaitForClose:
-		MsgSleep(INTERVAL_UNSPECIFIED);
+		if (g_MainThreadID == aThreadID)
+			MsgSleep(INTERVAL_UNSPECIFIED);
+		else
+			Sleep(SLEEP_INTERVAL);
 		if (!IsWindow(aWnd)) // It's gone, so we're done.
 			return aWnd;
 		// Must cast to int or any negative result will be lost due to DWORD type:
@@ -814,6 +819,7 @@ void StatusBarUtil(ResultToken &aResultToken, HWND aBarHwnd, int aPartNumber
 	TCHAR local_buf[WINDOW_TEXT_SIZE + 1]; // The local counterpart to the buf allocated remotely above.
 
 	DWORD_PTR result, start_time;
+	DWORD aThreadID = CURRENT_THREADID;
 	--aPartNumber; // Convert to zero-based for use below.
 
 	// Always do the first iteration so that at least one check is done.  Also,  start_time is initialized
@@ -864,7 +870,12 @@ void StatusBarUtil(ResultToken &aResultToken, HWND aBarHwnd, int aPartNumber
 		// by the parent window having been destroyed).
 		if (   IsWindow(aBarHwnd)
 			&& (aWaitTime < 0 || (int)(aWaitTime - (GetTickCount() - start_time)) > SLEEP_INTERVAL_HALF)   )
-			MsgSleep(aCheckInterval);
+		{
+			if (g_MainThreadID == aThreadID)
+				MsgSleep(aCheckInterval);
+			else
+				Sleep(aCheckInterval);
+		}
 		else // Timed out.
 		{
 			aResultToken.value_int64 = FALSE; // Indicate "timeout".
@@ -1032,7 +1043,7 @@ int MsgBox(LPCTSTR aText, UINT uType, LPTSTR aTitle, double aTimeout, HWND aOwne
 	if (!aText) // In case the caller explicitly called it with a NULL, overriding the default.
 		aText = (uType & 0xF) ? _T("") : _T("Press OK to continue."); // Use default text only if OK is the only button.
 	if (!aTitle) // Caller omitted it or explicitly requested the default.
-		aTitle = g_script.DefaultDialogTitle();
+		aTitle = g_script->DefaultDialogTitle();
 
 	// It doesn't feel safe to modify the contents of the caller's aText and aTitle,
 	// even if the caller were to tell us it is modifiable.  This is because the text
@@ -1547,8 +1558,20 @@ ResultType WindowSearch::SetCriteria(ScriptThreadSettings &aSettings, LPTSTR aTi
 			tcslcpy(buf, omit_leading_whitespace(cp), _countof(buf));
 			if (cp = StrChrAny(buf, _T(" \t"))) // Group names can't contain spaces, so terminate at the first one to exclude any "ahk_" criteria that come afterward.
 				*cp = '\0';
-			if (   !(mCriterionGroup = g_script.FindGroup(buf))   )
+			if (   !(mCriterionGroup = g_script->FindGroup(buf))   )
 				return FAIL; // No such group: Inform caller of invalid criteria.  No need to do anything else further below.
+		}
+		else if (!_tcsnicmp(cp, _T("parent"), 6)) // Parent of the window
+		{
+			cp += 6;
+			mCriteria |= CRITERION_PARENT;
+			mCriterionParentHwnd = (HWND)ATOU64(cp);
+			// Note that this can validly be the HWND of a child window; i.e. ahk_id %ChildWindowHwnd% is supported.
+			if (mCriterionParentHwnd != HWND_BROADCAST && !IsWindow(mCriterionParentHwnd)) // Checked here once rather than each call to IsMatch().
+			{
+				mCriterionParentHwnd = NULL;
+				return FAIL; // Inform caller of invalid criteria.  No need to do anything else further below.
+			}
 		}
 		else
 		{
@@ -1661,6 +1684,8 @@ void WindowSearch::UpdateCandidateAttributes()
 	}
 	if (mCriteria & CRITERION_CLASS)
 		GetClassName(mCandidateParent, mCandidateClass, _countof(mCandidateClass)); // Limit to WINDOW_CLASS_SIZE in this case since that's the maximum that can be searched.
+	if (mCriteria & CRITERION_PARENT)
+		mCandidateParentHwnd = GetParent(mCandidateParent);
 	// Nothing to do for these:
 	//CRITERION_GROUP:    Can't be pre-processed at this stage.
 	//CRITERION_ID:       It is mCandidateParent, which has already been set by SetCandidate().
@@ -1749,6 +1774,8 @@ HWND WindowSearch::IsMatch(bool aInvert)
 	// mCriterionHwnd should already be filled in, though it might be an explicitly specified zero.
 	// Note: IsWindow(mCriterionHwnd) was already called by SetCriteria().
 	if ((mCriteria & CRITERION_ID) && mCandidateParent != mCriterionHwnd) // Doesn't match the required HWND.
+		return NULL;
+	if ((mCriteria & CRITERION_PARENT) && mCandidateParentHwnd != mCriterionParentHwnd) // Parent window doesn't match the reqired Hwnd
 		return NULL;
 	//else it's a match so far, but continue onward in case there are other criteria.
 

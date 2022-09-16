@@ -43,7 +43,7 @@ BIF_DECL(BIF_Wait)
 	int joystick_id;
 	ExprTokenType token;
 
-	Line *waiting_line = g_script.mCurrLine;
+	Line *waiting_line = g_script->mCurrLine;
 
 	_f_set_retval_i(TRUE); // Set default return value to be possibly overridden later on.
 
@@ -56,7 +56,7 @@ BIF_DECL(BIF_Wait)
 	switch (_f_callee_id)
 	{
 	case FID_RunWait:
-		if (!g_script.ActionExec(arg1, NULL, arg2, true, arg3, &running_process, true, true
+		if (!g_script->ActionExec(arg1, NULL, arg2, true, arg3, &running_process, true, true
 			, ParamIndexToOutputVar(4-1)))
 			_f_return_FAIL;
 		//else fall through to the waiting-phase of the operation.
@@ -142,6 +142,7 @@ BIF_DECL(BIF_Wait)
 		sleep_duration = 0; // Just to catch any bugs.
 	}
 
+	DWORD aThreadID = CURRENT_THREADID;
 	bool any_clipboard_format = (_f_callee_id == FID_ClipWait && ATOI(arg2) == 1);
 
 	for (start_time = GetTickCount();;) // start_time is initialized unconditionally for use with v1.0.30.02's new logging feature further below.
@@ -271,7 +272,11 @@ BIF_DECL(BIF_Wait)
 		// Must cast to int or any negative result will be lost due to DWORD type:
 		if (wait_indefinitely || (int)(sleep_duration - (GetTickCount() - start_time)) > SLEEP_INTERVAL_HALF)
 		{
-			if (MsgSleep(INTERVAL_UNSPECIFIED)) // INTERVAL_UNSPECIFIED performs better.
+			if ((char)g->IsPaused == -1)	// thqby: Used to terminate a thread
+				_f_return_retval;
+			if (g_MainThreadID != aThreadID)
+				Sleep(SLEEP_INTERVAL);
+			else if (MsgSleep(INTERVAL_UNSPECIFIED)) // INTERVAL_UNSPECIFIED performs better.
 			{
 				// v1.0.30.02: Since MsgSleep() launched and returned from at least one new thread, put the
 				// current waiting line into the line-log again to make it easy to see what the current

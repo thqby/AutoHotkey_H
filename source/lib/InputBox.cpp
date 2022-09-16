@@ -73,7 +73,7 @@ ResultType InputBoxParseOptions(LPTSTR aOptions, InputBoxType &aInputBox)
 BIF_DECL(BIF_InputBox)
 {
 	_f_param_string_opt(aText, 0);
-	_f_param_string_opt_def(aTitle, 1, g_script.DefaultDialogTitle());
+	_f_param_string_opt_def(aTitle, 1, g_script->DefaultDialogTitle());
 	_f_param_string_opt(aOptions, 2);
 	_f_param_string_opt(aDefault, 3);
 
@@ -143,7 +143,7 @@ INT_PTR CALLBACK InputBoxProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 {
 	// See GuiWindowProc() for details about this first part:
 	LRESULT msg_reply;
-	if (g_MsgMonitor.Count() // Count is checked here to avoid function-call overhead.
+	if (g_MsgMonitor && g_MsgMonitor->Count() // Count is checked here to avoid function-call overhead.
 		&& (!g->CalledByIsDialogMessageOrDispatch || g->CalledByIsDialogMessageOrDispatchMsg != uMsg) // v1.0.44.11: If called by IsDialog or Dispatch but they changed the message number, check if the script is monitoring that new number.
 		&& MsgMonitor(hWndDlg, uMsg, wParam, lParam, NULL, msg_reply))
 		return (BOOL)msg_reply; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
@@ -224,10 +224,10 @@ INT_PTR CALLBACK InputBoxProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 		
 		// L17: Use separate big/small icons for best results.
 		LPARAM big_icon, small_icon;
-		if (g_script.mCustomIcon)
+		if (g_script->mCustomIcon)
 		{
-			big_icon = (LPARAM)g_script.mCustomIcon;
-			small_icon = (LPARAM)g_script.mCustomIconSmall; // Should always be non-NULL when mCustomIcon is non-NULL.
+			big_icon = (LPARAM)g_script->mCustomIcon;
+			small_icon = (LPARAM)g_script->mCustomIconSmall; // Should always be non-NULL when mCustomIcon is non-NULL.
 		}
 		else
 		{

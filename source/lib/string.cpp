@@ -799,7 +799,7 @@ int SortUDF(const void *a1, const void *a2)
 
 	// The following isn't necessary because by definition, the current thread isn't paused because it's the
 	// thing that called the sort in the first place.
-	//g_script.UpdateTrayIcon();
+	//g_script->UpdateTrayIcon();
 
 	LPTSTR aStr1 = *(LPTSTR *)a1;
 	LPTSTR aStr2 = *(LPTSTR *)a2;

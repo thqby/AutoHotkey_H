@@ -58,7 +58,8 @@ BIF_DECL(BIF_Process)
 		// This section is similar to that used for WINWAIT and RUNWAIT:
 		bool wait_indefinitely;
 		int sleep_duration;
-		DWORD start_time;
+		DWORD start_time, aThreadID;
+		aThreadID = CURRENT_THREADID;
 		if (aParamCount > 1) // The param containing the timeout value was specified.
 		{
 			if (!ParamIndexIsNumeric(1))
@@ -84,7 +85,12 @@ BIF_DECL(BIF_Process)
 			// Must cast to int or any negative result will be lost due to DWORD type:
 			if (wait_indefinitely || (int)(sleep_duration - (GetTickCount() - start_time)) > SLEEP_INTERVAL_HALF)
 			{
-				MsgSleep(100);  // For performance reasons, don't check as often as the WinWait family does.
+				if ((char)g->IsPaused == -1)	// thqby: Used to terminate a thread
+					_f_return_retval;
+				if (g_MainThreadID == aThreadID)
+					MsgSleep(100);  // For performance reasons, don't check as often as the WinWait family does.
+				else
+					Sleep(100);
 			}
 			else // Done waiting.
 			{
@@ -151,7 +157,7 @@ BIF_DECL(BIF_Run)
 	_f_param_string_opt(working_dir, 1);
 	_f_param_string_opt(options, 2);
 	Var *output_var_pid = ParamIndexToOutputVar(3);
-	if (!g_script.ActionExec(target, nullptr, working_dir, true, options, nullptr, true, true, output_var_pid))
+	if (!g_script->ActionExec(target, nullptr, working_dir, true, options, nullptr, true, true, output_var_pid))
 		_f_return_FAIL;
 	_f_return_empty;
 }

@@ -41,6 +41,10 @@ enum UserMessages {AHK_HOOK_HOTKEY = WM_USER, AHK_HOTSTRING, AHK_USER_MENU, AHK_
 	, AHK_HOOK_SYNC // For WaitHookIdle().
 	, AHK_INPUT_END, AHK_INPUT_KEYDOWN, AHK_INPUT_CHAR, AHK_INPUT_KEYUP
 	, AHK_HOOK_SET_KEYHISTORY
+	, AHK_EXECUTE  // Naveen N9: enable running ahk code from another os thread
+	, AHK_EXECUTE_LABEL
+	, AHK_EXECUTE_FUNCTION // HotkeyIt for ahkFunction
+	, AHK_THREADVAR
 };
 // NOTE: TRY NEVER TO CHANGE the specific numbers of the above messages, since some users might be
 // using the Post/SendMessage commands to automate AutoHotkey itself.  Here is the original order
@@ -205,6 +209,7 @@ struct input_type
 	int Timeout;
 	DWORD TimeoutAt;
 	SendLevelType MinSendLevel; // The minimum SendLevel that can be captured by this input (0 allows all).
+	bool AppendText;
 	bool BackspaceIsUndo;
 	bool CaseSensitive;
 	bool TranscribeModifiedKeys; // Whether the input command will attempt to transcribe modified keys such as ^c.
@@ -323,7 +328,7 @@ void AddRemoveHooks(HookType aHooksToBeActive, bool aChangeIsTemporary = false);
 bool HookAdjustMaxHotkeys(Hotkey **&aHK, int &aCurrentMax, int aNewMax);
 bool SystemHasAnotherKeybdHook();
 bool SystemHasAnotherMouseHook();
-DWORD WINAPI HookThreadProc(LPVOID aUnused);
+DWORD WINAPI HookThreadProc(LPVOID aTLS);
 
 void LinkKeysForCustomCombo(vk_type aNeutral, vk_type aLeft, vk_type aRight);
 

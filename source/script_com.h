@@ -3,6 +3,8 @@
 
 extern bool g_ComErrorNotify;
 
+extern IID IID_IObjectComCompatible;
+extern const IID IID__Object;
 
 class ComObject;
 class ComEvent : public ObjectBase
@@ -70,6 +72,7 @@ public:
 		M_Clone,
 		M_MaxIndex,
 		M_MinIndex,
+		M_ToJSON
 	};
 	static ObjectMember sArrayMembers[], sRefMembers[], sValueMembers[];
 
@@ -155,6 +158,7 @@ public:
 	static HRESULT Begin(ComObject *aArrayObject, ComArrayEnum *&aOutput, int aMode);
 	ResultType Next(Var *aVar1, Var *aVar2);
 	~ComArrayEnum();
+	friend class JSON;
 };
 
 
@@ -164,6 +168,8 @@ enum TTVArgType
 	VariantIsAllocatedString,
 	VariantIsVarRef
 };
+void AssignVariant(Var& aArg, VARIANT& aVar, bool aRetainVar = true);
+void VariantToToken(VARIANT& aVar, ResultToken& aToken, bool aRetainVar = true);
 void TokenToVariant(ExprTokenType &aToken, VARIANT &aVar, TTVArgType *aVarIsArg = FALSE);
 HRESULT TokenToVarType(ExprTokenType &aToken, VARTYPE aVarType, void *apValue, bool aCallerIsComValue = false);
 

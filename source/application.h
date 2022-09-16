@@ -18,6 +18,7 @@ GNU General Public License for more details.
 #define application_h
 
 #include "defines.h"
+#include <winternl.h>
 
 // Callers should note that using INTERVAL_UNSPECIFIED might not rest the CPU at all if there is
 // already at least one msg waiting in our thread's msg queue:
@@ -40,7 +41,10 @@ bool MsgSleep(int aSleepDuration = INTERVAL_UNSPECIFIED, MessageMode aMode = RET
 #define SLEEP_WITHOUT_INTERRUPTION(aSleepTime) \
 {\
 	g_AllowInterruption = FALSE;\
-	MsgSleep(aSleepTime);\
+	if (g_MainThreadID == aThreadID)\
+		MsgSleep(aSleepTime);\
+	else\
+		Sleep(aSleepTime < 0 ? 0 : aSleepTime);\
 	g_AllowInterruption = TRUE;\
 }
 
@@ -55,13 +59,19 @@ bool MsgSleep(int aSleepDuration = INTERVAL_UNSPECIFIED, MessageMode aMode = RET
 #define DoWinDelay \
 	if (::g->WinDelay > -1)\
 	{\
-		MsgSleep(::g->WinDelay);\
+		if (g_MainThreadID != CURRENT_THREADID)\
+			Sleep(::g->WinDelay);\
+		else\
+			MsgSleep(::g->WinDelay);\
 	}
 
 #define DoControlDelay \
 	if (g->ControlDelay > -1)\
 	{\
-		MsgSleep(g->ControlDelay);\
+		if (g_MainThreadID != CURRENT_THREADID)\
+			Sleep(g->ControlDelay);\
+		else\
+			MsgSleep(g->ControlDelay);\
 	}
 
 ResultType IsCycleComplete(int aSleepDuration, DWORD aStartTime, bool aAllowEarlyReturn);
@@ -72,7 +82,7 @@ ResultType IsCycleComplete(int aSleepDuration, DWORD aStartTime, bool aAllowEarl
 // might then have queued messages that would be stuck in the queue (due to the possible absence
 // of the main timer) until the dialog's msg pump ended.
 bool CheckScriptTimers();
-#define CHECK_SCRIPT_TIMERS_IF_NEEDED if (g_script.mTimerEnabledCount && CheckScriptTimers()) return_value = true; // Change the existing value only if it returned true.
+#define CHECK_SCRIPT_TIMERS_IF_NEEDED if (g_script->mTimerEnabledCount && CheckScriptTimers()) return_value = true; // Change the existing value only if it returned true.
 
 void PollJoysticks();
 #define POLL_JOYSTICK_IF_NEEDED if (Hotkey::sJoyHotkeyCount) PollJoysticks();
@@ -88,4 +98,7 @@ VOID CALLBACK MsgBoxTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime
 VOID CALLBACK InputTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK RefreshInterruptibility(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 
+#ifndef _USRDLL
+bool AHKModule();
+#endif
 #endif

@@ -22,16 +22,16 @@ GNU General Public License for more details.
 #include "script_func_impl.h"
 
 // Initialize static members:
-HookType Hotkey::sWhichHookNeeded = 0;
-HookType Hotkey::sWhichHookAlways = 0;
-DWORD Hotkey::sTimePrev = {0};
-DWORD Hotkey::sTimeNow = {0};
-Hotkey **Hotkey::shk = NULL;
-int Hotkey::shkMax = 0;
-HotkeyIDType Hotkey::sNextID = 0;
-const HotkeyIDType &Hotkey::sHotkeyCount = Hotkey::sNextID;
-bool Hotkey::sJoystickHasHotkeys[MAX_JOYSTICKS] = {false};
-DWORD Hotkey::sJoyHotkeyCount = 0;
+thread_local HookType Hotkey::sWhichHookNeeded = 0;
+thread_local HookType Hotkey::sWhichHookAlways = 0;
+thread_local DWORD Hotkey::sTimePrev = {0};
+thread_local DWORD Hotkey::sTimeNow = {0};
+thread_local Hotkey **Hotkey::shk = NULL;
+thread_local int Hotkey::shkMax = 0;
+thread_local HotkeyIDType Hotkey::sNextID = 0;
+thread_local const HotkeyIDType &Hotkey::sHotkeyCount = Hotkey::sNextID;
+thread_local bool Hotkey::sJoystickHasHotkeys[MAX_JOYSTICKS] = {false};
+thread_local DWORD Hotkey::sJoyHotkeyCount = 0;
 
 
 
@@ -97,19 +97,19 @@ HotkeyCriterion *FindHotkeyCriterion(HotCriterionType aType, LPTSTR aWinTitle, L
 HotkeyCriterion *AddHotkeyCriterion(HotCriterionType aType, LPTSTR aWinTitle, LPTSTR aWinText)
 {
 	HotkeyCriterion *cp;
-	cp = SimpleHeap::Alloc<HotkeyCriterion>();
+	cp = g_SimpleHeap->Alloc<HotkeyCriterion>();
 	cp->Type = aType;
 	cp->OriginalExpr = nullptr;
 	if (*aWinTitle)
 	{
-		if (   !(cp->WinTitle = SimpleHeap::Malloc(aWinTitle))   )
+		if (   !(cp->WinTitle = g_SimpleHeap->Malloc(aWinTitle))   )
 			return NULL;
 	}
 	else
 		cp->WinTitle = _T("");
 	if (*aWinText)
 	{
-		if (   !(cp->WinText = SimpleHeap::Malloc(aWinText))   )
+		if (   !(cp->WinText = g_SimpleHeap->Malloc(aWinText))   )
 			return NULL;
 	}
 	else
@@ -135,7 +135,7 @@ HotkeyCriterion *AddHotkeyCriterion(HotkeyCriterion *cp)
 
 HotkeyCriterion *AddHotkeyIfExpr()
 {
-	HotkeyCriterion *cp = SimpleHeap::Alloc<HotkeyCriterion>();
+	HotkeyCriterion* cp = g_SimpleHeap->Alloc<HotkeyCriterion>();
 	cp->NextExpr = NULL;
 	cp->OriginalExpr = nullptr;
 	if (g_LastHotExpr)
@@ -495,46 +495,15 @@ void Hotkey::MaybeUninstallHook()
 
 
 
-void Hotkey::AllDestructAndExit(int aExitCode)
+void Hotkey::AllDestruct()
 {
-	// PostQuitMessage() might be needed to prevent hang-on-exit.  Once this is done, no message boxes or
-	// other dialogs can be displayed.  MSDN: "The exit value returned to the system must be the wParam
-	// parameter of the WM_QUIT message."  In our case, PostQuitMessage() should announce the same exit code
-	// that we will eventually call exit() with:
-	PostQuitMessage(aExitCode);
-
 	AddRemoveHooks(0); // Remove all hooks. By contrast, registered hotkeys are unregistered below.
 	if (g_PlaybackHook) // Would be unusual for this to be installed during exit, but should be checked for completeness.
 		UnhookWindowsHookEx(g_PlaybackHook);
 	for (int i = 0; i < sHotkeyCount; ++i)
 		delete shk[i]; // Unregisters before destroying.
-
-	// Do this only at the last possible moment prior to exit() because otherwise
-	// it may free memory that is still in use by objects that depend on it.
-	// This is actually kinda wrong because when exit() is called, the destructors
-	// of static, global, and main-scope objects will be called.  If any of these
-	// destructors try to reference memory freed() by DeleteAll(), there could
-	// be trouble.
-	// It's here mostly for traditional reasons.  I'm 99.99999 percent sure that there would be no
-	// penalty whatsoever to omitting this, since any modern OS will reclaim all
-	// memory dynamically allocated upon program termination.  Indeed, omitting
-	// deletes and free()'s for simple objects will often improve the reliability
-	// and performance since the OS is far more efficient at reclaiming the memory
-	// than us doing it manually (which involves a potentially large number of deletes
-	// due to all the objects and sub-objects to be destructed in a typical C++ program).
-	// UPDATE: In light of the first paragraph above, it seems best not to do this at all,
-	// instead letting all implicitly-called destructors run prior to program termination,
-	// at which time the OS will reclaim all remaining memory:
-	//SimpleHeap::DeleteAll();
-
-	// I know this isn't the preferred way to exit the program.  However, due to unusual
-	// conditions such as the script having MsgBoxes or other dialogs displayed on the screen
-	// at the time the user exits (in which case our main event loop would be "buried" underneath
-	// the event loops of the dialogs themselves), this is the only reliable way I've found to exit
-	// so far.  The caller has already called PostQuitMessage(), which might not help but it doesn't hurt:
-	exit(aExitCode); // exit() is insignificant in code size.  It does more than ExitProcess(), but perhaps nothing more that this application actually requires.
-	// By contrast to _exit(), exit() flushes all file buffers before terminating the process. It also
-	// calls any functions registered via atexit or _onexit.
+	if (sHotkeyCount)
+		free(shk), shk = NULL, sNextID = 0, shkMax = 0;
 }
 
 
@@ -865,12 +834,12 @@ void Hotkey::PerformInNewThreadMadeByCaller(HotkeyVariant &aVariant)
 // Caller is responsible for having called PerformIsAllowed() before calling us.
 // Caller must have already created a new thread for us, and must close the thread when we return.
 {
-	static bool sDialogIsDisplayed = false;  // Prevents double-display caused by key buffering.
+	thread_local static bool sDialogIsDisplayed = false;  // Prevents double-display caused by key buffering.
 	if (sDialogIsDisplayed) // Another recursion layer is already displaying the warning dialog below.
 		return; // Don't allow new hotkeys to fire during that time.
 
 	// Help prevent runaway hotkeys (infinite loops due to recursion in bad script files):
-	static UINT throttled_key_count = 0;  // This var doesn't belong in struct since it's used only here.
+	thread_local static UINT throttled_key_count = 0;  // This var doesn't belong in struct since it's used only here.
 	UINT time_until_now;
 	int display_warning;
 	if (!sTimePrev)
@@ -909,7 +878,7 @@ void Hotkey::PerformInNewThreadMadeByCaller(HotkeyVariant &aVariant)
 		sDialogIsDisplayed = true;
 		g_AllowInterruption = FALSE;
 		if (MsgBox(error_text, MB_YESNO) == IDNO)
-			g_script.ExitApp(EXIT_CLOSE); // Might not actually Exit if there's an OnExit function.
+			g_script->ExitApp(EXIT_CLOSE); // Might not actually Exit if there's an OnExit function.
 		g_AllowInterruption = TRUE;
 		sDialogIsDisplayed = false;
 	}
@@ -936,13 +905,13 @@ void Hotkey::PerformInNewThreadMadeByCaller(HotkeyVariant &aVariant)
 	// by a timed subroutine, while A_HotkeyModifierTimeout is still in effect,
 	// in which case we would want SendKeys() to take note of these modifiers even
 	// if it was called from an ExecUntil() other than ours here:
-	g_script.mThisHotkeyModifiersLR = mModifiersConsolidatedLR;
+	g_script->mThisHotkeyModifiersLR = mModifiersConsolidatedLR;
 
 	// LAUNCH HOTKEY SUBROUTINE:
 	++aVariant.mExistingThreads;  // This is the thread count for this particular hotkey only.
 
 	ExprTokenType params = { mName };
-	ResultType result = aVariant.mCallback->ExecuteInNewThread(g_script.mThisHotkeyName, &params, 1);
+	ResultType result = aVariant.mCallback->ExecuteInNewThread(g_script->mThisHotkeyName, &params, 1);
 	
 	--aVariant.mExistingThreads;
 
@@ -1305,7 +1274,7 @@ Hotkey::Hotkey(HotkeyIDType aID, IObject *aCallback, HookActionType aHookAction,
 	{
 		// This will actually cause the script to terminate if this hotkey is a static (load-time)
 		// hotkey.  In the future, some other behavior is probably better:
-		g_script.ScriptError(_T("Max hotkeys."));  // Brief msg since so rare.
+		g_script->ScriptError(_T("Max hotkeys."));  // Brief msg since so rare.
 		return;
 	}
 
@@ -1485,7 +1454,7 @@ Hotkey::Hotkey(HotkeyIDType aID, IObject *aCallback, HookActionType aHookAction,
 	// If mKeybdHookMandatory==true, ManifestAllHotkeysHotstringsHooks() will set mType to HK_KEYBD_HOOK for us.
 
 	// To avoid memory leak, this is done only when it is certain the hotkey will be created:
-	if (   !(mName = SimpleHeap::Malloc(aName))
+	if (   !(mName = g_SimpleHeap->Malloc(aName))
 		|| !(AddVariant(aCallback, aNoSuppress))   ) // Too rare to worry about freeing the other if only one fails.
 	{
 		MemoryError();
@@ -1519,7 +1488,7 @@ HotkeyVariant *Hotkey::AddVariant(IObject *aCallback, UCHAR aNoSuppress)
 // Returns NULL upon out-of-memory; otherwise, the address of the new variant.
 // The caller is responsible for calling ManifestAllHotkeysHotstringsHooks(), if appropriate.
 {
-	HotkeyVariant *vp = SimpleHeap::Alloc<HotkeyVariant>();
+	HotkeyVariant *vp = g_SimpleHeap->Alloc<HotkeyVariant>();
 	ZeroMemory(vp, sizeof(HotkeyVariant));
 	// The following members are left at 0/NULL by the above:
 	// mNextVariant
@@ -1529,7 +1498,7 @@ HotkeyVariant *Hotkey::AddVariant(IObject *aCallback, UCHAR aNoSuppress)
 	// mPriority (default priority is always 0)
 	HotkeyVariant &v = *vp;
 	v.mCallback = aCallback;
-	v.mOriginalCallback = g_script.mLastHotFunc;
+	v.mOriginalCallback = g_script->mLastHotFunc;
 	v.mMaxThreads = g_MaxThreadsPerHotkey;    // The values of these can vary during load-time.
 	v.mMaxThreadsBuffer = g_MaxThreadsBuffer; //
 	v.mInputLevel = g_InputLevel;
@@ -1855,7 +1824,7 @@ ResultType Hotkey::TextToKey(LPTSTR aText, bool aIsModifier, Hotkey *aThisHotkey
 		if (   !(temp_sc = TextToSC(aText))   )
 			if (   !(temp_sc = (sc_type)ConvertJoy(aText, &joystick_id, true))   )  // Is there a joystick control/button?
 			{
-				if (!aText[1] && !g_script.mIsReadyToExecute)
+				if (!aText[1] && !g_script->mIsReadyToExecute)
 				{
 					// At load time, single-character key names are always considered valid but show a
 					// warning if they can't be registered as hotkeys on the current keyboard layout.
@@ -2207,11 +2176,28 @@ LPTSTR Hotkey::ToText(LPTSTR aBuf, int aBufSize, bool aAppendNewline)
 ///////////////
 
 // Init static variables:
-Hotstring **Hotstring::shs = NULL;
-HotstringIDType Hotstring::sHotstringCount = 0;
-HotstringIDType Hotstring::sHotstringCountMax = 0;
-UINT Hotstring::sEnabledCount = 0;
+thread_local Hotstring **Hotstring::shs = NULL;
+thread_local HotstringIDType Hotstring::sHotstringCount = 0;
+thread_local HotstringIDType Hotstring::sHotstringCountMax = 0;
+thread_local UINT Hotstring::sEnabledCount = 0;
 
+void Hotstring::AllDestruct()
+// HotKeyIt destroy all HotStrings H1
+{
+	if (sHotstringCount < 1) // At least one part below relies on this check.
+		return;
+	
+	UINT i;
+	for (i = 0; i < sHotstringCount; ++i)
+	{
+		if (shs[i]->mReplacement)
+			free(shs[i]->mReplacement);
+		if (shs[i]->mCallback)
+			shs[i]->mCallback = nullptr;
+		delete shs[i]; // Unregisters before destroying.
+	}
+	free(shs), shs = NULL, sHotstringCount = 0, sHotstringCountMax = 0;
+}
 
 void Hotstring::SuspendAll(bool aSuspend)
 {
@@ -2265,14 +2251,14 @@ ResultType Hotstring::PerformInNewThreadMadeByCaller()
 	if (mExistingThreads >= mMaxThreads)
 		return FAIL;
 	// See Hotkey::Perform() for details about this.  For hot strings -- which also use the
-	// g_script.mThisHotkeyStartTime value to determine whether g_script.mThisHotkeyModifiersLR
+	// g_script->mThisHotkeyStartTime value to determine whether g_script->mThisHotkeyModifiersLR
 	// is still timely/accurate -- it seems best to set to "no modifiers":
-	g_script.mThisHotkeyModifiersLR = 0;
+	g_script->mThisHotkeyModifiersLR = 0;
 	++mExistingThreads;  // This is the thread count for this particular hotstring only.
 	
 	ResultType result;
 	ExprTokenType params = { mName };
-	result = mCallback->ExecuteInNewThread(g_script.mThisHotkeyName, &params, 1);
+	result = mCallback->ExecuteInNewThread(g_script->mThisHotkeyName, &params, 1);
 	
 	--mExistingThreads;
 	return result ? OK : FAIL;	// Return OK on all non-failure results.
@@ -2421,7 +2407,7 @@ ResultType Hotstring::AddHotstring(LPTSTR aName, IObjectPtr aCallback, LPTSTR aO
 	}
 
 	++sHotstringCount;
-	if (!g_script.mIsReadyToExecute) // Caller is LoadIncludedFile(); allow BIF_Hotstring to manage this at runtime.
+	if (!g_script->mIsReadyToExecute) // Caller is LoadIncludedFile(); allow BIF_Hotstring to manage this at runtime.
 		++sEnabledCount; // This works because the script can't be suspended during startup (aSuspend is always FALSE).
 	return OK;
 }
@@ -2450,13 +2436,9 @@ Hotstring::Hotstring(LPTSTR aName, IObjectPtr aCallback, LPTSTR aOptions, LPTSTR
 		, mOmitEndChar, mSendRaw, mEndCharRequired, mDetectWhenInsideWord, mDoReset, unused_x, mSuspendExempt);
 	
 	// To avoid memory leak, this is done only when it is certain the hotstring will be created:
-	if (   !(mString = SimpleHeap::Malloc(aHotstring))   )
+	if (   !(mName = g_SimpleHeap->Malloc(aName))   )
 		return; // ScriptError() was already called by Malloc().
-	if (   !(mName = SimpleHeap::Malloc(aName))   )
-	{
-		SimpleHeap::Delete(mString); // SimpleHeap allows deletion of most recently added item.
-		return;
-	}
+	mString = mName + (aHotstring - aName);
 	mStringLength = (UCHAR)_tcslen(mString);
 	if (*aReplacement)
 	{

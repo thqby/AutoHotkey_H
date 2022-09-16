@@ -226,6 +226,8 @@ enum SymbolType // For use with ExpandExpression() and IsNumeric().
 #define SYM_IS_RESERVED(symbol) ((symbol) >= SYM_RESERVED_WORD) // No need to exclude SYM_COUNT in this case.
 	, SYM_COUNT    // Must be last because it's the total symbol count for everything above.
 	, SYM_INVALID = SYM_COUNT // Some callers may rely on YIELDS_AN_OPERAND(SYM_INVALID)==false.
+	, SYM_PTR      // VT_VOID
+	, SYM_STREAM   // Marshal IUnknown* in Stream
 };
 
 // This should include all operators which can produce SYM_VAR for a subsequent assignment:
@@ -682,10 +684,10 @@ typedef UCHAR HookType;
 #define HOOK_MOUSE 0x02
 #define HOOK_FAIL  0xFF
 
-#define EXTERN_G extern global_struct *g
+#define EXTERN_G thread_local extern global_struct *g
 #define EXTERN_OSVER extern OS_Version g_os
-#define EXTERN_CLIPBOARD extern Clipboard g_clip
-#define EXTERN_SCRIPT extern Script g_script
+#define EXTERN_CLIPBOARD thread_local extern Clipboard *g_clip
+#define EXTERN_SCRIPT thread_local extern Script *g_script
 #define CLIPBOARD_CONTAINS_ONLY_FILES (!IsClipboardFormatAvailable(CF_NATIVETEXT) && IsClipboardFormatAvailable(CF_HDROP))
 
 
@@ -726,17 +728,17 @@ typedef UCHAR HookType;
 // Therefore, must update tick_now again (its value is used by macro and possibly by its caller)
 // to avoid having to Peek() immediately after the next iteration.
 // ...
-// The code might bench faster when "g_script.mLastPeekTime = tick_now" is a separate operation rather
+// The code might bench faster when "g_script->mLastPeekTime = tick_now" is a separate operation rather
 // than combined in a chained assignment statement.
 #define LONG_OPERATION_UPDATE \
 {\
 	tick_now = GetTickCount();\
-	if (tick_now - g_script.mLastPeekTime > ::g->PeekFrequency)\
+	if (tick_now - g_script->mLastPeekTime > ::g->PeekFrequency)\
 	{\
-		if (PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE))\
+		if (PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE) && g_MainThreadID == aThreadID)\
 			MsgSleep(-1);\
 		tick_now = GetTickCount();\
-		g_script.mLastPeekTime = tick_now;\
+		g_script->mLastPeekTime = tick_now;\
 	}\
 }
 
@@ -744,12 +746,12 @@ typedef UCHAR HookType;
 #define LONG_OPERATION_UPDATE_FOR_SENDKEYS \
 {\
 	tick_now = GetTickCount();\
-	if (tick_now - g_script.mLastPeekTime > ::g->PeekFrequency)\
+	if (tick_now - g_script->mLastPeekTime > ::g->PeekFrequency)\
 	{\
 		if (PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE))\
 			SLEEP_WITHOUT_INTERRUPTION(-1) \
 		tick_now = GetTickCount();\
-		g_script.mLastPeekTime = tick_now;\
+		g_script->mLastPeekTime = tick_now;\
 	}\
 }
 
@@ -844,7 +846,7 @@ struct HotkeyCriterion
 	LPTSTR OriginalExpr; // For finding expr in #HotIf expr
 	IObject *Callback;
 	HotkeyCriterion *NextCriterion, *NextExpr;
-
+	DWORD ThreadID;
 	ResultType Eval(LPTSTR aHotkeyName); // For HOT_IF_CALLBACK.
 };
 
@@ -879,7 +881,7 @@ struct ScriptThreadState
 	DWORD LastError; // The result of GetLastError() after the most recent DllCall or Run.
 	int Priority;  // This thread's priority relative to others.
 	int UninterruptedLineCount; // Stored as a g-struct attribute in case OnExit func interrupts it while uninterruptible.
-	int UninterruptibleDuration; // Must be int to preserve negative values found in g_script.mUninterruptibleTime.
+	int UninterruptibleDuration; // Must be int to preserve negative values found in g_script->mUninterruptibleTime.
 	DWORD ThreadStartTime;
 	DWORD CalledByIsDialogMessageOrDispatchMsg; // Detects the fact that some messages (like WM_KEYDOWN->WM_NOTIFY for UpDown controls) are translated to different message numbers by IsDialogMessage (and maybe Dispatch too).
 
@@ -887,6 +889,7 @@ struct ScriptThreadState
 	bool MsgBoxTimedOut; // Meaningful only while a MsgBox call is in progress.
 	bool CalledByIsDialogMessageOrDispatch; // Helps avoid launching a monitor function twice for the same message.  This would probably be okay if it were a normal global rather than in the g-struct, but due to messaging complexity, this lends peace of mind and robustness.
 	bool AllowThreadToBeInterrupted; // Whether this thread can be interrupted by custom menu items, hotkeys, or timers.  Separate from g_AllowInterruption because that's for use by ongoing operations, such as SendKeys, and should override the thread's setting.
+	UserFunc* CurrentMacro;
 };
 
 struct ScriptThreadSettings
@@ -922,6 +925,8 @@ struct ScriptThreadSettings
 
 	//inline bool InTryBlock() { return ExcptMode & EXCPTMODE_TRY; } // Currently unused.
 	bool DetectWindow(HWND aWnd);
+	DerefType* ExcptDeref;
+	BYTE ZipCompressionLevel;
 };
 
 // global_struct is a combination of thread state (things specific to a thread that
@@ -970,6 +975,7 @@ inline void global_clear_state(ScriptThreadState &g)
 	//g.ExcptMode = EXCPTMODE_NONE;
 	//g.LastError = 0;
 	//g.EventInfo = NO_EVENT_INFO;
+	//g.CurrentMacro = NULL;
 }
 
 inline void global_set_defaults(ScriptThreadSettings &g)
@@ -1004,6 +1010,7 @@ inline void global_set_defaults(ScriptThreadSettings &g)
 	g.SendLevel = 0;
 	g.ListLinesIsEnabled = true;
 	g.Encoding = CP_ACP;
+	g.ZipCompressionLevel = 5;
 }
 
 // Initialize g and set application defaults.  This is called only once, since new
@@ -1046,5 +1053,148 @@ UNICODE_CHECK inline size_t CHECK_SIZEOF(size_t n) { return n; }
 #else
 #define UNICODE_CHECK
 #endif
+
+#define EXPORT extern "C" __declspec(dllexport)
+
+#ifdef ENABLE_DLLCALL
+
+#ifdef WIN32_PLATFORM
+// Interface for DynaCall():
+#define  DC_MICROSOFT           0x0000      // Default
+#define  DC_BORLAND             0x0001      // Borland compat
+#define  DC_CALL_CDECL          0x0010      // __cdecl
+#define  DC_CALL_STD            0x0020      // __stdcall
+#define  DC_CALL_THISCALL       0x0040      // __thiscall
+#define  DC_RETVAL_MATH4        0x0100      // Return value in ST
+#define  DC_RETVAL_MATH8        0x0200      // Return value in ST
+
+#define  DC_CALL_STD_BO         (DC_CALL_STD | DC_BORLAND)
+#define  DC_CALL_STD_MS         (DC_CALL_STD | DC_MICROSOFT)
+#define  DC_CALL_STD_M8         (DC_CALL_STD | DC_RETVAL_MATH8)
+#endif
+
+enum DllArgTypes;
+struct DYNAPARM
+{
+	union
+	{
+		int value_int; // Args whose width is less than 32-bit are also put in here because they are right justified within a 32-bit block on the stack.
+		float value_float;
+		__int64 value_int64;
+		UINT_PTR value_uintptr;
+		double value_double;
+		char* astr;
+		wchar_t* wstr;
+		void* ptr;
+	};
+	// Might help reduce struct size to keep other members last and adjacent to each other (due to
+	// 8-byte alignment caused by the presence of double and __int64 members in the union above).
+	DllArgTypes type;
+	union {
+		int struct_size;
+		struct {
+			bool passed_by_address;
+			bool is_unsigned; // Allows return value and output parameters to be interpreted as unsigned vs. signed.
+			bool is_hresult; // Only used for the return value.
+			char is_ptr;
+		};
+	};
+};
+#endif
+
+
+
+#ifdef _WIN64
+	#define CURRENT_THREADID (__readgsdword(0x48))
+#else
+	#define CURRENT_THREADID (__readfsdword(0x24))
+#endif
+
+#define STRUCTALIGN(size) (thisalign = toalign > 0 && size > toalign ? toalign : size)
+
+// removed return value as it is not used
+__inline void g_memset(void *_S, int _C, size_t _N)
+{
+	unsigned char *_Su = (unsigned char*)_S;
+	for (; 0 < _N; ++_Su, --_N)
+	{
+		*_Su = (unsigned char)_C;
+	}
+}
+
+struct TString
+{
+private:
+	TCHAR* _p = NULL;
+	size_t _len = 0;
+	size_t capacity = 0;
+	bool Realloc(size_t aNewSize) {
+		TCHAR* newp = (TCHAR*)realloc(_p, sizeof(TCHAR) * aNewSize);
+		if (!newp)
+			return false;
+		_p = newp;
+		capacity = aNewSize;
+		return true;
+	}
+	bool EnsureCapacity(size_t aLength) {
+		if (capacity >= aLength)
+			return true;
+		size_t newsize = capacity ? capacity << 1 : aLength;
+		while (newsize < aLength)
+			newsize <<= 1;
+		return Realloc(newsize);
+	}
+public:
+	TString() {}
+	~TString() { if (_p) free(_p); }
+	TCHAR* data() { _p[_len] = 0; return _p; }
+	size_t size() { return _len; }
+	TString& append(ResultToken& token) {
+		if (token.marker_length == -1)
+			token.marker_length = _tcsclen(token.marker);
+		if (!_p && token.mem_to_free) {
+			_p = token.marker;
+			capacity = _len = token.marker_length;
+			token.mem_to_free = nullptr;
+		}
+		else
+			append(token.marker, token.marker_length);
+		return *this;
+	}
+	TString& append(TCHAR ch) {
+		if (EnsureCapacity(_len + 2))
+			_p[_len++] = ch;
+		return *this;
+	}
+	TString& operator+=(LPTSTR str) {
+		size_t len = _tcslen(str);
+		return append(str, len);
+	}
+	TString& append(LPTSTR str, size_t len) {
+		if (EnsureCapacity(_len + len + 1)) {
+			memcpy(_p + _len, str, len * sizeof(TCHAR));
+			_len += len;
+		}
+		return *this;
+	}
+	TString& append(LPTSTR str, size_t len, size_t n) {
+		if (EnsureCapacity(_len + len * n + 1)) {
+			auto p = _p + _len;
+			for (size_t i = 0; i < n; i++)
+				memcpy(p, str, len * sizeof(TCHAR)), p += len;
+			_len += len * n;
+		}
+		return *this;
+	}
+	TCHAR& back() {
+		ASSERT(_len > 0);
+		return _p[_len - 1];
+	}
+	void release() { _p = NULL; _len = capacity = 0; }
+	void pop_back() {
+		if (_len)
+			_len--;
+	}
+};
 
 #endif

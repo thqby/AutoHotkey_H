@@ -7,6 +7,7 @@
 #include "script_object.h"
 #include "script_func_impl.h"
 #include "input_object.h"
+#include "script_com.h"
 
 #include <errno.h> // For ERANGE.
 #include <initializer_list>
@@ -62,7 +63,7 @@ Object *Object::Create()
 	return obj;
 }
 
-Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *apResultToken)
+Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *apResultToken, bool aUnsorted)
 {
 	if (aParamCount & 1)
 	{
@@ -71,6 +72,7 @@ Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *ap
 	}
 
 	Object *obj = Object::Create();
+	if (aUnsorted) obj->mFlags |= UnsortedFlag;
 	if (aParamCount)
 	{
 		if (aParamCount > 8)
@@ -118,11 +120,25 @@ Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *ap
 // Map::SetItems - Add or set items given an array of key/value pairs.
 //
 
-Map *Map::Create(ExprTokenType *aParam[], int aParamCount)
+Map *Map::Create(ExprTokenType *aParam[], int aParamCount, bool aUnsorted)
 {
 	ASSERT(!(aParamCount & 1));
 
 	Map *map = new Map();
+	if (aUnsorted)
+		map->mFlags |= UnsortedFlag;
+	switch (g_MapCaseSense)
+	{
+	case SCS_SENSITIVE:
+		map->mFlags &= ~(MapCaseless | MapUseLocale);
+		break;
+	case SCS_INSENSITIVE_LOCALE:
+		map->mFlags |= (MapCaseless | MapUseLocale);
+		break;
+	case SCS_INSENSITIVE:
+		map->mFlags = (map->mFlags | MapCaseless) & ~MapUseLocale;
+		break;
+	}
 	map->SetBase(Map::sPrototype);
 	if (aParamCount && !map->SetItems(aParam, aParamCount))
 	{
@@ -135,6 +151,41 @@ Map *Map::Create(ExprTokenType *aParam[], int aParamCount)
 
 ResultType Map::SetItems(ExprTokenType *aParam[], int aParamCount)
 {
+	if (aParamCount == 1)
+	{
+		ExprTokenType this_token, aKey, aValue, *params[] = { &aKey, &aValue };
+		Var vkey, vval;
+		IObject *enumerator = nullptr;
+		ResultType result;
+
+		this_token.SetValue(TokenToObject(*aParam[0]));
+		result = GetEnumerator(enumerator, this_token, 2, false);
+		if (!enumerator)
+			return FAIL;
+
+		this_token.symbol = SYM_OBJECT;
+		this_token.object = this;
+		// Prepare parameters for the loop below
+		aKey.SetVarRef(&vkey);
+		aValue.SetVarRef(&vval);
+		for (;;)
+		{
+			// Call enumerator.Next(var1, var2)
+			result = CallEnumerator(enumerator, params, 2, false);
+			if (result == CONDITION_FALSE)
+				break;
+			if (!SetItem(aKey, aValue)) {
+				enumerator->Release();
+				return FAIL; // Out of memory.
+			}
+		}
+		// release enumerator and free vars
+		enumerator->Release();
+		vkey.Free();
+		vval.Free();
+		return OK;
+	}
+
 	ASSERT(!(aParamCount & 1)); // Caller should verify and throw.
 
 	if (!aParamCount)
@@ -220,6 +271,7 @@ Object *Object::CloneTo(Object &obj)
 
 Map *Map::CloneTo(Map &obj)
 {
+	obj.mFlags = mFlags;
 	Object::CloneTo(obj);
 
 	if (!obj.SetInternalCapacity(mCount))
@@ -231,40 +283,66 @@ Map *Map::CloneTo(Map &obj)
 	int failure_count = 0; // See Object::CloneT() for comments.
 	index_t i;
 
-	obj.mFlags = mFlags;
 	obj.mCount = mCount;
-	obj.mKeyOffsetObject = mKeyOffsetObject;
-	obj.mKeyOffsetString = mKeyOffsetString;
-	if (obj.mKeyOffsetObject < 0) // Currently might always evaluate to false.
-	{
-		obj.mKeyOffsetObject = 0; // aStartOffset excluded all integer and some or all object keys.
-		if (obj.mKeyOffsetString < 0)
-			obj.mKeyOffsetString = 0; // aStartOffset also excluded some string keys.
+	if (!IsUnsorted()) {
+		obj.mKeyOffsetObject = mKeyOffsetObject;
+		obj.mKeyOffsetString = mKeyOffsetString;
+		if (obj.mKeyOffsetObject < 0) // Currently might always evaluate to false.
+		{
+			obj.mKeyOffsetObject = 0; // aStartOffset excluded all integer and some or all object keys.
+			if (obj.mKeyOffsetString < 0)
+				obj.mKeyOffsetString = 0; // aStartOffset also excluded some string keys.
+		}
+		//else no need to check mKeyOffsetString since it should always be >= mKeyOffsetObject.
 	}
-	//else no need to check mKeyOffsetString since it should always be >= mKeyOffsetObject.
 
 	for (i = 0; i < mCount; ++i)
 	{
 		Pair &dst = obj.mItem[i];
 		Pair &src = mItem[i];
 
-		// Copy key.
-		if (i >= obj.mKeyOffsetString)
+		if (IsUnsorted())
 		{
-			dst.key_c = src.key_c;
-			if ( !(dst.key.s = _tcsdup(src.key.s)) )
+			auto &keytype = mKeyTypes[i];
+			obj.mKeyTypes[i] = keytype;
+			if (keytype == SYM_STRING)
+			{	// Copy key.
+				dst.key_c = src.key_c;
+				if (!(dst.key.s = _tcsdup(src.key.s)))
+				{
+					// Key allocation failed. At this point, all int and object keys
+					// have been set and values for previous items have been copied.
+					++failure_count;
+				}
+			}
+			else
 			{
-				// Key allocation failed. At this point, all int and object keys
-				// have been set and values for previous items have been copied.
-				++failure_count;
+				// Copy whole key; search "(IntKeyType)(INT_PTR)" for comments.
+				dst.key = src.key;
+				if (keytype == SYM_OBJECT)
+					dst.key.p->AddRef();
 			}
 		}
-		else 
+		else
 		{
-			// Copy whole key; search "(IntKeyType)(INT_PTR)" for comments.
-			dst.key = src.key;
-			if (i >= obj.mKeyOffsetObject)
-				dst.key.p->AddRef();
+			// Copy key.
+			if (i >= obj.mKeyOffsetString)
+			{
+				dst.key_c = src.key_c;
+				if ( !(dst.key.s = _tcsdup(src.key.s)) )
+				{
+					// Key allocation failed. At this point, all int and object keys
+					// have been set and values for previous items have been copied.
+					++failure_count;
+				}
+			}
+			else
+			{
+				// Copy whole key; search "(IntKeyType)(INT_PTR)" for comments.
+				dst.key = src.key;
+				if (i >= obj.mKeyOffsetObject)
+					dst.key.p->AddRef();
+			}
 		}
 
 		// Copy value.
@@ -325,7 +403,7 @@ ResultType GetEnumerator(IObject *&aEnumerator, ExprTokenType &aEnumerable, int 
 	}
 	result_token.Free();
 	if (aDisplayError)
-		g_script.RuntimeError(ERR_TYPE_MISMATCH, _T("__Enum"), FAIL, nullptr, ErrorPrototype::Type);
+		g_script->RuntimeError(ERR_TYPE_MISMATCH, _T("__Enum"), FAIL, nullptr, ErrorPrototype::Type);
 	return FAIL;
 }
 
@@ -343,7 +421,7 @@ ResultType CallEnumerator(IObject *aEnumerator, ExprTokenType *aParam[], int aPa
 	if (result == FAIL || result == EARLY_EXIT || result == INVOKE_NOT_HANDLED)
 	{
 		if (result == INVOKE_NOT_HANDLED && aDisplayError)
-			return g_script.RuntimeError(ERR_NOT_ENUMERABLE, nullptr, FAIL, nullptr, ErrorPrototype::Type); // Object not callable -> wrong type of object.
+			return g_script->RuntimeError(ERR_NOT_ENUMERABLE, nullptr, FAIL, nullptr, ErrorPrototype::Type); // Object not callable -> wrong type of object.
 		return result;
 	}
 	result = TokenToBOOL(result_token) ? CONDITION_TRUE : CONDITION_FALSE;
@@ -414,41 +492,43 @@ bool Object::Delete()
 			// undesirable to call the super-class' __Delete() meta-function for this.
 			return ObjectBase::Delete();
 
-		// L33: Privatize the last recursion layer's deref buffer in case it is in use by our caller.
-		// It's done here rather than in Var::FreeAndRestoreFunctionVars (even though the below might
-		// not actually call any script functions) because this function is probably executed much
-		// less often in most cases.
-		PRIVATIZE_S_DEREF_BUF;
+		if (g_script) {
+			// L33: Privatize the last recursion layer's deref buffer in case it is in use by our caller.
+			// It's done here rather than in Var::FreeAndRestoreFunctionVars (even though the below might
+			// not actually call any script functions) because this function is probably executed much
+			// less often in most cases.
+			PRIVATIZE_S_DEREF_BUF;
 
-		// If an exception has been thrown, temporarily clear it for execution of __Delete.
-		ResultToken *exc = g->ThrownToken;
-		g->ThrownToken = NULL;
-		
-		// This prevents an erroneous "The current thread will exit" message when an error occurs,
-		// by causing LineError() to throw an exception:
-		int outer_excptmode = g->ExcptMode;
-		g->ExcptMode |= EXCPTMODE_DELETE;
+			// If an exception has been thrown, temporarily clear it for execution of __Delete.
+			ResultToken *exc = g->ThrownToken;
+			g->ThrownToken = NULL;
 
-		{
-			FuncResult rt;
-			CallMeta(_T("__Delete"), rt, ExprTokenType(this), nullptr, 0);
-			rt.Free();
+			// This prevents an erroneous "The current thread will exit" message when an error occurs,
+			// by causing LineError() to throw an exception:
+			int outer_excptmode = g->ExcptMode;
+			g->ExcptMode |= EXCPTMODE_DELETE;
+
+			{
+				FuncResult rt;
+				CallMeta(_T("__Delete"), rt, ExprTokenType(this), nullptr, 0);
+				rt.Free();
+			}
+
+			g->ExcptMode = outer_excptmode;
+
+			// Exceptions thrown by __Delete are reported immediately because they would not be handled
+			// consistently by the caller (they would typically be "thrown" by the next function call),
+			// and because the caller must be allowed to make additional __Delete calls.
+			if (g->ThrownToken)
+				g_script->FreeExceptionToken(g->ThrownToken);
+
+			// If an exception has been thrown by our caller, it's likely that it can and should be handled
+			// reliably by our caller, so restore it.
+			if (exc)
+				g->ThrownToken = exc;
+
+			DEPRIVATIZE_S_DEREF_BUF; // L33: See above.
 		}
-
-		g->ExcptMode = outer_excptmode;
-
-		// Exceptions thrown by __Delete are reported immediately because they would not be handled
-		// consistently by the caller (they would typically be "thrown" by the next function call),
-		// and because the caller must be allowed to make additional __Delete calls.
-		if (g->ThrownToken)
-			g_script.FreeExceptionToken(g->ThrownToken);
-
-		// If an exception has been thrown by our caller, it's likely that it can and should be handled
-		// reliably by our caller, so restore it.
-		if (exc)
-			g->ThrownToken = exc;
-
-		DEPRIVATIZE_S_DEREF_BUF; // L33: See above.
 
 		// Above may pass the script a reference to this object to allow cleanup routines to free any
 		// associated resources.  Deleting it is only safe if the script no longer holds any references
@@ -476,15 +556,26 @@ void Map::Clear()
 		// Copy key before Free() since it might cause re-entry via __delete.
 		auto key = mItem[mCount].key;
 		mItem[mCount].Free();
-		if (mCount >= mKeyOffsetString)
-			free(key.s);
-		else 
+		if (IsUnsorted())
 		{
-			--mKeyOffsetString;
-			if (mCount >= mKeyOffsetObject)
-				key.p->Release(); // Might also cause re-entry.
-			else
-				--mKeyOffsetObject;
+			SymbolType akeytype = (SymbolType)mKeyTypes[mCount];
+			if (akeytype == SYM_STRING)
+				free(key.s);
+			else if (akeytype == SYM_OBJECT)
+				key.p->Release();  // Might also cause re-entry.
+		}
+		else
+		{
+			if (mCount >= mKeyOffsetString)
+				free(key.s);
+			else 
+			{
+				--mKeyOffsetString;
+				if (mCount >= mKeyOffsetObject)
+					key.p->Release(); // Might also cause re-entry.
+				else
+					--mKeyOffsetObject;
+			}
 		}
 	}
 }
@@ -501,7 +592,8 @@ ObjectMember Object::sMembers[] =
 	Object_Method1(DeleteProp, 1, 1),
 	Object_Method1(GetOwnPropDesc, 1, 1),
 	Object_Method1(HasOwnProp, 1, 1),
-	Object_Method1(OwnProps, 0, 0)
+	Object_Method1(OwnProps, 0, 0),
+	Object_Method1(ToJSON, 0, 2)
 };
 
 LPTSTR Object::sMetaFuncName[] = { _T("__Get"), _T("__Set"), _T("__Call") };
@@ -641,7 +733,15 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 		if (etter)
 			func_token.CopyValueFrom(token_for_recursion);
 		else if (!field)
-			return INVOKE_NOT_HANDLED;
+		{
+			if (aName && !_tcsicmp(aName, _T("__Enum")) && this->mBase && (field = this->mBase->FindField(_T("OwnProps"))) && field->prop->Method())
+			{
+				actual_param_count = 0, hasprop = true;
+				func_token.SetValue(field->prop->Method());
+			}
+			else
+				return INVOKE_NOT_HANDLED;
+		}
 		else if (field->symbol == SYM_DYNAMIC)
 			func_token.SetValue(field->prop->Method());
 		else
@@ -749,6 +849,8 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 			method->AddRef();
 			return aResultToken.Return(method);
 		}
+		else if (g_DefaultObjectValue)
+			return aResultToken.ReturnPtr(g_DefaultObjectValue);
 	}
 
 	// Fell through from one of the sections above: invocation was not handled.
@@ -806,7 +908,7 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 			if (ParamIndexIsOmitted(1))
 			{
 				auto result = Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType { this }, nullptr, 0);
-				if (result == INVOKE_NOT_HANDLED)
+				if (result == INVOKE_NOT_HANDLED || (aResultToken.symbol == SYM_STRING && aResultToken.marker == g_DefaultObjectValue))
 					_o_throw(ERR_ITEM_UNSET, ParamIndexToString(0, _f_number_buf), ErrorPrototype::UnsetItem);
 				return;
 			}
@@ -827,7 +929,7 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 
 void Map::Set(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
-	if (aParamCount & 1)
+	if ((aParamCount & 1) && !(aParamCount == 1 && TokenToObject(*aParam[0])))
 		_o_throw(ERR_PARAM_COUNT_INVALID);
 	if (!SetItems(aParam, aParamCount))
 		_o_throw_oom;
@@ -1054,7 +1156,7 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 		_tcscpy(name, member.name);
 		if (member.invokeType == IT_CALL)
 		{
-			auto func = new BuiltInMethod(SimpleHeap::Alloc(full_name));
+			auto func = new BuiltInMethod(g_SimpleHeap->Alloc(full_name));
 			func->mBIM = member.method;
 			func->mMID = member.id;
 			func->mMIT = IT_CALL;
@@ -1074,7 +1176,7 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 			auto op_name = _tcschr(name, '\0');
 
 			_tcscpy(op_name, _T(".Get"));
-			auto func = new BuiltInMethod(SimpleHeap::Alloc(full_name));
+			auto func = new BuiltInMethod(g_SimpleHeap->Alloc(full_name));
 			func->mBIM = member.method;
 			func->mMID = member.id;
 			func->mMIT = IT_GET;
@@ -1088,7 +1190,7 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 			if (member.invokeType == IT_SET)
 			{
 				_tcscpy(op_name, _T(".Set"));
-				func = new BuiltInMethod(SimpleHeap::Alloc(full_name));
+				func = new BuiltInMethod(g_SimpleHeap->Alloc(full_name));
 				func->mBIM = member.method;
 				func->mMID = member.id;
 				func->mMIT = IT_SET;
@@ -1108,14 +1210,14 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 Object *Object::CreateClass(LPTSTR aClassName, Object *aBase, Object *aPrototype, ClassFactoryDef aFactory)
 {
 	auto class_obj = CreateClass(aPrototype);
-
+	aPrototype->Release(); // HotKeyIt: the scripts var should be the only reference to the prototype so it can be released on clearance.
 	class_obj->SetBase(aBase);
 
 	if (aFactory.call)
 	{
 		TCHAR full_name[MAX_VAR_NAME_LENGTH + 1];
 		_stprintf(full_name, _T("%s.Call"), aClassName);
-		auto ctor = new BuiltInFunc(SimpleHeap::Alloc(full_name));
+		auto ctor = new BuiltInFunc(g_SimpleHeap->Alloc(full_name));
 		ctor->mBIF = aFactory.call;
 		ctor->mFID = FID_Object_New;
 		ctor->mMinParams = aFactory.min_params; // Usually 1, the class object.
@@ -1125,7 +1227,7 @@ Object *Object::CreateClass(LPTSTR aClassName, Object *aBase, Object *aPrototype
 		ctor->Release();
 	}
 
-	auto var = g_script.FindOrAddVar(aClassName, 0, VAR_DECLARE_GLOBAL);
+	auto var = g_script->FindOrAddVar(aClassName, 0, VAR_DECLARE_GLOBAL);
 	var->AssignSkipAddRef(class_obj);
 	var->MakeReadOnly();
 
@@ -1175,15 +1277,25 @@ void Map::Delete(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 	mCount--;
 	// Free item and keys.
 	copy->Free();
-	if (key_type == SYM_STRING)
-		free(copy->key.s);
-	else // i.e. SYM_OBJECT or SYM_INTEGER
-	{
-		mKeyOffsetString--;
-		if (key_type == SYM_INTEGER)
-			mKeyOffsetObject--;
-		else
+	if (IsUnsorted()) {
+		if (key_type == SYM_STRING)
+			free(copy->key.s);
+		else if (key_type == SYM_OBJECT)
 			copy->key.p->Release();
+		if (mCount > pos)
+			memmove(mKeyTypes + pos, mKeyTypes + pos + 1, mCount - pos);
+	}
+	else {
+		if (key_type == SYM_STRING)
+			free(copy->key.s);
+		else // i.e. SYM_OBJECT or SYM_INTEGER
+		{
+			mKeyOffsetString--;
+			if (key_type == SYM_INTEGER)
+				mKeyOffsetObject--;
+			else
+				copy->key.p->Release();
+		}
 	}
 	_o_return_retval;
 }
@@ -1321,6 +1433,23 @@ void Object::OwnProps(ResultToken &aResultToken, int aID, int aFlags, ExprTokenT
 		, static_cast<IndexEnumerator::Callback>(&Object::GetEnumProp)));
 }
 
+void Object::ToJSON(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount)
+{
+	if (aParamCount >= 1 && aParam[0]->symbol == SYM_PTR) {
+		auto js = (JSON*)(aParam[0]->object);
+		js->appendObj(this, false);
+		_f_return_empty;
+	}
+	else {
+		ExprTokenType t_this(this), opt(0);
+		ExprTokenType* param[] = { &t_this,&opt,&opt };
+		JSON json;
+		if (aParamCount)
+			param[1] = aParam[0];
+		json.Stringify(aResultToken, param, 3);
+	}
+}
+
 void Map::__Enum(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
 	_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 1)
@@ -1346,6 +1475,7 @@ void Object::Clone(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 	if (GetNativeBase() != Object::sPrototype)
 		_o_throw(ERR_TYPE_MISMATCH, ErrorPrototype::Type); // Cannot construct an instance of this class using Object::Clone().
 	auto clone = new Object();
+	clone->mFlags = mFlags;
 	if (!CloneTo(*clone))
 		_o_throw_oom;	
 	_o_return(clone);
@@ -1877,10 +2007,11 @@ Array::~Array()
 	free(mItem);
 }
 
-Array *Array::Create(ExprTokenType *aValue[], index_t aCount)
+Array *Array::Create(ExprTokenType *aValue[], index_t aCount, bool aUnsorted)
 {
 	auto arr = new Array();
 	arr->SetBase(Array::sPrototype);
+	if (aUnsorted) arr->mFlags |= UnsortedFlag;
 	if (!aCount || arr->InsertAt(0, aValue, aCount))
 		return arr;
 	arr->Release();
@@ -1890,6 +2021,7 @@ Array *Array::Create(ExprTokenType *aValue[], index_t aCount)
 Array *Array::Clone()
 {
 	auto arr = new Array();
+	arr->mFlags = mFlags;
 	if (!CloneTo(*arr))
 		return nullptr; // CloneTo() released arr.
 	if (!arr->SetCapacity(mCapacity))
@@ -1942,8 +2074,12 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 	case M_Get:
 	{
 		auto index = ParamToZeroIndex(*aParam[IS_INVOKE_SET ? 1 : 0]);
-		if (index >= mLength)
+		if (index >= mLength) {
+			ExprTokenType def;
+			if (IS_INVOKE_GET && Array::sPrototype->GetOwnProp(def, _T("Default")))
+				return (void)aResultToken.CopyValueFrom(def);
 			_o_throw(ERR_INVALID_INDEX, ParamIndexToString(IS_INVOKE_SET ? 1 : 0, _f_number_buf), ErrorPrototype::Index);
+		}
 		auto &item = mItem[index];
 		if (IS_INVOKE_SET)
 		{
@@ -1959,7 +2095,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 				return;
 			}
 			auto result = Object::Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType{this}, nullptr, 0);
-			if (result != INVOKE_NOT_HANDLED)
+			if (result != INVOKE_NOT_HANDLED && (aResultToken.symbol != SYM_STRING || aResultToken.marker != g_DefaultObjectValue))
 				_o_return_retval;
 			_o_throw(ERR_ITEM_UNSET, ParamIndexToString(0, _f_number_buf), ErrorPrototype::UnsetItem);
 		}
@@ -1998,6 +2134,8 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 			index = mLength;
 		if (!InsertAt(index, aParam, aParamCount))
 			_o_throw_oom;
+		if (aID == M_Push)
+			_o_return(mLength);
 		_o_return_empty;
 	}
 
@@ -2191,7 +2329,16 @@ ResultType Map::GetEnumItem(UINT &aIndex, Var *aKey, Var *aVal, int aVarCount)
 		auto &item = mItem[aIndex];
 		if (aKey)
 		{
-			if (aIndex < mKeyOffsetObject) // mKeyOffsetInt < mKeyOffsetObject
+			if (IsUnsorted())
+			{
+				if (mKeyTypes[aIndex] == SYM_STRING)
+					aKey->Assign(item.key.s);
+				else if (mKeyTypes[aIndex] == SYM_OBJECT)
+					aKey->Assign(item.key.p);
+				else
+					aKey->Assign(item.key.i);
+			}
+			else if (aIndex < mKeyOffsetObject) // mKeyOffsetInt < mKeyOffsetObject
 				aKey->Assign(item.key.i);
 			else if (aIndex < mKeyOffsetString) // mKeyOffsetObject < mKeyOffsetString
 				aKey->Assign(item.key.p);
@@ -2268,6 +2415,15 @@ Object::FieldType *Object::FindField(name_t name, index_t &insert_pos)
 	int first_char = *name;
 	if (first_char <= 'Z' && first_char >= 'A')
 		first_char += 32;
+	if (IsUnsorted())
+	{
+		for (insert_pos = 0; insert_pos < right; insert_pos++) {
+			FieldType &field = mFields[insert_pos];
+			if (!(first_char - field.key_c) && !_tcsicmp(name, field.name))
+				return &field;
+		}
+		return nullptr;
+	}
 	while (left < right)
 	{
 		mid = left + ((right - left) >> 1);
@@ -2295,9 +2451,26 @@ Object::FieldType *Object::FindField(name_t name, index_t &insert_pos)
 	return nullptr;
 }
 
-bool Object::HasProp(name_t name)
+char Object::HasProp(name_t name)
 {
-	return FindField(name) || mBase && mBase->HasProp(name);
+	if (auto field = FindField(name)) {
+		if (field->symbol == SYM_DYNAMIC) {
+			auto& prop = field->prop;
+			char kind = 0;
+			if (prop->Method())
+				kind |= 8;
+			if (prop->MaxParams > 0) {
+				if (prop->Getter())
+					kind |= 2;
+				if (prop->Setter())
+					kind |= 4;
+			}
+			else kind |= 1;
+			return kind;
+		}
+		return 1;
+	}
+	return mBase ? mBase->HasProp(name) : 0;
 }
 
 IObject *Object::GetMethod(name_t name)
@@ -2366,7 +2539,28 @@ Map::Pair *Map::FindItem(SymbolType key_type, Key key, index_t &insert_pos)
 // left and right must indicate the appropriate section of mItem to search, based on key type.
 {
 	index_t left, right;
-
+	if (IsUnsorted()) {
+		if (key_type == SYM_STRING) {
+			bool caseless = mFlags & MapCaseless;
+			bool use_locale = mFlags & MapUseLocale;
+			LPTSTR val = key.s;
+			int first_char = caseless ? 0 : *val;
+			for (insert_pos = 0; insert_pos < mCount; insert_pos++) {
+				auto& item = mItem[insert_pos];
+				if (mKeyTypes[insert_pos] == SYM_STRING && !(first_char - item.key_c) && !(!caseless ? _tcscmp(val, item.key.s) : use_locale ? lstrcmpi(val, item.key.s) : _tcsicmp(val, item.key.s)))
+					return &item;
+			}
+		}
+		else {
+			IntKeyType val = key_type == SYM_OBJECT ? (IntKeyType)(INT_PTR)key.p : key.i;
+			for (insert_pos = 0; insert_pos < mCount; insert_pos++) {
+				auto& item = mItem[insert_pos];
+				if (mKeyTypes[insert_pos] == key_type && val == item.key.i)
+					return &item;
+			}
+		}
+		return nullptr;
+	}
 	switch (key_type)
 	{
 	case SYM_STRING:
@@ -2441,7 +2635,13 @@ bool Object::SetInternalCapacity(index_t new_capacity)
 bool Map::SetInternalCapacity(index_t new_capacity)
 // Caller *must* ensure new_capacity >= 1 && new_capacity >= mCount.
 {
-	Pair *new_fields = (Pair *)realloc(mItem, new_capacity * sizeof(Pair));
+	if (IsUnsorted()) {
+		char* new_types = (char*)realloc(mKeyTypes, new_capacity * sizeof(char));
+		if (!new_types)
+			return false;
+		mKeyTypes = new_types;
+	}
+	Pair* new_fields = (Pair*)realloc(mItem, new_capacity * sizeof(Pair));
 	if (!new_fields)
 		return false;
 	mItem = new_fields;
@@ -2483,8 +2683,17 @@ Map::Pair *Map::Insert(SymbolType key_type, Key key, index_t at)
 		memmove(&item + 1, &item, (mCount - at) * sizeof(Pair));
 	++mCount; // Only after memmove above.
 
+	if (IsUnsorted()) {
+		if (at + 1 < mCount)
+			memmove(mKeyTypes + at + 1, mKeyTypes + at, mCount - at - 1);
+		mKeyTypes[at] = key_type;
+		if (key_type == SYM_STRING)
+			item.key_c = (mFlags & MapCaseless) ? 0 : *key.s;
+		else if (key_type == SYM_OBJECT)
+			key.p->AddRef();
+	}
 	// Update key-type offsets based on where and what was inserted; also update this key's ref count:
-	if (key_type == SYM_STRING)
+	else if (key_type == SYM_STRING)
 	{
 		item.key_c = (mFlags & MapCaseless) ? 0 : *key.s;
 	}
@@ -2944,7 +3153,59 @@ ObjectMember Object::sOSErrorMembers[]
 	Object_Member(__New, Error__New, M_OSError__New, IT_CALL, 0, 3)
 };
 
+ObjectMember Struct::sMembers[] =
+{
+	Object_Method(__Enum, 0, 1),
+	Object_Method(Clone, 0, 0),
+	Object_Method(CountOf, 0, 1),
+	Object_Method(Encoding, 0, 1),
+	Object_Method(GetAddress, 0, 1),
+	Object_Method(GetCapacity, 0, 1),
+	Object_Method(GetPointer, 0, 1),
+	Object_Method(IsPointer, 0, 1),
+	Object_Method(Offset, 1, 1),
+	Object_Method(SetCapacity, 1, 2),
+	Object_Method(Size, 0, 1)
+};
 
+ObjectMember DynaToken::sMembers[] =
+{
+	Object_Property_get(MinParams),
+	Object_Property_get(MaxParams),
+	Object_Property_get_set(Param, 1, 1)
+};
+
+ObjectMember JSON::sMembers[] =
+{
+	Object_Method(Parse, 1, 2),
+	Object_Method(Stringify, 1, 2),
+	Object_Property_get(True),
+	Object_Property_get(False),
+	Object_Property_get(Null)
+};
+
+ObjectMember Promise::sMembers[] =
+{
+	Object_Method(Then, 1, 1),
+	Object_Method(Catch, 1, 1)
+};
+
+#undef GetObject
+ObjectMember Worker::sMembers[] =
+{
+	Object_Method(__New, 1, 3),
+	Object_Property_get_set(__Item, 1, 1),
+	Object_Method(AddScript, 1, 2),
+	Object_Method(AsyncCall, 1, MAXP_VARIADIC),
+	Object_Method(Exec, 1, 2),
+	Object_Method(ExitApp, 0, 0),
+	Object_Method(GetObject, 1, 2),
+	Object_Method(Pause, 1, 1),
+	Object_Property_get(Ready),
+	Object_Method(Reload, 0, 0),
+	Object_Property_get(ThreadID),
+	Object_Method(Wait, 0, 1)
+};
 
 struct ClassDef
 {
@@ -2983,16 +3244,18 @@ Object *Object::CreateRootPrototypes()
 	// only handles Objects, and these must handle primitive values.
 	static const LPTSTR sFuncs[] = { _T("GetMethod"), _T("HasBase"), _T("HasMethod"), _T("HasProp") };
 	for (int i = 0; i < _countof(sFuncs); ++i)
-		sAnyPrototype->DefineMethod(sFuncs[i], g_script.FindGlobalFunc(sFuncs[i]));
+		sAnyPrototype->DefineMethod(sFuncs[i], g_script->FindGlobalFunc(sFuncs[i]));
 	auto prop = sAnyPrototype->DefineProperty(_T("Base"));
 	prop->MinParams = 0;
 	prop->MaxParams = 0;
-	prop->SetGetter(g_script.FindGlobalFunc(_T("ObjGetBase")));
-	prop->SetSetter(g_script.FindGlobalFunc(_T("ObjSetBase")));
-	
-	// Define __Init so that Script::DefineClassInit can add an unconditional super.__Init().
-	static auto __Init = new BuiltInFunc { _T(""), Any___Init, 1, 1 };
+	prop->SetGetter(g_script->FindGlobalFunc(_T("ObjGetBase")));
+	prop->SetSetter(g_script->FindGlobalFunc(_T("ObjSetBase")));
+
+	thread_local static BuiltInFunc* __Init;
+	__Init = new BuiltInFunc{ _T(""), Any___Init, 1, 1 };
+	g_sIsSetFunc = new BuiltInFunc{ _T("IsSet"), BIF_IsSet, 1, 1 };
 	sAnyPrototype->DefineMethod(_T("__Init"), __Init);
+	__Init->Release();
 
 	DefineMembers(sPrototype, _T("Object"), sMembers, _countof(sMembers));
 	DefineMembers(Func::sPrototype, _T("Func"), Func::sMembers, _countof(Func::sMembers));
@@ -3003,6 +3266,9 @@ Object *Object::CreateRootPrototypes()
 	sClassPrototype = Object::CreatePrototype(_T("Class"), Object::sPrototype);
 	auto anyClass = CreateClass(_T("Any"), sClassPrototype, sAnyPrototype, nullptr);
 	Object::sClass = CreateClass(_T("Object"), anyClass, Object::sPrototype, NewObject<Object>);
+	// HotKeyIt: need addref since these are not referenced in script and we release prototype after CreateClass(aPrototype)
+	sAnyPrototype->AddRef();
+	sPrototype->AddRef();
 
 	ObjectCtor no_ctor = nullptr;
 	ObjectMember *no_members = nullptr;
@@ -3049,8 +3315,22 @@ Object *Object::CreateRootPrototypes()
 			{_T("MenuBar"), &UserMenu::sBarPrototype, NewObject<UserMenu::Bar>}
 		}},
 		{_T("RegExMatchInfo"), &RegExMatchObject::sPrototype, no_ctor
-			, RegExMatchObject::sMembers, _countof(RegExMatchObject::sMembers)}
+			, RegExMatchObject::sMembers, _countof(RegExMatchObject::sMembers)},
+		{_T("Worker"), &Worker::sPrototype, NewObject<Worker>
+		, Worker::sMembers, _countof(Worker::sMembers) }
 	});
+	Promise::sPrototype = Object::CreatePrototype(_T("Promise"), Object::sPrototype, Promise::sMembers, _countof(Promise::sMembers));
+	Struct::sPrototype = Object::CreatePrototype(_T("Struct"), Object::sPrototype, Struct::sMembers, _countof(Struct::sMembers));
+#ifdef ENABLE_DLLCALL
+	DynaToken::sPrototype = Object::CreatePrototype(_T("DynaCall"), Object::sPrototype, DynaToken::sMembers, _countof(DynaToken::sMembers));
+#endif
+	if (auto var = g_script->FindOrAddVar(_T("JSON"), 4, VAR_DECLARE_GLOBAL)) {
+		auto obj = new Object();
+		auto proto = Object::CreatePrototype(_T("JSON"), Object::sPrototype, JSON::sMembers, _countof(JSON::sMembers));
+		obj->SetBase(proto);
+		var->Assign(obj), obj->Release(), proto->Release();
+		var->MakeReadOnly();
+	}
 
 	// Parameter counts are specified for static Call in the following classes
 	// but not those using NewObject<> because the latter passes parameters on
@@ -3074,6 +3354,10 @@ Object *Object::CreateRootPrototypes()
 		{_T("VarRef"), &sVarRefPrototype}
 	});
 
+	JSON::_true = new ComObject(VARIANT_TRUE, VT_BOOL);
+	JSON::_false = new ComObject(VARIANT_FALSE, VT_BOOL);
+	JSON::_null = new ComObject(0, VT_NULL);
+
 	GuiControlType::DefineControlClasses();
 	DefineComPrototypeMembers();
 	DefineFileClass();
@@ -3085,49 +3369,57 @@ Object *Object::CreateRootPrototypes()
 	return sAnyPrototype;
 }
 
-Object *Object::sAnyPrototype = CreateRootPrototypes();
-Object *Func::sPrototype;
-Object *Object::sPrototype;
+thread_local Object *Object::sAnyPrototype; // = CreateRootPrototypes();
+thread_local Object *Func::sPrototype;
+thread_local Object *Object::sPrototype;
 
-Object *Object::sClassPrototype;
-Object *Array::sPrototype;
-Object *Map::sPrototype;
+thread_local Object *Object::sClassPrototype;
+thread_local Object *Array::sPrototype;
+thread_local Object *Map::sPrototype;
 
-Object *Object::sClass;
+thread_local Object *Object::sClass;
 
-Object *Closure::sPrototype;
-Object *BoundFunc::sPrototype;
-Object *EnumBase::sPrototype;
+thread_local Object *Closure::sPrototype;
+thread_local Object *BoundFunc::sPrototype;
+thread_local Object *EnumBase::sPrototype;
 
-Object *BufferObject::sPrototype;
-Object *ClipboardAll::sPrototype;
+thread_local Object *BufferObject::sPrototype;
+thread_local Object *ClipboardAll::sPrototype;
 
-Object *RegExMatchObject::sPrototype;
+thread_local Object *RegExMatchObject::sPrototype;
 
-Object *GuiType::sPrototype;
-Object *UserMenu::sPrototype;
-Object *UserMenu::sBarPrototype;
+thread_local Object *GuiType::sPrototype;
+thread_local Object *UserMenu::sPrototype;
+thread_local Object *UserMenu::sBarPrototype;
+
+thread_local Object* Struct::sPrototype;
+thread_local Object* Promise::sPrototype;
+thread_local Func* Promise::sCaller = nullptr;
+thread_local Object* Worker::sPrototype;
+#ifdef ENABLE_DLLCALL
+thread_local Object* DynaToken::sPrototype;
+#endif
 
 namespace ErrorPrototype
 {
-	Object *Error, *Memory, *Type, *Value, *OS, *ZeroDivision;
-	Object *Target, *Unset, *Member, *Property, *Method, *Index, *UnsetItem;
-	Object *Timeout;
+	thread_local Object *Error, *Memory, *Type, *Value, *OS, *ZeroDivision;
+	thread_local Object *Target, *Unset, *Member, *Property, *Method, *Index, *UnsetItem;
+	thread_local Object *Timeout;
 }
 
-Object *Object::sVarRefPrototype;
-Object *Object::sComObjectPrototype, *Object::sComValuePrototype, *Object::sComArrayPrototype, *Object::sComRefPrototype;
+thread_local Object *Object::sVarRefPrototype;
+thread_local Object *Object::sComObjectPrototype, *Object::sComValuePrototype, *Object::sComArrayPrototype, *Object::sComRefPrototype;
 
 
 //
 // Primitive values as objects
 //
 
-Object *Object::sPrimitivePrototype;
-Object *Object::sStringPrototype;
-Object *Object::sNumberPrototype;
-Object *Object::sIntegerPrototype;
-Object *Object::sFloatPrototype;
+thread_local Object *Object::sPrimitivePrototype;
+thread_local Object *Object::sStringPrototype;
+thread_local Object *Object::sNumberPrototype;
+thread_local Object *Object::sIntegerPrototype;
+thread_local Object *Object::sFloatPrototype;
 
 Object *Object::ValueBase(ExprTokenType &aValue)
 {
@@ -3148,7 +3440,7 @@ void Object::DefineClass(name_t aName, Object *aClass)
 
 	ExprTokenType values[] { aClass, aName }, *param[] { values, values + 1 };
 
-	auto info = SimpleHeap::Alloc<NestedClassInfo>();
+	auto info = g_SimpleHeap->Alloc<NestedClassInfo>();
 	info->class_object = aClass;
 	info->constructed = false;
 	aClass->AddRef();
@@ -3157,9 +3449,11 @@ void Object::DefineClass(name_t aName, Object *aClass)
 	prop->MinParams = 0;
 	prop->MaxParams = 0;
 	prop->SetGetter(get);
+	get->Release();
 
 	auto call = new BuiltInFunc { _T(""), Class_CallNestedClass, 1, 1, true, info };
 	prop->SetMethod(call);
+	call->Release();
 }
 
 

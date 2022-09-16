@@ -21,6 +21,11 @@ GNU General Public License for more details.
 #include "window.h" // for a lot of things
 #include "application.h" // for MsgSleep()
 #include "TextIO.h"
+#include "LiteZip.h"
+#include "MemoryModule.h"
+#include "process.h"
+#include "TlHelp32.h"
+#include "exports.h" // Naveen v8
 
 #define NA MAX_FUNCTION_PARAMS
 #define BIFn(name, minp, maxp, bif, ...) {_T(#name), bif, minp, maxp, FID_##name, __VA_ARGS__}
@@ -34,6 +39,7 @@ FuncEntry g_BIF[] =
 {
 	BIF1(Abs, 1, 1),
 	BIFn(ACos, 1, 1, BIF_ASinACos),
+	BIF1(Alias, 1, 2),
 	BIFn(ASin, 1, 1, BIF_ASinACos),
 	BIF1(ATan, 1, 1),
 #ifdef ENABLE_REGISTERCALLBACK
@@ -41,6 +47,7 @@ FuncEntry g_BIF[] =
 	BIF1(CallbackFree, 1, 1),
 #endif
 	BIF1(CaretGetPos, 0, 2, {1, 2}),
+	BIF1(Cast, 3, 3),
 	BIFn(Ceil, 1, 1, BIF_FloorCeil),
 	BIF1(Chr, 1, 1),
 	BIF1(Click, 0, 6),
@@ -50,6 +57,7 @@ FuncEntry g_BIF[] =
 #endif
 	BIF1(ComObjActive, 1, 1),
 	BIF1(ComObjConnect, 1, 2),
+	BIF1(ComObjDll, 2, 2),
 	BIF1(ComObjFlags, 1, 3),
 	BIFi(ComObjFromPtr, 1, 1, BIF_ComObj, 0),
 	BIF1(ComObjGet, 1, 1),
@@ -89,6 +97,7 @@ FuncEntry g_BIF[] =
 	BIFn(ControlShow, 1, 5, BIF_Control),
 	BIFn(ControlShowDropDown, 1, 5, BIF_Control),
 	BIF1(Cos, 1, 1),
+	BIF1(CryptAES, 2, 5),
 	BIF1(DateAdd, 3, 3),
 	BIF1(DateDiff, 3, 3),
 	BIFn(DetectHiddenText, 1, 1, BIF_SetBIV),
@@ -96,6 +105,7 @@ FuncEntry g_BIF[] =
 #ifdef ENABLE_DLLCALL
 	BIFn(DllCall, 1, NA, BIF_DllCall),
 #endif
+	BIFn(DynaCall, 1, NA, BIF_DynaCall),
 	BIFn(EditGetCurrentCol, 1, 5, BIF_ControlGet),
 	BIFn(EditGetCurrentLine, 1, 5, BIF_ControlGet),
 	BIFn(EditGetLine, 2, 6, BIF_ControlGet),
@@ -109,6 +119,7 @@ FuncEntry g_BIF[] =
 	BIF1(Format, 1, NA),
 	BIF1(FormatTime, 0, 2),
 	BIFn(GetMethod, 1, 3, BIF_GetMethod),
+	BIF1(Getvar, 1, 2),
 	BIF1(GuiCtrlFromHwnd, 1, 1),
 	BIF1(GuiFromHwnd, 1, 2),
 	BIF1(HasBase, 2, 2),
@@ -148,6 +159,14 @@ FuncEntry g_BIF[] =
 	BIFn(Log, 1, 1, BIF_SqrtLogLn),
 	BIFn(LTrim, 1, 2, BIF_Trim),
 	BIFn(Max, 1, NA, BIF_MinMax),
+	BIF1(MemoryCallEntryPoint, 1, 2),
+	BIF1(MemoryFindResource, 3, 4),
+	BIF1(MemoryFreeLibrary, 1, 1),
+	BIF1(MemoryGetProcAddress, 2, 2),
+	BIF1(MemoryLoadLibrary, 1, 5),
+	BIF1(MemoryLoadResource, 2, 2),
+	BIF1(MemoryLoadString, 2, 5),
+	BIF1(MemorySizeOfResource, 2, 2),
 	BIF1(MenuFromHandle, 1, 1),
 	BIF1(MenuSelect, 0, 11),
 	BIFn(Min, 1, NA, BIF_MinMax),
@@ -158,11 +177,13 @@ FuncEntry g_BIF[] =
 	BIF1(NumPut, 3, NA),
 	BIFn(ObjAddRef, 1, 1, BIF_ObjAddRefRelease),
 	BIF1(ObjBindMethod, 1, NA),
+	BIF1(ObjDump, 1, 2),
 	BIFn(ObjFromPtr, 1, 1, BIF_ObjPtr),
 	BIFn(ObjFromPtrAddRef, 1, 1, BIF_ObjPtr),
 	BIFn(ObjGetBase, 1, 1, BIF_Base),
 	BIFn(ObjGetCapacity, 1, 1, BIF_ObjXXX),
 	BIFn(ObjHasOwnProp, 2, 2, BIF_ObjXXX),
+	BIF1(ObjLoad, 1, 2),
 	BIFn(ObjOwnPropCount, 1, 1, BIF_ObjXXX),
 	BIFn(ObjOwnProps, 1, 1, BIF_ObjXXX),
 	BIFn(ObjPtr, 1, 1, BIF_ObjPtr),
@@ -173,7 +194,7 @@ FuncEntry g_BIF[] =
 	BIFn(OnClipboardChange, 1, 2, BIF_On),
 	BIFn(OnError, 1, 2, BIF_On),
 	BIFn(OnExit, 1, 2, BIF_On),
-	BIF1(OnMessage, 2, 3),
+	BIF1(OnMessage, 2, 4),
 	BIF1(Ord, 1, 1),
 	BIF1(PixelGetColor, 2, 3),
 	BIF1(PixelSearch, 7, 8, {1, 2}),
@@ -193,6 +214,7 @@ FuncEntry g_BIF[] =
 	BIFn(RegExReplace, 2, 6, BIF_RegEx, {4}),
 	BIFn(RegRead, 0, 3, BIF_Reg),
 	BIFn(RegWrite, 0, 4, BIF_Reg),
+	BIF1(ResourceLoadLibrary, 1, 1),
 	BIF1(Round, 1, 2),
 	BIFn(RTrim, 1, 2, BIF_Trim),
 	BIF1(Run, 1, 4, {4}),
@@ -203,6 +225,7 @@ FuncEntry g_BIF[] =
 	BIF1(SetTimer, 0, 3),
 	BIFn(SetTitleMatchMode, 1, 1, BIF_SetBIV),
 	BIF1(Sin, 1, 1),
+	BIF1(sizeof, 1, 2),
 	BIF1(Sort, 1, 3),
 	BIFn(SoundGetInterface, 1, 3, BIF_Sound),
 	BIFn(SoundGetMute, 0, 2, BIF_Sound),
@@ -223,13 +246,21 @@ FuncEntry g_BIF[] =
 	BIF1(StrReplace, 2, 6, {5}),
 	BIF1(StrSplit, 1, 4),
 	BIFn(StrTitle, 1, 1, BIF_StrCase),
+	BIF1(Struct, 1, 3),
 	BIFn(StrUpper, 1, 1, BIF_StrCase),
 	BIF1(SubStr, 2, 3),
+	BIF1(Swap, 2, 2,),
 	BIF1(Tan, 1, 1),
 	BIF1(ToolTip, 0, 4),
 	BIF1(TraySetIcon, 0, 3),
 	BIFn(Trim, 1, 2, BIF_Trim),
 	BIF1(Type, 1, 1),
+	BIF1(UArray, 0, NA),
+	BIF1(UMap, 0, NA),
+	BIF1(UnZip, 2, 6),
+	BIF1(UnZipBuffer, 2, 4),
+	BIF1(UnZipRawMemory, 1, 3),
+	BIF1(UObject, 0, NA),
 	BIF1(VarSetStrCapacity, 1, 2, {1}),
 	BIF1(VerCompare, 2, 2),
 	BIFn(WinActivate, 0, 4, BIF_WinActivate),
@@ -278,6 +309,16 @@ FuncEntry g_BIF[] =
 	BIFn(WinWaitActive, 0, 5, BIF_Wait),
 	BIFn(WinWaitClose, 0, 5, BIF_Wait),
 	BIFn(WinWaitNotActive, 0, 5, BIF_Wait),
+	BIF1(ZipAddBuffer, 3, 4),
+	BIF1(ZipAddFile, 2, 3),
+	BIF1(ZipAddFolder, 2, 2),
+	BIF1(ZipCloseBuffer, 1, 1),
+	BIF1(ZipCloseFile, 1, 1),
+	BIF1(ZipCreateBuffer, 1, 2),
+	BIF1(ZipCreateFile, 1, 2),
+	BIF1(ZipInfo, 1, 2),
+	BIF1(ZipOptions, 2, 2),
+	BIF1(ZipRawMemory, 1, 3)
 };
 #undef NA
 #undef BIFn
@@ -294,6 +335,7 @@ FuncEntry g_BIF[] =
 // name to reduce code size and speed up the comparisons.
 VarEntry g_BIV_A[] =
 {
+	A_(AhkDir),
 	A_(AhkPath),
 	A_(AhkVersion),
 	A_w(AllowMainWindow),
@@ -317,9 +359,12 @@ VarEntry g_BIV_A[] =
 	A_x(DesktopCommon, BIV_SpecialFolderPath),
 	A_w(DetectHiddenText),
 	A_w(DetectHiddenWindows),
+	A_(DllDir),
+	A_(DllPath),
 	A_(EndChar),
 	A_w(EventInfo),
 	A_w(FileEncoding),
+	A_(GlobalStruct),
 	A_wx(HotkeyInterval, BIV_Hotkey, BIV_Hotkey_Set),
 	A_wx(HotkeyModifierTimeout, BIV_Hotkey, BIV_Hotkey_Set),
 	A_x(Hour, BIV_DateTime),
@@ -333,6 +378,7 @@ VarEntry g_BIV_A[] =
 	A_(IsAdmin),
 	A_(IsCompiled),
 	A_(IsCritical),
+	A_(IsDll),
 	A_(IsPaused),
 	A_(IsSuspended),
 	A_wx(KeyDelay, BIV_xDelay, BIV_xDelay_Set),
@@ -364,13 +410,16 @@ VarEntry g_BIV_A[] =
 	A_(LoopRegName),
 	A_(LoopRegTimeModified),
 	A_(LoopRegType),
+	A_(MainThreadID),
 	A_wx(MaxHotkeysPerInterval, BIV_Hotkey, BIV_Hotkey_Set),
 	A_x(MDay, BIV_DateTime),
+	A_(MemoryModule),
 	A_w(MenuMaskKey),
 	A_x(Min, BIV_DateTime),
 	A_x(MM, BIV_DateTime),
 	A_x(MMM, BIV_MMM_DDD),
 	A_x(MMMM, BIV_MMM_DDD),
+	A_(ModuleHandle),
 	A_x(Mon, BIV_DateTime),
 	A_wx(MouseDelay, BIV_xDelay, BIV_xDelay_Set),
 	A_wx(MouseDelayPlay, BIV_xDelay, BIV_xDelay_Set),
@@ -393,6 +442,7 @@ VarEntry g_BIV_A[] =
 	A_(ScriptFullPath),
 	A_(ScriptHwnd),
 	A_w(ScriptName),
+	A_(ScriptStruct),
 	A_x(Sec, BIV_DateTime),
 	A_w(SendLevel),
 	A_w(SendMode),
@@ -406,6 +456,7 @@ VarEntry g_BIV_A[] =
 	A_(Temp), // Debatably should be A_TempDir, but brevity seemed more popular with users, perhaps for heavy uses of the temp folder.,
 	A_(ThisFunc),
 	A_(ThisHotkey),
+	A_(ThreadID),
 	A_(TickCount),
 	A_x(TimeIdle, BIV_TimeIdle),
 	A_x(TimeIdleKeyboard, BIV_TimeIdle),
@@ -424,7 +475,8 @@ VarEntry g_BIV_A[] =
 	A_x(YDay, BIV_DateTime),
 	A_x(Year, BIV_DateTime),
 	A_x(YWeek, BIV_DateTime),
-	A_x(YYYY, BIV_DateTime)
+	A_x(YYYY, BIV_DateTime),
+	A_w(ZipCompressionLevel)
 };
 #undef A_
 #undef A_x
@@ -458,6 +510,7 @@ Script::Script()
 	, mScriptName(NULL)
 	, mIsReadyToExecute(false), mAutoExecSectionIsRunning(false)
 	, mIsRestart(false), mErrorStdOut(false), mErrorStdOutCP(0)
+	, mFirstGroup(NULL), mIgnoreNextBlockBegin(false), mPendingParentLine(NULL), mPendingRelatedLine(NULL)
 #ifndef AUTOHOTKEYSC
 	, mValidateThenExit(false)
 	, mCmdLineInclude(NULL)
@@ -466,13 +519,15 @@ Script::Script()
 	, mCustomIcon(NULL), mCustomIconSmall(NULL) // Normally NULL unless there's a custom tray icon loaded dynamically.
 	, mCustomIconFile(NULL), mIconFrozen(false), mTrayIconTip(NULL) // Allocated on first use.
 	, mCustomIconNumber(0)
+	, mTrayMenu(NULL), mEncrypt(0), mExiting(false), mInitFuncs(NULL), mKind(ScriptKindFile)
 {
 	// v1.0.25: mLastScriptRest (removed in v2) and mLastPeekTime are now initialized
 	// right before the auto-exec section of the script is launched, which avoids an
 	// initial Sleep(10) in ExecUntil that would otherwise occur.
+	g_MainThreadID = GetCurrentThreadId();
 	ZeroMemory(&mNIC, sizeof(mNIC));  // Constructor initializes this, to be safe.
 	mNIC.hWnd = NULL;  // Set this as an indicator that it tray icon is not installed.
-	
+
 	// This is done here rather than in Init() because by then CreateRootPrototypes()
 	// definitely would have already caused functions to be added to the list.
 	mFuncs.Alloc(100); // Avoid multiple reallocations for simple scripts.
@@ -503,30 +558,124 @@ Script::Script()
 		if (_tcsicmp(g_BIV_A[i-1].name, g_BIV_A[i].name) >= 0)
 			ScriptError(_T("DEBUG: g_BIV_A out of order."), g_BIV_A[i].name);
 #endif
-	OleInitialize(NULL);
+	//if (g_FirstThreadID == g_MainThreadID)
+	//	OleInitialize(NULL);
+	//else
+		CoInitialize(NULL);
 }
-
 
 
 Script::~Script() // Destructor.
 {
+	mIsReadyToExecute = false;
 	// MSDN: "Before terminating, an application must call the UnhookWindowsHookEx function to free
 	// system resources associated with the hook."
-	AddRemoveHooks(0); // Remove all hooks.
-	if (mNIC.hWnd) // Tray icon is installed.
-		Shell_NotifyIcon(NIM_DELETE, &mNIC); // Remove it.
+	if (g_FirstThreadID == g_MainThreadID || (Hotkey::sHotkeyCount == 0 && Hotstring::sHotstringCount == 0))
+		AddRemoveHooks(0); // Remove all hooks
 
 	int i;
+
+	//reset count for OnMessage
+	if (g_MsgMonitor) {
+		if (g_MsgMonitor->Count() > 0)
+			g_MsgMonitor->RemoveAll();
+	}
+	if (mOnExit.Count())
+		mOnExit.RemoveAll();
+	if (mOnClipboardChange.Count())
+		mOnClipboardChange.RemoveAll();
+
+	// Disconnect Debugger
+	if (g_FirstThreadID == g_MainThreadID && !g_DebuggerHost.IsEmpty())
+	{
+		g_DebuggerHost.Empty();
+		g_Debugger->Disconnect();
+	}
+
+	Hotstring::AllDestruct();
+
+	if (mClassPropertyDef)
+		free(mClassPropertyDef), mClassPropertyDef = NULL;
+	if (mUnresolvedClasses) {
+		ResolveClasses();
+		mUnresolvedClasses->Release();
+		mUnresolvedClasses = NULL;
+	}
+	while (mClassObjectCount) {
+		--mClassObjectCount;
+		mClassObject[mClassObjectCount]->EndClassDefinition();
+		mClassObject[mClassObjectCount]->Release();
+	}
+	if (mInitFuncs)
+		mInitFuncs->Release(), mInitFuncs = NULL;
+
+	// L31: Release objects stored in variables, where possible.
+	g->ExcptMode |= EXCPTMODE_CATCH;
+	for (i = 0; i < mVars.mCount; i++)
+	{
+		Var& aVar = *mVars.mItem[i];
+		if (aVar.mType == VAR_VIRTUAL || aVar.mType == VAR_CONSTANT)
+			continue;
+		aVar.Free(VAR_ALWAYS_FREE, true);
+		if (g->ThrownToken)
+			g_script->FreeExceptionToken(g->ThrownToken);
+	}
+
+	for (i = 0; i < mVars.mCount; i++)
+	{
+		Var& aVar = *mVars.mItem[i];
+		if (aVar.mType == VAR_CONSTANT) {
+			aVar.Free(VAR_ALWAYS_FREE, true), aVar.mType = VAR_NORMAL;
+			if (g->ThrownToken)
+				g_script->FreeExceptionToken(g->ThrownToken);
+		}
+	}
+
+	// Release funcs
+	if (mHotFuncs.mItem) {
+		for (i = 0; i < mHotFuncs.mCount; i++)
+			mHotFuncs.mItem[i]->Release();
+		free(mHotFuncs.mItem);
+	}
+
+	for (i = 0; i < mFuncs.mCount; i++) {
+		if (auto cl = ((UserFunc*)(mFuncs.mItem[i]))->mClass)
+			cl->Release();
+		mFuncs.mItem[i]->Release();
+	}
+	free(mFuncs.mItem);
+
+	// Now all objects are freed and variables can be deleted
+	for (i = 0; i < mVars.mCount; i++)
+		delete mVars.mItem[i];
+
+	free(mVars.mItem);
+
+	mVars = {};
+	mFuncs = {};
+	mHotFuncs = {};
+
 	// It is safer/easier to destroy the GUI windows prior to the menus (especially the menu bars).
 	// This is because one GUI window might get destroyed and take with it a menu bar that is still
 	// in use by an existing GUI window.  GuiType::Destroy() adheres to this philosophy by detaching
 	// its menu bar prior to destroying its window.
-	GuiType* gui;
-	while (gui = g_firstGui) // Destroy any remaining GUI windows (due to e.g. circular references). Also: assignment.
-		gui->Destroy();
-	for (i = 0; i < GuiType::sFontCount; ++i) // Now that GUI windows are gone, delete all GUI fonts.
-		if (GuiType::sFont[i].hfont)
-			DeleteObject(GuiType::sFont[i].hfont);
+	if (g_firstGui)
+	{
+		GuiType* gui;
+		while (gui = g_firstGui) // Destroy any remaining GUI windows (due to e.g. circular references). Also: assignment.
+			gui->Destroy();
+		g_firstGui = g_lastGui = NULL;
+	}
+	if (GuiType::sFontCount)
+	{
+		for (i = 0; i < GuiType::sFontCount; ++i) // Now that GUI windows are gone, delete all GUI fonts.
+			if (GuiType::sFont[i].hfont)
+				DeleteObject(GuiType::sFont[i].hfont);
+		GuiType::sFontCount = 0;
+		free(GuiType::sFont);
+		GuiType::sFont = NULL;
+	}
+
 	// The above might attempt to delete an HFONT from GetStockObject(DEFAULT_GUI_FONT), etc.
 	// But that should be harmless:
 	// MSDN: "It is not necessary (but it is not harmful) to delete stock objects by calling DeleteObject."
@@ -542,9 +691,59 @@ Script::~Script() // Destructor.
 	// Since they're not associated with a window, we must free the resources for all popup menus.
 	// Update: Even if a menu is being used as a GUI window's menu bar, see note above for why menu
 	// destruction is done AFTER the GUI windows are destroyed:
-	for (UserMenu *m = mFirstMenu; m; m = m->mNextMenu)
+	for (UserMenu *n, *m = mFirstMenu; m;) // m = m->mNextMenu)
+	{
+		n = m->mNextMenu;
 		m->Dispose();
+		m->Release();
+		m = n;
+	}
+	mFirstMenu = mLastMenu = mTrayMenu = NULL;
+	
+	// Destroy Labels
+	for (Label *label = mFirstLabel, *nextLabel = NULL; label;)
+	{
+		nextLabel = label->mNextLabel;
+		delete label;
+		label = nextLabel;
+	}
+	// Destroy Groups
+	for (WinGroup *group = mFirstGroup, *nextGroup = NULL; group;)
+	{
+		nextGroup = group->mNextGroup;
+		delete group;
+		group = nextGroup;
+	}
+	
+	// Free DerefBackup before deleting functions since Object::Delete() uses Deref and access violation is caused. Not sure if memory leak is possible
+	if (Line::sDerefBufBackup && !IsBadStringPtr(Line::sDerefBufBackup, Line::sDerefBufSize))
+		free(Line::sDerefBufBackup);
+	Line::sDerefBufBackup = NULL;
 
+	mPriorHotkeyStartTime = 0;
+	free_compiled_regex();
+
+	// Unregister window class if it was registered in Script::CreateWindows
+	if (g_ClassRegistered)
+	{
+		UnregisterClass(g_WindowClassMain, g_hInstance);
+		g_ClassRegistered = 0;
+	}
+	while (g_FirstHotExpr && g_FirstHotExpr->ThreadID == g_MainThreadID)
+		g_FirstHotExpr = g_FirstHotExpr->NextExpr;
+	if (g_LastHotExpr && g_LastHotExpr->ThreadID == g_MainThreadID)
+		g_LastHotExpr = g_FirstHotExpr;
+	for (HotkeyCriterion *cp = g_FirstHotExpr;cp; cp = cp->NextExpr)
+	{
+		if (cp->NextExpr && cp->NextExpr->ThreadID == g_MainThreadID)
+			cp->NextExpr = cp->NextExpr->NextExpr;
+	}
+
+	if (g_hAccelTable)
+		DestroyAcceleratorTable(g_hAccelTable);
+
+	if (mNIC.hWnd) // Tray icon is installed.
+		Shell_NotifyIcon(NIM_DELETE, &mNIC); // Remove it.
 	// Since tooltip windows are unowned, they should be destroyed to avoid resource leak:
 	for (i = 0; i < MAX_TOOLTIPS; ++i)
 		if (g_hWndToolTip[i] && IsWindow(g_hWndToolTip[i]))
@@ -563,15 +762,214 @@ Script::~Script() // Destructor.
 		mciSendString(_T("status ") SOUNDPLAY_ALIAS _T(" mode"), buf, _countof(buf), NULL);
 		if (*buf) // "playing" or "stopped"
 			mciSendString(_T("close ") SOUNDPLAY_ALIAS, NULL, 0, NULL);
+		g_SoundWasPlayed = 0;
 	}
 
-	DeleteCriticalSection(&g_CriticalRegExCache); // g_CriticalRegExCache is used elsewhere for thread-safety.
-	OleUninitialize();
+	IAhkApi::Finalize();
+	g_script = NULL;
+	if (mLastStaticLine)
+		mFirstLine->mPrevLine = mLastStaticLine;
+	for (Line* line = mLastLine; line; line = line->mPrevLine) {
+		for (int i = 0; i < line->mArgc; ++i) {
+			ArgStruct& this_arg = line->mArg[i];
+			if (!this_arg.is_expression || !this_arg.postfix)
+				continue;
+			for (ExprTokenType* token = this_arg.postfix; token->symbol != SYM_INVALID; ++token) {
+				if (token->symbol == SYM_OBJECT)
+					token->object->Release();
+			}
+		}
+		line->FreeDerefBufIfLarge();
+		if (line->mBreakpoint)
+			delete line->mBreakpoint;
+		delete line;
+	}
+
+#define Free_Prototype(proto) proto->Release(), proto = nullptr
+
+	free(g_DispNameByIdMinus1);
+	free(g_DispIdSortByName);
+
+	// release all prototypes to clean up memory and get rid of memory leaks
+	Free_Prototype(JSON::_false);
+	Free_Prototype(JSON::_true);
+	Free_Prototype(JSON::_null);
+
+#ifdef ENABLE_DLLCALL
+	Free_Prototype(DynaToken::sPrototype);
+#endif
+	Free_Prototype(Promise::sPrototype);
+	Free_Prototype(Struct::sPrototype);
+	if (Promise::sCaller)
+		Free_Prototype(Promise::sCaller);
+
+	for (int i = _countof(GuiControlType::sPrototypes) - 1; i; i--) {
+		if (GuiControlType::sPrototypes[i])
+			Free_Prototype(GuiControlType::sPrototypes[i]);
+		if (GuiControlType::sClasses[i])
+			Free_Prototype(GuiControlType::sClasses[i]);
+	}
+	Free_Prototype(GuiControlType::sPrototypeList);
+	Free_Prototype(GuiControlType::sPrototype);
+
+	Free_Prototype(g_sIsSetFunc);
+	Object::FreesPrototype(Func::sPrototype);
+	Object::FreesPrototype(Object::sPrototype);
+	Object::FreesPrototype(Object::sAnyPrototype);
+	Free_Prototype(Object::sPrototype);
+	Free_Prototype(Object::sAnyPrototype);
+
+	Func::sPrototype = nullptr;
+	Object::sClassPrototype = nullptr;
+	Array::sPrototype = nullptr;
+	Map::sPrototype = nullptr;
+	Object::sClass = nullptr;
+	Closure::sPrototype = nullptr;
+	BoundFunc::sPrototype = nullptr;
+	EnumBase::sPrototype = nullptr;
+	BufferObject::sPrototype = nullptr;
+	ClipboardAll::sPrototype = nullptr;
+	RegExMatchObject::sPrototype = nullptr;
+	GuiType::sPrototype = nullptr;
+	UserMenu::sPrototype = nullptr;
+	UserMenu::sBarPrototype = nullptr;
+	Worker::sPrototype = nullptr;
+	InputObject::sPrototype = nullptr;
+
+	ErrorPrototype::Error = nullptr, ErrorPrototype::Memory = nullptr, ErrorPrototype::Type = nullptr;
+	ErrorPrototype::Value = nullptr, ErrorPrototype::OS = nullptr, ErrorPrototype::ZeroDivision = nullptr;
+	ErrorPrototype::Target = nullptr, ErrorPrototype::Member = nullptr, ErrorPrototype::Property = nullptr;
+	ErrorPrototype::Method = nullptr, ErrorPrototype::Index = nullptr, ErrorPrototype::Unset = nullptr;
+	ErrorPrototype::UnsetItem = nullptr, ErrorPrototype::Timeout = nullptr;
+
+	Object::sVarRefPrototype = nullptr;
+	Object::sComObjectPrototype = nullptr, Object::sComValuePrototype = nullptr;
+	Object::sComArrayPrototype = nullptr, Object::sComRefPrototype = nullptr;
+	Object::sPrimitivePrototype = nullptr;
+	Object::sStringPrototype = nullptr;
+	Object::sNumberPrototype = nullptr;
+	Object::sIntegerPrototype = nullptr;
+	Object::sFloatPrototype = nullptr;
+
+	if (mScriptName)
+		free(mScriptName);
+	mScriptName = NULL;
+	mFirstLabel = NULL;
+	mLastLabel = NULL;
+	mFirstLine = NULL;
+	mLastLine = NULL;
+	mCurrLine = NULL;
+	mCurrFileIndex = 0;
+	mCombinedLineNumber = 0;
+
+	mFirstGroup = NULL;
+	mLastGroup = NULL;
+
+	mFirstTimer = NULL;
+
+	g_nMessageBoxes = 0;
+	g_nFileDialogs = 0;
+	g_nFolderDialogs = 0;
+	g_NoTrayIcon = false;
+	g_MainTimerExists = false;
+	g_InputTimerExists = false;
+	g_DerefTimerExists = false;
+	g_SoundWasPlayed = false;
+	g_IsSuspended = false;  // Make this separate from g_AllowInterruption since that is frequently turned off & on.
+	g_DeferMessagesForUnderlyingPump = false;
+	g_nLayersNeedingTimer = 0;
+	g_nThreads = 0;
+	g_nPausedThreads = 0;
+	g_MaxThreadsTotal = MAX_THREADS_DEFAULT;
+	g_MaxHistoryKeys = 40;
+	g_MaxThreadsPerHotkey = 1;
+	g_MaxHotkeysPerInterval = 70; // Increased to 70 because 60 was still causing the warning dialog for repeating keys sometimes.  Increased from 50 to 60 for v1.0.31.02 since 50 would be triggered by keyboard auto-repeat when it is set to its fastest.
+	g_HotkeyThrottleInterval = 2000; // Milliseconds.
+	g_MaxThreadsBuffer = false;  // This feature usually does more harm than good, so it defaults to OFF.
+	g_InputLevel = 0;
+	g_FirstHotCriterion = NULL;
+	g_FirstHotExpr = NULL;
+	g_LastHotExpr = NULL;
+	g_LastHotCriterion = NULL;
+	g_HotExprTimeout = 1000; // Timeout for #if (expression) evaluation, in milliseconds.
+	g_HotExprLFW = NULL; // Last Found Window of last #if expression.
+	g_MenuIsVisible = MENU_TYPE_NONE;
+	g_HSPriority = 0;  // default priority is always 0
+	g_HSKeyDelay = 0;  // Fast sends are much nicer for auto-replace and auto-backspace.
+	g_HSSendMode = SM_INPUT; // v1.0.43: New default for more reliable hotstrings.
+	g_HSCaseSensitive = false;
+	g_HSConformToCase = true;
+	g_HSDoBackspace = true;
+	g_HSOmitEndChar = false;
+	g_HSSendRaw = false;
+	g_HSEndCharRequired = true;
+	g_HSDetectWhenInsideWord = false;
+	g_HSDoReset = false;
+	g_HSResetUponMouseClick = true;
+
+	g_ForceKeybdHook = false;
+	g_ForceNumLock = NEUTRAL;
+	g_ForceCapsLock = NEUTRAL;
+	g_ForceScrollLock = NEUTRAL;
+
+	g_BlockInputMode = TOGGLE_DEFAULT;
+	g_BlockInput = false;
+	g_BlockMouseMove = false;
+	g_KeyHistoryNext = 0;
+
+	g_HistoryTickNow = 0;
+	g_HistoryTickPrev = GetTickCount();  // So that the first logged key doesn't have a huge elapsed time.
+	g_HistoryHwndPrev = NULL;
+
+	g_DefaultScriptCodepage = CP_UTF8;
+	g_DestroyWindowCalled = false;
+	g_hWndEdit = NULL;
+	g_hFontEdit = NULL;
+	g_TabClassProc = NULL;
+	g_modifiersLR_logical = 0;
+	g_modifiersLR_logical_non_ignored = 0;
+	g_modifiersLR_physical = 0;
+#ifdef FUTURE_USE_MOUSE_BUTTONS_LOGICAL
+	g_mouse_buttons_logical = 0;
+#endif
+	g_BlockWinKeys = false;
+	g_HotkeyModifierTimeout = 50;  // Reduced from 100, which was a little too large for fast typists.
+	g_ClipboardTimeout = 1000; // v1.0.31
+	g_ForceLaunch = false;
+	g_WinActivateForce = false;
+	g_Warn_LocalSameAsGlobal = WARNMODE_OFF;
+	g_AllowOnlyOneInstance = SINGLE_INSTANCE_PROMPT;
+	g_AllowInterruption = TRUE;         //
+
+	_tcscpy(g_EndChars, _T("-()[]{}:;'\"/\\,.?!\n \t"));  // Hotstring default end chars, including a space.
+	free(Line::sSourceFile);
+	Line::sSourceFile = NULL;
+	Line::sSourceFileCount = 0;
+	Line::sMaxSourceFiles = 0;
+	Line::FreeDerefBufIfLarge();
+	Line::sDerefBuf = NULL;
+	Line::sDerefBufSize = 0;
+	Line::sLargeDerefBufs = 0;
+	if (g_FirstThreadID != g_MainThreadID)
+		Hotkey::ManifestAllHotkeysHotstringsHooks();
+
+	global_clear_state(*g);
+	g_WorkingDir.~CKuStringT();
+	g_WorkingDirOrig = NULL;
+
+	// PeekMessage is required to make sure that Ole/CoUninitialize does not hang
+	MSG msg;
+	PeekMessage(&msg, NULL, 0, 0, PM_REMOVE);
+
+	//if (g_FirstThreadID == g_MainThreadID)
+	//	OleUninitialize();
+	//else
+		CoUninitialize();
 }
 
 
 
-ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestart)
+ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestart, HINSTANCE hInstance, LPTSTR aTitle)
 // Returns OK or FAIL.
 // Caller has provided an empty string for aScriptFilename if this is a compiled script.
 // Otherwise, aScriptFilename can be NULL if caller hasn't determined the filename of the script yet.
@@ -590,10 +988,10 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 		// path awareness enabled.
 		if (buf_length == _countof(buf)) // It was truncated.
 			return FAIL; // Seems the safest option for this unlikely case.
-		mOurEXE = SimpleHeap::Alloc(buf, buf_length);
+		mOurEXE = g_SimpleHeap->Alloc(buf, buf_length);
 		LPTSTR last_backslash = _tcsrchr(buf, '\\');
 		if (last_backslash) // Probably always true due to the nature of GetModuleFileName().
-			mOurEXEDir = SimpleHeap::Alloc(buf, last_backslash - buf);
+			mOurEXEDir = g_SimpleHeap->Alloc(buf, last_backslash - buf);
 	}
 
 #ifdef AUTOHOTKEYSC
@@ -606,10 +1004,8 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 	aScriptFilename = buf;
 #else
 	TCHAR def_buf[513]; // Enough for max Documents path (256 chars, according to testing on 20H2), slash and max NTFS filename (255 chars).
-#ifdef _DEBUG
-	if (!aScriptFilename)
-		aScriptFilename = _T("Test\\Test.ahk");
-#endif
+	if (g_hResource)
+		mKind = Script::ScriptKindResource, g_AllowMainWindow = false;
 	if (!aScriptFilename) // v1.0.46.08: Change in policy: store the default script in the My Documents directory rather than in Program Files.  It's more correct and solves issues that occur due to Vista's file-protection scheme.
 	{
 		// Since no script-file was specified on the command line, use the default name.
@@ -625,7 +1021,7 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 			return FAIL;
 
 		aScriptFilename = buf; // Use the entire path, including the exe's directory.
-		if (GetFileAttributes(aScriptFilename) == 0xFFFFFFFF) // File doesn't exist, so fall back to new method.
+		if (!g_hResource && GetFileAttributes(aScriptFilename) == 0xFFFFFFFF) // File doesn't exist, so fall back to new method.
 		{
 			// The only known cause of failure for SHGetKnownFolderPath is having a path longer than
 			// 256 characters; i.e. by sabotaging the "...\User Shell Folders\Personal" registry value.
@@ -653,47 +1049,100 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 		}
 		//else since the file exists, everything is now set up right. (The file might be a directory, but that isn't checked due to rarity.)
 	}
-	if (*aScriptFilename == '*')
+	if (g_hResource) //It is a compiled exe
 	{
-		if (!aScriptFilename[1]) // Read script from stdin.
+		PROCESS_BASIC_INFORMATION pbi;
+		ULONG ReturnLength;
+
+		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+			FALSE, GetCurrentProcessId());
+		PFN_NT_QUERY_INFORMATION_PROCESS pfnNtQueryInformationProcess =
+			(PFN_NT_QUERY_INFORMATION_PROCESS)GetProcAddress(
+			GetModuleHandle(_T("ntdll.dll")), "NtQueryInformationProcess");
+		NTSTATUS status = pfnNtQueryInformationProcess(
+			hProcess, ProcessBasicInformation,
+			(PVOID)&pbi, sizeof(pbi), &ReturnLength);
+		if (pbi.PebBaseAddress->ProcessParameters->CommandLine.Length) // && ReadProcessMemory(hProcess, &pbi.PebBaseAddress->ProcessParameters->CommandLine.Buffer,
+			//&commandLineContents, CommanLineLength, NULL))
 		{
-			mKind = ScriptKindStdIn;
-			buf[0] = '*';
-			buf[1] = '\0';
-			// Seems best to disable #SingleInstance for stdin scripts.
-			g_AllowOnlyOneInstance = SINGLE_INSTANCE_OFF;
+			int dllargc = 0;
+			TCHAR *param;
+			LPWSTR *dllargv = CommandLineToArgvW(pbi.PebBaseAddress->ProcessParameters->CommandLine.Buffer, &dllargc);
+			if (dllargc > 1 && pbi.PebBaseAddress->ProcessParameters->CommandLine.Length) // Only process if parameters were given
+			{
+				for (int i = 1; i < dllargc; ++i) // Start at 1 because 0 contains the program name.
+				{
+					param = dllargv[i]; // For performance and convenience.
+					if (!_tcsncmp(param, _T("/"), 1))
+						continue;
+					else // since this is not a  switch, the end of the [Switches] section has been reached (by design).
+					{
+						if (GetFileAttributes(param) == 0xFFFFFFFF)
+						{
+							if (!GetModuleFileName(hInstance, buf, _countof(buf))) //Get dll path
+								GetModuleFileName(NULL, buf, _countof(buf)); //due to MemoryLoadLibrary dll path might be empty
+						}
+						else
+						{
+							if (!GetFullPathName(param, _countof(buf), buf, NULL)) // This is also relied upon by mIncludeLibraryFunctionsThenExit.  Succeeds even on nonexistent files.
+							{
+								LocalFree(dllargv);
+								return FAIL;
+							}
+						}
+						break;  // No more switches allowed after this point.
+					}
+				}
+			}
+			LocalFree(dllargv);
 		}
-		else
-		{
-			mKind = ScriptKindResource;
-			g_AllowMainWindow = false;
-		}
+		CloseHandle(hProcess);
 	}
 	else
 	{
-		mKind = ScriptKindFile;
-		if (aScriptFilename != buf)
+		if (*aScriptFilename == '*')
 		{
-			// In case the script is a relative filespec (relative to current working dir):
-			buf_length = GetFullPathName(aScriptFilename, _countof(buf), buf, NULL); // Succeeds even on nonexistent files.
-			if (!buf_length || buf_length >= _countof(buf))
-				return FAIL; // Due to rarity, no error msg, just abort.
+			if (!aScriptFilename[1]) // Read script from stdin.
+			{
+				mKind = ScriptKindStdIn;
+				buf[0] = '*';
+				buf[1] = '\0';
+				// Seems best to disable #SingleInstance for stdin scripts.
+				g_AllowOnlyOneInstance = SINGLE_INSTANCE_OFF;
+			}
+			else
+			{
+				mKind = ScriptKindResource;
+				g_AllowMainWindow = false;
+				_stprintf(buf, _T("%s"), aScriptFilename);
+			}
+		}
+		else
+		{
+			mKind = ScriptKindFile;
+			if (aScriptFilename != buf)
+			{
+				// In case the script is a relative filespec (relative to current working dir):
+				buf_length = GetFullPathName(aScriptFilename, _countof(buf), buf, NULL); // Succeeds even on nonexistent files.
+				if (!buf_length || buf_length >= _countof(buf))
+					return FAIL; // Due to rarity, no error msg, just abort.
+			}
+		}
+#endif
+		if (mKind != ScriptKindStdIn)
+		{
+			// Using the correct case not only makes it look better in title bar & tray tool tip,
+			// it also helps with the detection of "this script already running" since otherwise
+			// it might not find the dupe if the same script name is launched with different
+			// lowercase/uppercase letters:
+			ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // This might change the length, e.g. due to expansion of 8.3 filename.
 		}
 	}
-#endif
-	if (mKind != ScriptKindStdIn)
-	{
-		// Using the correct case not only makes it look better in title bar & tray tool tip,
-		// it also helps with the detection of "this script already running" since otherwise
-		// it might not find the dupe if the same script name is launched with different
-		// lowercase/uppercase letters:
-		ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // This might change the length, e.g. due to expansion of 8.3 filename.
-	}
-	mFileSpec = SimpleHeap::Alloc(buf);  // The full spec is stored for convenience.
+	mFileSpec = g_SimpleHeap->Alloc(buf);  // The full spec is stored for convenience.
 	LPTSTR filename_marker;
 	if (filename_marker = _tcsrchr(buf, '\\'))
 	{
-		mFileDir = SimpleHeap::Alloc(buf, filename_marker - buf);
+		mFileDir = g_SimpleHeap->Alloc(buf, filename_marker - buf);
 		++filename_marker;
 	}
 	else
@@ -705,7 +1154,7 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 		mFileDir = g_WorkingDirOrig;
 		filename_marker = buf;
 	}
-	mFileName = SimpleHeap::Alloc(filename_marker);
+	mFileName = g_SimpleHeap->Alloc(filename_marker);
 #ifdef AUTOHOTKEYSC
 	// Omit AutoHotkey from the window title, like AutoIt3 does for its compiled scripts.
 	// One reason for this is to reduce backlash if evil-doers create viruses and such
@@ -714,7 +1163,7 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 	if (_tcscmp(aScriptFilename, SCRIPT_RESOURCE_SPEC))
 		sntprintfcat(buf, _countof(buf), _T(" - %s"), mKind != ScriptKindResource ? T_AHK_NAME_VERSION : aScriptFilename);
 #endif
-	mMainWindowTitle = SimpleHeap::Alloc(buf);
+	mMainWindowTitle = g_SimpleHeap->Alloc(buf);
 
 
 	return OK;
@@ -729,22 +1178,20 @@ ResultType Script::CreateWindows()
 	// Register a window class for the main window:
 	WNDCLASSEX wc = {0};
 	wc.cbSize = sizeof(wc);
-	wc.lpszClassName = WINDOW_CLASS_MAIN;
+	wc.lpszClassName = g_WindowClassMain;
 	wc.hInstance = g_hInstance;
 	wc.lpfnWndProc = MainWindowProc;
 	// The following are left at the default of NULL/0 set higher above:
 	//wc.style = 0;  // CS_HREDRAW | CS_VREDRAW
 	//wc.cbClsExtra = 0;
 	//wc.cbWndExtra = 0;
-	// Load the main icon in the two sizes needed throughout the program:
-	g_IconLarge = ExtractIconFromExecutable(NULL, -IDI_MAIN, 0, 0);
-	g_IconSmall = ExtractIconFromExecutable(NULL, -IDI_MAIN, GetSystemMetrics(SM_CXSMICON), 0);
 	wc.hIcon = g_IconLarge;
 	wc.hIconSm = g_IconSmall;
 	wc.hCursor = LoadCursor((HINSTANCE) NULL, IDC_ARROW);
 	wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);  // Needed for ProgressBar. Old: (HBRUSH)GetStockObject(WHITE_BRUSH);
 	wc.lpszMenuName = MAKEINTRESOURCE(IDR_MENU_MAIN); // NULL; // "MainMenu";
-	if (!RegisterClassEx(&wc))
+	g_ClassRegistered = RegisterClassEx(&wc);
+	if (g_FirstThreadID == g_MainThreadID && !g_ClassRegistered)
 	{
 		MsgBox(_T("RegClass")); // Short/generic msg since so rare.
 		return FAIL;
@@ -768,7 +1215,7 @@ ResultType Script::CreateWindows()
 
 	// Note: the title below must be constructed the same was as is done by our
 	// WinMain() (so that we can detect whether this script is already running)
-	// which is why it's standardized in g_script.mMainWindowTitle.
+	// which is why it's standardized in g_script->mMainWindowTitle.
 	// Create the main window.  Prevent momentary disruption of Start Menu, which
 	// some users understandably don't like, by omitting the taskbar button temporarily.
 	// This is done because testing shows that minimizing the window further below, even
@@ -778,7 +1225,7 @@ ResultType Script::CreateWindows()
 	// noticeable. WS_EX_TOOLWINDOW is used instead of WS_EX_NOACTIVATE because
 	// WS_EX_NOACTIVATE is available only on 2000/XP.
 	if (   !(g_hWnd = CreateWindowEx(do_minimize ? WS_EX_TOOLWINDOW : 0
-		, WINDOW_CLASS_MAIN
+		, g_WindowClassMain
 		, mMainWindowTitle
 		, WS_OVERLAPPEDWINDOW // Style.  Alt: WS_POPUP or maybe 0.
 		, CW_USEDEFAULT // xpos
@@ -793,6 +1240,9 @@ ResultType Script::CreateWindows()
 		MsgBox(_T("CreateWindow")); // Short msg since so rare.
 		return FAIL;
 	}
+
+	if (!(g_ClassRegistered))
+		SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (LONG_PTR)MainWindowProc);
 
 	// Now that all static initializers (such as for Object::sPrototype)
 	// are guaranteed to have been executed, construct the Tray menu.
@@ -817,6 +1267,10 @@ ResultType Script::CreateWindows()
 		MsgBox(_T("CreateWindow")); // Short msg since so rare.
 		return FAIL;
 	}
+
+	if (!(g_ClassRegistered))
+		SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (LONG_PTR)MainWindowProc);
+
 	// FONTS: The font used by default, at least on XP, is GetStockObject(SYSTEM_FONT).
 	// Use something more appealing (monospaced seems preferable):
 	HDC hdc = GetDC(g_hWndEdit);
@@ -877,7 +1331,7 @@ ResultType Script::CreateWindows()
 
 void Script::EnableClipboardListener(bool aEnable)
 {
-	static bool sEnabled = false;
+	thread_local static bool sEnabled = false;
 	if (aEnable == sEnabled) // Simplifies BIF_On.
 		return;
 	if (aEnable)
@@ -937,14 +1391,15 @@ void Script::UpdateTrayIcon(bool aForceUpdate)
 {
 	if (!mNIC.hWnd) // tray icon is not installed
 		return;
-	static bool icon_shows_paused = false;
-	static bool icon_shows_suspended = false;
+	thread_local static bool icon_shows_paused = false;
+	thread_local static bool icon_shows_suspended = false;
 	if (!aForceUpdate && (mIconFrozen || (g->IsPaused == icon_shows_paused && g_IsSuspended == icon_shows_suspended)))
 		return; // it's already in the right state
 	int icon;
-	if (g->IsPaused && g_IsSuspended)
+	bool isPaused = g->IsPaused == true;
+	if (isPaused && g_IsSuspended)
 		icon = IDI_PAUSE_SUSPEND;
-	else if (g->IsPaused)
+	else if (isPaused)
 		icon = IDI_PAUSE;
 	else if (g_IsSuspended)
 		icon = IDI_SUSPEND;
@@ -1047,7 +1502,7 @@ ResultType Script::SetTrayIcon(LPTSTR aIconFile, int aIconNumber, ToggleValueTyp
 		if ( !(new_icon = (HICON)LoadPicture(aIconFile, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), image_type, aIconNumber, false, NULL, &icon_module)) )
 			DestroyIcon(new_icon_small);
 	if ( !new_icon )
-		return g_script.RuntimeError(_T("Can't load icon."), aIconFile);
+		return g_script->RuntimeError(_T("Can't load icon."), aIconFile);
 
 	GuiType::DestroyIconsIfUnused(mCustomIcon, mCustomIconSmall); // This destroys it if non-NULL and it's not used by an GUI windows.
 
@@ -1096,6 +1551,22 @@ ResultType Script::AutoExecSection()
 	// would terminate the script:
 	++g_nThreads;
 
+	if (mInitFuncs) {
+		ExprTokenType val;
+		for (UINT i = 0; mInitFuncs->ItemToToken(i, val); i++) {
+			Var* var;
+			IObject* obj;
+			ResultToken result;
+			if ((var = FindGlobalVar(val.marker)) && (obj = var->ToObject())) {
+				result.InitResult(result.buf);
+				obj->Invoke(result, IT_CALL, nullptr, ExprTokenType{ obj }, nullptr, 0);
+				result.Free();
+			}
+		}
+		mInitFuncs->Release();
+		mInitFuncs = NULL;
+	}
+
 	// v1.0.48: Due to switching from SET_UNINTERRUPTIBLE_TIMER to IsInterruptible():
 	// In spite of the comments in IsInterruptible(), periodically have a timer call IsInterruptible() due to
 	// the following scenario:
@@ -1107,8 +1578,8 @@ ResultType Script::AutoExecSection()
 	//      IsInterrupt() is never called (except by RefreshInterruptibility()) for 50+ days.
 	//      (above is currently unlikely because MSG_FILTER_MAX calls IsInterruptible())
 	// In either case, RefreshInterruptibility() has prevented the uninterruptibility duration from being
-	// wrongly extended by up to 100% of g_script.mUninterruptibleTime.  This isn't a big deal if
-	// g_script.mUninterruptibleTime is low (like it almost always is); but if it's fairly large, say an hour,
+	// wrongly extended by up to 100% of g_script->mUninterruptibleTime.  This isn't a big deal if
+	// g_script->mUninterruptibleTime is low (like it almost always is); but if it's fairly large, say an hour,
 	// this can prevent an unwanted extension of up to 1 hour.
 	// Although any call frequency less than 49.7 days should work, currently calling once per 23 hours
 	// in case any older operating systems have a SetTimer() limit of less than 0x7FFFFFFF (and also to make
@@ -1143,7 +1614,7 @@ ResultType Script::AutoExecSection()
 
 	// Check if an exception has been thrown
 	if (g->ThrownToken)
-		g_script.FreeExceptionToken(g->ThrownToken);
+		g_script->FreeExceptionToken(g->ThrownToken);
 
 	// Now that the auto-execute thread has finished, ensure that the very first g-item is always
 	// interruptible.  This avoids having to treat the first g-item as special in various places.
@@ -1152,8 +1623,11 @@ ResultType Script::AutoExecSection()
 	// BEFORE DOING THE BELOW, "g" and "g_default" should be set up properly in case there's an OnExit
 	// function (even non-persistent scripts can have one).
 	// See Script::IsPersistent() for a list of conditions that cause the program to continue running.
-	if (!g_script.IsPersistent())
-		g_script.ExitApp(ExecUntil_result == FAIL ? EXIT_ERROR : EXIT_EXIT);
+	if (!g_script->IsPersistent())
+		if (g_FirstThreadID != g_MainThreadID)
+			return ExecUntil_result;
+		else
+			g_script->ExitApp(ExecUntil_result == FAIL ? EXIT_ERROR : EXIT_EXIT);
 
 	return OK;
 }
@@ -1167,7 +1641,7 @@ bool Script::IsPersistent()
 		// No attempt is made to determine if the hotkeys/hotstrings are enabled, since even if they
 		// are, it's impossible to detect whether #HotIf will allow them to ever execute.
 		|| g_persistent // Persistent() has been used somewhere in the script.
-		|| g_script.mTimerEnabledCount // At least one script timer is currently enabled.
+		|| g_script->mTimerEnabledCount // At least one script timer is currently enabled.
 		|| mOnClipboardChange.Count() // The script is monitoring clipboard changes.
 		|| g_input // At least one active InputHook.
 		|| IsWindowVisible(g_hWnd))
@@ -1209,14 +1683,14 @@ void Script::ExitIfNotPersistent(ExitReasons aExitReason)
 {
 	if (g_nThreads || IsPersistent())
 		return;
-	g_script.ExitApp(aExitReason);
+	g_script->ExitApp(aExitReason);
 }
 
 
 
 bif_impl void Edit()
 {
-	g_script.Edit();
+	g_script->Edit();
 }
 
 ResultType Script::Edit(LPCTSTR aFileName)
@@ -1241,7 +1715,7 @@ ResultType Script::Edit(LPCTSTR aFileName)
 	{
 		TCHAR class_name[32];
 		GetClassName(hwnd, class_name, _countof(class_name));
-		if (!_tcscmp(class_name, _T("#32770")) || !_tcsnicmp(class_name, _T("AutoHotkey"), 10)) // MessageBox(), InputBox(), FileSelect(), or GUI/script-owned window.
+		if (!_tcscmp(class_name, _T("#32770")) || !_tcsnicmp(class_name, g_WindowClassMain, 10)) // MessageBox(), InputBox(), FileSelect(), or GUI/script-owned window.
 			hwnd = NULL;  // Exclude it from consideration.
 	}
 	if (hwnd)  // File appears to already be open for editing, so use the current window.
@@ -1274,18 +1748,28 @@ bif_impl FResult Reload()
 	// and an error message was displayed or an exception was thrown, so we must return FR_FAIL.
 	// If Reload() returns success but the script doesn't terminate even after some delay,
 	// it can be assumed that the reload didn't work, and the script can take follow-on action.
-	return g_script.Reload(true) ? OK : FR_FAIL;
+	return g_script->Reload(true) ? OK : FR_FAIL;
 }
 
 ResultType Script::Reload(bool aDisplayErrors)
 {
+	for (auto g = &g_array[g_nThreads]; g >= g_array; g--)
+		*((char*)(&g->IsPaused)) = -1;
 	// The new instance we're about to start will tell our process to stop, or it will display
 	// a syntax error or some other error, in which case our process will still be running:
 #ifdef AUTOHOTKEYSC
 	// This is here in case a compiled script ever uses the Reload function.  Since the "Reload Script"
 	// tray menu item is not available for compiled scripts, it can't be called from there.
-	return g_script.ActionExec(mOurEXE, _T("/restart"), g_WorkingDirOrig, aDisplayErrors);
+	return g_script->ActionExec(mOurEXE, _T("/restart"), g_WorkingDirOrig, aDisplayErrors);
 #else
+	if (g_FirstThreadID != g_MainThreadID)
+	{
+		g_Reloading = !mExiting;
+		g_persistent = false;
+		EnumThreadWindows(g_MainThreadID, &ThreadWindowsCloseCallback, NULL);
+		PostThreadMessage(g_MainThreadID, WM_QUIT, 0, 0);
+		return EARLY_EXIT;
+	}
 	if (mKind == ScriptKindStdIn)
 		return OK;
 	TCHAR arg_string[UorA(MAX_WIDE_PATH, MAX_PATH * 2 + 16)]; // MAX_WIDEPATH coincides with the CreateProcess command line length limit (+1).
@@ -1293,9 +1777,12 @@ ResultType Script::Reload(bool aDisplayErrors)
 		sntprintf(arg_string, _countof(arg_string), _T("/include \"%s\" "), mCmdLineInclude);
 	else
 		*arg_string = '\0';
-	sntprintfcat(arg_string, _countof(arg_string), _T("/restart /script \"%s\""), Line::sSourceFile[0]);
-	return g_script.ActionExec(mOurEXE, arg_string, g_WorkingDirOrig, aDisplayErrors);
+	if (mKind == ScriptKindResource)
+		sntprintfcat(arg_string, _countof(arg_string), _T("/restart"));
+	else sntprintfcat(arg_string, _countof(arg_string), _T("/restart /script \"%s\""), Line::sSourceFile[0]);
+	return g_script->ActionExec(mOurEXE, arg_string, g_WorkingDirOrig, aDisplayErrors);
 #endif
+//#endif //_USRDLL
 }
 
 
@@ -1306,7 +1793,7 @@ bif_impl ResultType Exit(int *aExitCode)
 	// be allowed to complete normally.  This is especially important in v2 because a persistent
 	// script can become non-persistent by disabling a timer, closing a GUI, etc.  So if there
 	// are any threads below this one, only exit this thread:
-	//if (g_nThreads > 1 || g_script.IsPersistent())
+	//if (g_nThreads > 1 || g_script->IsPersistent())
 	// UPDATE: Handle it this way unconditionally so that the thread is properly exited prior to
 	// the script terminating; i.e. any FINALLY statements are executed and __delete is called for
 	// any objects in local variables or on the expression evaluation stack.
@@ -1316,14 +1803,14 @@ bif_impl ResultType Exit(int *aExitCode)
 	// conditions can change during stack-unwind due to __delete or FINALLY.  Instead, this is
 	// reset to 0 in ResumeUnderlyingThread().
 	if (g_nThreads <= 1)
-		g_script.mPendingExitCode = aExitCode ? *aExitCode : 0;
+		g_script->mPendingExitCode = aExitCode ? *aExitCode : 0;
 	return EARLY_EXIT;
 }
 
 bif_impl ResultType ExitApp(int *aExitCode)
 {
-	g_script.mPendingExitCode = aExitCode ? *aExitCode : 0;
-	return g_script.ExitApp(EXIT_EXIT);
+	g_script->mPendingExitCode = aExitCode ? *aExitCode : 0;
+	return g_script->ExitApp(EXIT_EXIT);
 }
 
 
@@ -1346,6 +1833,17 @@ ResultType Script::ExitApp(ExitReasons aExitReason)
 		// MUST NOT create a new thread when g_OnExitIsRunning because g_array allows only one
 		// extra thread for ExitApp() (which allows it to run even when MAX_THREADS_EMERGENCY has
 		// been reached).  See TOTAL_ADDITIONAL_THREADS.
+
+		mExiting = true;
+		if (g_FirstThreadID != g_MainThreadID)
+		{
+			if (g_array && g_OnExitIsRunning)
+				for (auto g = &g_array[g_nThreads]; g >= g_array; g--)
+					*((char*)(&g->IsPaused)) = -1;
+			g_OnExitIsRunning = g_persistent = false;
+			PostThreadMessage(g_MainThreadID, WM_QUIT, 0, 0);
+			return EARLY_EXIT;
+		}
 		TerminateApp(aExitReason, aExitCode);
 	}
 
@@ -1371,7 +1869,7 @@ ResultType Script::ExitApp(ExitReasons aExitReason)
 	// occurring in a timely fashion.  An option can be added via the FutureUse param to make it
 	// interruptible if there is ever a demand for that.
 	// UPDATE: g_AllowInterruption is now used instead of g->AllowThreadToBeInterrupted for two reasons:
-	// 1) It avoids the need to do "int mUninterruptedLineCountMax_prev = g_script.mUninterruptedLineCountMax;"
+	// 1) It avoids the need to do "int mUninterruptedLineCountMax_prev = g_script->mUninterruptedLineCountMax;"
 	//    (Disable this item so that ExecUntil() won't automatically make our new thread uninterruptible
 	//    after it has executed a certain number of lines).
 	// 2) Mostly obsolete: If the thread we're interrupting is uninterruptible, the uninterruptible timer
@@ -1389,12 +1887,19 @@ ResultType Script::ExitApp(ExitReasons aExitReason)
 
 	ExprTokenType param[] = { GetExitReasonString(aExitReason), (__int64)aExitCode };
 	ResultType result = mOnExit.Call(param, _countof(param), 1);
-	
+
 	DEBUGGER_STACK_POP()
 
 	if (result != CONDITION_TRUE // OnExit function did not return true to prevent exit.
 		|| EXITREASON_MUST_EXIT(aExitReason)) // Caller requested we exit unconditionally.
-		TerminateApp(aExitReason, aExitCode);
+		if (g_FirstThreadID != g_MainThreadID) {
+			mExiting = true;
+			g_OnExitIsRunning = g_persistent = false;
+			PostThreadMessage(g_MainThreadID, WM_QUIT, 0, 0);
+			return EARLY_EXIT;
+		}
+		else
+			TerminateApp(aExitReason, aExitCode);
 
 	// Otherwise:
 	g_AllowInterruption = g_AllowInterruption_prev;  // Restore original setting.
@@ -1407,6 +1912,87 @@ ResultType Script::ExitApp(ExitReasons aExitReason)
 	return EARLY_EXIT;
 }
 
+
+
+LineNumberType Script::LoadFromText(LPTSTR aScript, LPCTSTR aPathToShow)
+// HotKeyIt H1 LoadFromText() for text instead LoadFromFile()
+// Returns the number of non-comment lines that were loaded, or LOADING_FAILED on error.
+{
+	mIsReadyToExecute = mAutoExecSectionIsRunning = false;
+
+	// L4: Changed this next section to support lines added for #if (expression).
+	// Each #if (expression) is pre-parsed *before* the main script in order for
+	// function library auto-inclusions to be processed correctly.
+
+	// Load the main script file.  This will also load any files it includes with #Include.
+	if (LoadIncludedText(aScript, aPathToShow) != OK)
+		return LOADING_FAILED;
+
+#ifdef ENABLE_DLLCALL
+	// So that (the last occuring) "#DllLoad directory" doesn't affect calls to GetDllProcAddress for run time calls to DllCall
+	// or DllCall optimizations in Line::ExpressionToPostfix.
+	if (!SetDllDirectory(NULL))
+	{
+		ScriptError(ERR_INTERNAL_CALL);
+		return LOADING_FAILED;
+	}
+#endif
+	// Preparse all expressions and resolve all variable references.  The outer-most scope
+	// is preparsed first, then each function, working inward through all nested functions.
+	// All of a function's non-dynamic local variables are created before variable names
+	// are resolved in nested functions.
+	if (!PreparseExpressions(mFirstLine)
+		|| !PreparseExpressions(mHotFuncs)
+		|| !PreparseExpressions(mFuncs)
+		|| !PreparseVarRefs())
+		return LOADING_FAILED; // Error was already displayed by the above call.
+
+	// Do some processing of local variables to support closures.
+	// This must be done after PreparseExpressions() has resolved all variable references.
+	if (!PreprocessLocalVars(mFuncs)
+		|| !PreprocessLocalVars(mHotFuncs))
+		return LOADING_FAILED;
+
+	// free(mHotFuncs.mItem); // Not needed beyond this point.
+
+	// Resolve any unresolved base classes.
+	if (mUnresolvedClasses)
+	{
+		auto result = ResolveClasses();
+		mUnresolvedClasses->Release();
+		mUnresolvedClasses = NULL;
+		if (!result)
+			return LOADING_FAILED;
+	}
+
+	// Set the working directory to the script's directory.  This must be done after the above
+	// since the working dir may have been changed by the script's use of "#Include C:\Scripts".
+	// LoadIncludedFile() also changes it, but any value other than mFileDir would have been
+	// restored by "#Include" after LoadIncludedFile() returned.  Note that A_InitialWorkingDir
+	// contains the startup-determined working directory, so no flexibility is lost.
+	SetCurrentDirectory(mFileDir);
+
+	// Even if the last line of the script is already "exit", always add another
+	// one in case the script ends in a label.  That way, every label will have
+	// a non-NULL target, which simplifies other aspects of script execution.
+	// Making sure that all scripts end with an EXIT ensures that if the script
+	// file ends with ELSEless IF or an ELSE, that IF's or ELSE's mRelatedLine
+	// will be non-NULL, which further simplifies script execution.
+	if (!AddLine(ACT_EXIT))
+		return LOADING_FAILED;
+
+	if (!PreparseCommands(mFirstLine))
+		return LOADING_FAILED; // Error was already displayed by the above calls.
+
+#ifndef AUTOHOTKEYSC
+	if (mValidateThenExit)
+		return 0; // Tell our caller to do a normal exit.
+#endif
+
+	return TRUE; // Must be non-zero.
+	// OBSOLETE: mLineCount was always non-zero at this point since above did AddLine().
+	//return mLineCount; // The count of runnable lines that were loaded, which might be zero.
+}
 
 
 void ReleaseVarObjects(VarList &aVars)
@@ -1435,52 +2021,137 @@ void ReleaseStaticVarObjects(FuncList &aFuncs)
 }
 
 
+BOOL CALLBACK ThreadWindowsCloseCallback(HWND ahWnd, LPARAM aThreadID)
+{	// close all windows that are open for thread so we can exit the thread properly
+	TCHAR WinClass[MAX_CLASS_NAME];
+	GetClassName(ahWnd, WinClass, MAX_CLASS_NAME);
+	if (!_tcscmp(WinClass, g_WindowClassGUI) || !_tcscmp(WinClass, _T("#32770")))
+		PostMessage(ahWnd, WM_CLOSE, 0, 0);
+	return true;
+
+}
 
 void Script::TerminateApp(ExitReasons aExitReason, int aExitCode)
 // Note that g_script's destructor takes care of most other cleanup work, such as destroying
 // tray icons, menus, and unowned windows such as ToolTip.
 {
 	// L31: Release objects stored in variables, where possible.
-	if (aExitReason != EXIT_CRITICAL) // i.e. Avoid making matters worse if EXIT_CRITICAL.
+	if (g_FirstThreadID == g_MainThreadID && aExitReason != EXIT_CRITICAL) // i.e. Avoid making matters worse if CRITICAL_ERROR.
 	{
-		// Ensure the current thread is not paused and can't be interrupted
-		// in case one or more objects need to call a __delete meta-function.
-		g_AllowInterruption = FALSE;
-		g->IsPaused = false;
-
-		ReleaseVarObjects(mVars);
-		ReleaseStaticVarObjects(mFuncs);
+		mExiting = true;
+		for (int i = 1; i < MAX_AHK_THREADS; i++)
+		{
+			HWND hWnd = 0;
+			if ((hWnd = g_ahkThreads[i].Hwnd) && IsWindow(hWnd))
+			{
+				DWORD ThreadID = 0;
+				g_ahkThreads[i].Script->mExiting = true;
+				if (HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, TRUE, ThreadID = g_ahkThreads[i].ThreadID))
+				{	// need to close script windows first, otherwise QueueUserAPC will not run successfully
+					EnumThreadWindows(ThreadID, &ThreadWindowsCloseCallback, NULL);
+					QueueUserAPC(&ThreadExitApp, hThread, 0);
+					CloseHandle(hThread);
+					PostThreadMessage(ThreadID, WM_NULL, 0, 0); // bump GetMessage in the other thread
+					SleepEx(SLEEP_INTERVAL, true);
+				}
+			}
+		}
+		// Check if any thread is running and close its windows to force exit
+		BOOL ThreadIsRunning = true;
+		for (int i = 0; i < 100 && ThreadIsRunning; i++)
+		{
+			SleepEx(SLEEP_INTERVAL, true);
+			ThreadIsRunning = false;
+			for (int i = 1; i < MAX_AHK_THREADS; i++)
+			{
+				HWND hWnd;
+				if ((hWnd = g_ahkThreads[i].Hwnd) && IsWindow(hWnd))
+				{
+					EnumThreadWindows(g_ahkThreads[i].ThreadID, &ThreadWindowsCloseCallback, NULL);
+					ThreadIsRunning = true;
+					break;
+				}
+			}
+		}
 	}
+	
 #ifdef CONFIG_DEBUGGER // L34: Exit debugger *after* the above to allow debugging of any invoked __Delete handlers.
-	g_Debugger.Exit(aExitReason);
+	g_Debugger->Exit(aExitReason);
 #endif
 
-	// We call DestroyWindow() because MainWindowProc() has left that up to us.
-	// DestroyWindow() will cause MainWindowProc() to immediately receive and process the
-	// WM_DESTROY msg, which should in turn result in any child windows being destroyed
-	// and other cleanup being done:
-	if (IsWindow(g_hWnd)) // Adds peace of mind in case WM_DESTROY was already received in some unusual way.
+	EnterCriticalSection(&g_Critical);
+	for (int i = 0; i < MAX_AHK_THREADS; i++)
 	{
-		g_DestroyWindowCalled = true;
-		DestroyWindow(g_hWnd);
+		if (g_hWnd == g_ahkThreads[i].Hwnd)
+		{
+			g_ahkThreads[i] = {};
+			break;
+		}
 	}
-	Hotkey::AllDestructAndExit(aExitCode);
+	LeaveCriticalSection(&g_Critical);
+	g_DestroyWindowCalled = true;
+	if (IsWindow(g_hWnd))
+		DestroyWindow(g_hWnd);
+	g_hWnd = NULL;
+	delete g_script;
+	delete g_clip;
+	delete g_MsgMonitor;
+	delete g_Debugger;
+	// HotKeyIt: now all cleanup tasks are finished and we can clear g_SimpleHeap
+	delete g_SimpleHeap;
+	g_SimpleHeap = NULL, g_script = NULL, g_clip = NULL, g_MsgMonitor = NULL, g_Debugger = NULL;
+	free(g_array), g_array = NULL, g = &g_startup;
+	free(g_KeyHistory), g_KeyHistory = NULL;
+	
+	if (g_Reloading)
+		return;
+
+	g_ExitCode = aExitCode;
+	DeleteCriticalSection(&g_CriticalRegExCache);
+	DeleteCriticalSection(&g_CriticalTLSCallback);
+	if (g_FirstThreadID != g_MainThreadID)
+		return;
+
+	if (g_hWinAPI)
+	{
+		free(g_hWinAPI), g_hWinAPI = NULL;;
+		free(g_hWinAPIlowercase), g_hWinAPIlowercase = NULL;
+	}
+	if (g_IconLarge)
+		DestroyIcon(g_IconLarge), g_IconLarge = NULL;
+	if (g_IconSmall)
+		DestroyIcon(g_IconSmall), g_IconSmall = NULL;
+	DeleteCriticalSection(&g_Critical);
+
+#ifndef _USRDLL
+	// PostQuitMessage() might be needed to prevent hang-on-exit.  Once this is done, no message boxes or
+	// other dialogs can be displayed.  MSDN: "The exit value returned to the system must be the wParam
+	// parameter of the WM_QUIT message."  In our case, PostQuitMessage() should announce the same exit code
+	// that we will eventually call exit() with:
+	PostQuitMessage(aExitCode);
+
+	// I know this isn't the preferred way to exit the program.  However, due to unusual
+	// conditions such as the script having MsgBoxes or other dialogs displayed on the screen
+	// at the time the user exits (in which case our main event loop would be "buried" underneath
+	// the event loops of the dialogs themselves), this is the only reliable way I've found to exit
+	// so far.  The caller has already called PostQuitMessage(), which might not help but it doesn't hurt:
+	exit(aExitCode); // exit() is insignificant in code size.  It does more than ExitProcess(), but perhaps nothing more that this application actually requires.
+	// By contrast to _exit(), exit() flushes all file buffers before terminating the process. It also
+	// calls any functions registered via atexit or _onexit.
+#endif // !_USRDLL
 }
-
-
-
 UINT Script::LoadFromFile(LPCTSTR aFileSpec)
 // Returns the number of non-comment lines that were loaded, or LOADING_FAILED on error.
 {
 	mIsReadyToExecute = mAutoExecSectionIsRunning = false;
-	if (!aFileSpec)
+	if (!aFileSpec && !g_hResource)
 		aFileSpec = mFileSpec;
 
 #ifndef AUTOHOTKEYSC  // When not in stand-alone mode, read an external script file.
 	DWORD attr = mKind == ScriptKindFile ? GetFileAttributes(aFileSpec) : 0; // v1.1.17: Don't check if reading script from stdin.
-	if (attr == MAXDWORD) // File does not exist or lacking the authorization to get its attributes.
+	if (attr == MAXDWORD && !g_hResource) // File does not exist or lacking the authorization to get its attributes.
 	{
-		if (!g_script.mErrorStdOut)
+		if (!g_script->mErrorStdOut)
 		{
 			TCHAR buf[T_MAX_PATH + 24];
 			sntprintf(buf, _countof(buf), _T("%s\n%s"), ERR_SCRIPT_NOT_FOUND, aFileSpec);
@@ -1524,15 +2195,16 @@ UINT Script::LoadFromFile(LPCTSTR aFileSpec)
 		|| !PreprocessLocalVars(mFuncs))
 		return LOADING_FAILED;
 
-	free(mHotFuncs.mItem); // Not needed beyond this point.
+	// free(mHotFuncs.mItem); // Not needed beyond this point.
 
 	// Resolve any unresolved base classes.
 	if (mUnresolvedClasses)
 	{
-		if (!ResolveClasses())
-			return LOADING_FAILED;
+		auto result = ResolveClasses();
 		mUnresolvedClasses->Release();
 		mUnresolvedClasses = NULL;
+		if (!result)
+			return LOADING_FAILED;
 	}
 
 	// Set the working directory to the script's directory.  This must be done after the above
@@ -1577,7 +2249,7 @@ bool Script::IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf)
 	LPTSTR action_start = aBuf;
 	LPTSTR action_end = find_identifier_end(aBuf);
 	// Allow the "static" keyword for preventing a nested function from becoming a closure.
-	if (IS_SPACE_OR_TAB(*action_end) && !_tcsnicmp(aBuf, _T("Static"), 6))
+	if (IS_SPACE_OR_TAB(*action_end) && (!_tcsnicmp(aBuf, _T("Static"), 6) || !_tcsnicmp(aBuf, _T("macro"), 5)))
 		action_end = find_identifier_end(action_start = omit_leading_whitespace(action_end));
 	// Can't be a function definition or call without an open-parenthesis as first char found by the above.
 	// action_end points at the first character which is not usable in an identifier, such as a space, tab
@@ -1652,12 +2324,11 @@ bool ClassHasOpenBrace(LPTSTR aBuf, size_t aBufLength, LPTSTR aNextBuf, size_t &
 
 
 
-ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAllowDuplicateInclude, bool aIgnoreLoadFailure)
+ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAllowDuplicateInclude, bool aIgnoreLoadFailure, LPCTSTR aPathToShow)
 // Open the included file.  Returns CONDITION_TRUE if the file is to
 // be loaded, otherwise OK (duplicate/already loaded) or FAIL (error).
 // See "full_path" below for why this is separate to LoadIncludedFile().  
 {
-#ifndef AUTOHOTKEYSC
 	if (!aFileSpec || !*aFileSpec) return FAIL;
 
 	if (Line::sSourceFileCount >= Line::sMaxSourceFiles)
@@ -1692,129 +2363,188 @@ ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAl
 	TCHAR full_path[T_MAX_PATH];
 
 	int source_file_index = Line::sSourceFileCount;
-	if (!source_file_index && *aFileSpec != '*')
-		// Since this is the first source file, it must be the main script file.  Just point it to the
-		// location of the filespec already dynamically allocated:
-		Line::sSourceFile[source_file_index] = mFileSpec;
+	if (aPathToShow)
+	{
+		if (!source_file_index)
+			// Since this is the first source file, it must be the main script file.  Just point it to the
+			// location of the filespec already dynamically allocated:
+			Line::sSourceFile[source_file_index] = (LPTSTR)aPathToShow;
+		else
+		{
+			if (*aPathToShow)
+				Line::sSourceFile[source_file_index] = g_SimpleHeap->Alloc(aPathToShow);
+			else
+				Line::sSourceFile[source_file_index] = g_script->mOurEXE;
+		}
+		TextMem::Buffer textbuf((LPVOID)aFileSpec, (DWORD)(_tcslen(aFileSpec) * sizeof(TCHAR)), false);
+		ts = new TextMem;
+		ts->Open(textbuf, TextStream::READ | TextStream::EOL_CRLF | TextStream::EOL_ORPHAN_CR
+#ifdef UNICODE
+			, CP_UTF16
+#endif
+		);
+		++Line::sSourceFileCount;
+	}
 	else
 	{
-		// Get the full path in case aFileSpec has a relative path.  This is done so that duplicates
-		// can be reliably detected (we only want to avoid including a given file more than once):
-		LPTSTR filename_marker;
-		if (*aFileSpec == '*')
+		if (!source_file_index && *aFileSpec != '*')
+			// Since this is the first source file, it must be the main script file.  Just point it to the
+			// location of the filespec already dynamically allocated:
+			Line::sSourceFile[source_file_index] = mFileSpec;
+		else
 		{
-			tcslcpy(full_path, aFileSpec, _countof(full_path));
-			CharUpper(full_path); // Resource names must be upper-case.
+			// Get the full path in case aFileSpec has a relative path.  This is done so that duplicates
+			// can be reliably detected (we only want to avoid including a given file more than once):
+			LPTSTR filename_marker;
+			if (*aFileSpec == '*')
+			{
+				tcslcpy(full_path, aFileSpec, _countof(full_path));
+				CharUpper(full_path); // Resource names must be upper-case.
+				while (filename_marker = _tcschr(full_path, '/'))
+					*filename_marker = '\\';
+			}
+			else
+				GetFullPathName(aFileSpec, _countof(full_path), full_path, &filename_marker);
+			// Check if this file was already included.  If so, it's not an error because we want
+			// to support automatic "include once" behavior.  So just ignore repeats:
+			if (!aAllowDuplicateInclude)
+				for (int f = 0; f < source_file_index; ++f) // Here, source_file_index==Line::sSourceFileCount
+					if (!lstrcmpi(Line::sSourceFile[f], full_path)) // Case insensitive like the file system (testing shows that "Ä" == "ä" in the NTFS, which is hopefully how lstrcmpi works regardless of locale).
+						return OK;
+			// The path is copied into persistent memory further below, after the file has been opened,
+			// in case the opening fails and aIgnoreLoadFailure==true.  Initialize for the check below.
+			Line::sSourceFile[source_file_index] = NULL;
+		}
+
+		LPCTSTR filespec_to_open = aFileSpec;
+		UINT codepage = g_DefaultScriptCodepage;
+
+		TextMem::Buffer textbuf(nullptr, 0, false);
+		HINSTANCE hInstance = g_hInstance;
+		HRSRC hRes = source_file_index ? NULL : g_hResource;
+		if (!hRes && *full_path == '*' && full_path[1]) {
+			LPTSTR terminate_here = _tcsrchr(full_path, '\\'), lpName, lpType;
+			if (terminate_here)
+				*terminate_here = '\0', lpName = terminate_here + 1, lpType = full_path + 1;
+			else lpName = full_path + 1, lpType = RT_RCDATA;
+			if (!(hRes = FindResource(hInstance, aFileSpec + 1, RT_RCDATA)) && hInstance)
+				hRes = FindResource(hInstance = NULL, aFileSpec + 1, RT_RCDATA);
+			if (terminate_here)
+				*terminate_here = '\\';
+		}
+		if (hRes)
+		{
+			HGLOBAL hResData = LoadResource(hInstance, hRes);
+			LPVOID data, aDataBuf;
+			DWORD size, aSizeDeCompressed;
+			if (hResData && (textbuf.mBuffer = data = LockResource(hResData)))
+			{
+				textbuf.mLength = size = SizeofResource(hInstance, hRes);
+				if (*(unsigned int*)textbuf.mBuffer == 0x04034b50)
+				{
+#ifndef _USRDLL
+					if (g_hResource && !AHKModule())
+						return FAIL;
+#endif
+					aSizeDeCompressed = DecompressBuffer(textbuf.mBuffer, aDataBuf, textbuf.mLength, g_default_pwd);
+					if (aSizeDeCompressed)
+					{
+						textbuf.mBuffer = aDataBuf;
+						textbuf.mLength = aSizeDeCompressed;
+						textbuf.mOwned = true;
+						mEncrypt = 3;
+#ifndef _USRDLL
+						if (g_hResource && !AHKModule())
+							return FAIL;
+#endif
+						if (hRes == g_hResource) {
+							VirtualProtect(data, size, PAGE_EXECUTE_READWRITE, &aSizeDeCompressed);
+							g_memset(data, 0, size);
+						}
+					}
+					else
+						textbuf.mBuffer = NULL;
+				}
+				else
+					_stprintf(full_path + _tcslen(full_path), _T("?%p#%u.AHK"), data, size);
+			}
+			if (textbuf.mBuffer) {
+				filespec_to_open = textbuf;
+				codepage = CP_UTF8;
+				ts = new TextMem();
+			}
+			else
+				return ScriptError(_T("Could not extract script from EXE."), aFileSpec);
 		}
 		else
-			GetFullPathName(aFileSpec, _countof(full_path), full_path, &filename_marker);
-		// Check if this file was already included.  If so, it's not an error because we want
-		// to support automatic "include once" behavior.  So just ignore repeats:
-		if (!aAllowDuplicateInclude)
-			for (int f = 0; f < source_file_index; ++f) // Here, source_file_index==Line::sSourceFileCount
-				if (!lstrcmpi(Line::sSourceFile[f], full_path)) // Case insensitive like the file system (testing shows that "Ä" == "ä" in the NTFS, which is hopefully how lstrcmpi works regardless of locale).
-					return OK;
-		// The path is copied into persistent memory further below, after the file has been opened,
-		// in case the opening fails and aIgnoreLoadFailure==true.  Initialize for the check below.
-		Line::sSourceFile[source_file_index] = NULL;
-	}
+			ts = new TextFile();
 
-	LPCTSTR filespec_to_open = aFileSpec;
-	UINT codepage = g_DefaultScriptCodepage;
-
-	TextMem::Buffer textbuf(nullptr, 0, false);
-	HRSRC hRes;
-	if (*aFileSpec == '*' && aFileSpec[1] && (hRes = FindResource(NULL, aFileSpec + 1, RT_RCDATA)))
-	{
-		HGLOBAL hResData = LoadResource(NULL, hRes);
-		if (hResData && (textbuf.mBuffer = LockResource(hResData)))
+		if (!ts || !ts->Open(filespec_to_open, DEFAULT_READ_FLAGS, codepage))
 		{
-			textbuf.mLength = SizeofResource(NULL, hRes);
-			filespec_to_open = textbuf;
-			codepage = CP_UTF8;
-			ts = new TextMem();
+			if (aIgnoreLoadFailure)
+				return OK;
+			TCHAR msg_text[T_MAX_PATH + 64]; // T_MAX_PATH vs. MAX_PATH because the full length could be utilized with ErrorStdOut.
+			sntprintf(msg_text, _countof(msg_text), _T("%s file \"%s\" cannot be opened.")
+				, source_file_index ? _T("#Include") : _T("Script"), aFileSpec);
+			return ScriptError(msg_text);
 		}
-	}
-	else
-		ts = new TextFile();
 
-	if (!ts || !ts->Open(filespec_to_open, DEFAULT_READ_FLAGS, codepage))
-	{
-		if (aIgnoreLoadFailure)
-			return OK;
-		TCHAR msg_text[T_MAX_PATH + 64]; // T_MAX_PATH vs. MAX_PATH because the full length could be utilized with ErrorStdOut.
-		sntprintf(msg_text, _countof(msg_text), _T("%s file \"%s\" cannot be opened.")
-			, source_file_index ? _T("#Include") : _T("Script"), aFileSpec);
-		return ScriptError(msg_text);
-	}
-	
-	// This is done only after the file has been successfully opened in case aIgnoreLoadFailure==true:
-	if (!Line::sSourceFile[source_file_index])
-		Line::sSourceFile[source_file_index] = SimpleHeap::Alloc(full_path);
-	//else the first file was already taken care of by another means.
-	++Line::sSourceFileCount;
+		// This is done only after the file has been successfully opened in case aIgnoreLoadFailure==true:
+		if (!Line::sSourceFile[source_file_index])
+			Line::sSourceFile[source_file_index] = g_SimpleHeap->Alloc(full_path);
+		//else the first file was already taken care of by another means.
+		++Line::sSourceFileCount;
 
-	if (!source_file_index)
-	{
-		// Load any pre-script resource.
-		if (FindResource(NULL, SCRIPT_PRESOURCE_NAME, RT_RCDATA)
-			&& !LoadIncludedFile(SCRIPT_PRESOURCE_SPEC, false, false))
-			return FAIL;
-
-		// Load any file specified with the /include switch.
-		if (mCmdLineInclude
-			&& !LoadIncludedFile(mCmdLineInclude, false, false))
-			return FAIL;
-	}
-	
-	// Set the working directory so that any #Include directives are relative to the directory
-	// containing this file by default.  Call SetWorkingDir() vs. SetCurrentDirectory() so that it
-	// succeeds even for a root drive like C: that lacks a backslash (see SetWorkingDir() for details).
-	if (source_file_index)
-	{
-		LPTSTR terminate_here = _tcsrchr(full_path, '\\');
-		if (terminate_here > full_path)
+		if (!source_file_index)
 		{
-			*terminate_here = '\0'; // Temporarily terminate it for use with SetWorkingDir().
-			SetWorkingDir(full_path);
-			*terminate_here = '\\'; // Undo the termination.
+			// Load any pre-script resource.
+			if (FindResource(g_hInstance, SCRIPT_PRESOURCE_NAME, RT_RCDATA)
+				&& !LoadIncludedFile(SCRIPT_PRESOURCE_SPEC, false, false))
+				return FAIL;
+
+			// Load any file specified with the /include switch.
+			if (mCmdLineInclude
+				&& !LoadIncludedFile(mCmdLineInclude, false, false))
+				return FAIL;
 		}
-		//else: probably impossible? Just leave the working dir as-is, for simplicity.
-	}
-	else
-		SetWorkingDir(mFileDir);
 
-#else // Stand-alone mode (there are no include files in this mode since all of them were merged into the main script at the time of compiling).
-
-	TextMem::Buffer textbuf(NULL, 0, false);
-
-	HRSRC hRes;
-	HGLOBAL hResData;
-
-	hRes = FindResource(NULL, SCRIPT_RESOURCE_NAME, RT_RCDATA);
-	if ( !( hRes 
-			&& (textbuf.mLength = SizeofResource(NULL, hRes))
-			&& (hResData = LoadResource(NULL, hRes))
-			&& (textbuf.mBuffer = LockResource(hResData)) ) )
-	{
-		return ScriptError(_T("Could not extract script from EXE."), aFileSpec);
+		// Set the working directory so that any #Include directives are relative to the directory
+		// containing this file by default.  Call SetWorkingDir() vs. SetCurrentDirectory() so that it
+		// succeeds even for a root drive like C: that lacks a backslash (see SetWorkingDir() for details).
+		if (source_file_index && mKind != ScriptKindResource)
+		{
+			LPTSTR terminate_here = _tcsrchr(full_path, '\\');
+			if (terminate_here > full_path)
+			{
+				*terminate_here = '\0'; // Temporarily terminate it for use with SetWorkingDir().
+				SetWorkingDir(full_path);
+				*terminate_here = '\\'; // Undo the termination.
+			}
+			//else: probably impossible? Just leave the working dir as-is, for simplicity.
+		}
+		else
+			SetWorkingDir(mFileDir);
 	}
 
-	ts = new TextMem();
-	// NOTE: Ahk2Exe strips off the UTF-8 BOM.
-	ts->Open(textbuf, TextStream::READ | TextStream::EOL_CRLF | TextStream::EOL_ORPHAN_CR, CP_UTF8);
-
-	// Since this is a compiled script, there is only one script file.
-	// Just point it to the location of the filespec already dynamically allocated:
-	Line::sSourceFile[0] = mFileSpec;
-	++Line::sSourceFileCount;
-
-#endif
-	
 	// Since above did not continue, proceed with loading the file.
 	return CONDITION_TRUE;
 }
 
+
+#ifndef AUTOHOTKEYSC
+ResultType Script::LoadIncludedText(LPTSTR aScript, LPCTSTR aPathToShow)
+{
+	int source_file_index = Line::sSourceFileCount; // Set early in case of >PRESCRIPT<.
+	TextStream *ts = nullptr;
+
+	ResultType result = OpenIncludedFile(ts, aScript, true, false, aPathToShow);
+	if (result == CONDITION_TRUE)
+		result = LoadIncludedFile(ts, source_file_index);
+	if (ts)
+		delete ts;
+	return result;
+}
+#endif
 
 
 ResultType Script::LoadIncludedFile(LPCTSTR aFileSpec, bool aAllowDuplicateInclude, bool aIgnoreLoadFailure)
@@ -2702,7 +3432,98 @@ continue_main_loop: // This method is used in lieu of "continue" for performance
 	return OK;
 }
 
+/*
+adapted from https://dev.w3.org/XML/encoding.c
+Copyright © World Wide Web Consortium,
+(Massachusetts Institute of Technology, Institut National de Recherche
+en Informatique et en Automatique, Keio University).All Rights Reserved.
+*/
+inline size_t UTF8ToUTF16(unsigned char* outb, size_t outlen, const unsigned char* in, size_t inlen)
+{
+	unsigned short* out = (unsigned short*)outb;
+	const unsigned char* processed = in;
+	const unsigned char *const instart = in;
+	unsigned short* outstart = out;
+	unsigned short* outend;
+	const unsigned char* inend = in + inlen;
+	unsigned int c, d;
+	int trailing;
+	unsigned char *tmp;
+	unsigned short tmp1, tmp2;
+	int count = 0;
 
+	/* UTF16LE encoding has no BOM */
+	if (in == NULL) {
+		outlen = 0;
+		inlen = 0;
+		return(0);
+	}
+	outend = out + outlen;
+	while (in < inend) {
+		d = *in++;
+		if (d < 0x80)  { c = d; trailing = 0; }
+		else if (d < 0xC0) {
+			/* trailing byte in leading position */
+			outlen = (out - outstart) * 2;
+			inlen = processed - instart;
+			return(-2);
+		}
+		else if (d < 0xE0)  { c = d & 0x1F; trailing = 1; }
+		else if (d < 0xF0)  { c = d & 0x0F; trailing = 2; }
+		else if (d < 0xF8)  { c = d & 0x07; trailing = 3; }
+		else {
+			/* no chance for this in UTF-16 */
+			outlen = (out - outstart) * 2;
+			inlen = processed - instart;
+			return(-2);
+		}
+
+		if (inend - in < trailing) {
+			break;
+		}
+
+		for (; trailing; trailing--) {
+			if ((in >= inend) || (((d = *in++) & 0xC0) != 0x80))
+				break;
+			c <<= 6;
+			c |= d & 0x3F;
+		}
+
+		/* assertion: c is a single UTF-4 value */
+		if (c < 0x10000) {
+			if (out >= outend)
+				break;
+			else {
+				tmp = (unsigned char *)out;
+				*tmp = c;
+				*(tmp + 1) = c >> 8;
+				out++;
+				count++;
+			}
+		}
+		else if (c < 0x110000) {
+			if (out + 1 >= outend)
+				break;
+			c -= 0x10000;
+			tmp1 = 0xD800 | (c >> 10);
+			tmp = (unsigned char *)out;
+			*tmp = (unsigned char)tmp1;
+			*(tmp + 1) = tmp1 >> 8;
+			out++;
+
+			tmp2 = 0xDC00 | (c & 0x03FF);
+			tmp = (unsigned char *)out;
+			*tmp = (unsigned char)tmp2;
+			*(tmp + 1) = tmp2 >> 8;
+			out++;
+			count++;
+		}
+		else
+			break;
+		processed = in;
+	}
+	return count;
+}
 
 bool Script::EndsWithOperator(LPTSTR aBuf, LPTSTR aBuf_marker)
 // Returns true if aBuf_marker is the end of an operator, excluding ++ and --.
@@ -3367,7 +4188,37 @@ size_t Script::GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aInBlo
 			return -1;
 	}
 	aBuf[aBuf_length] = '\0';
-
+	if (aBuf_length && (mEncrypt & 2))
+	{
+		DWORD aDataSize, aSizeEncrypted;
+		if (CryptStringToBinary(aBuf, NULL, CRYPT_STRING_BASE64, NULL, &aSizeEncrypted, NULL, NULL)) {
+			BYTE* data = (BYTE*)malloc(aDataSize = aSizeEncrypted);
+			CryptStringToBinary(aBuf, NULL, CRYPT_STRING_BASE64, data, &aSizeEncrypted, NULL, NULL);
+			LPVOID aDataBuf = NULL;
+			if (*(unsigned int*)data == 0x04034b50)
+			{
+				if (aSizeEncrypted = DecompressBuffer(data, aDataBuf, aSizeEncrypted, g_default_pwd))
+				{
+					aBuf.EnsureCapacity(aSizeEncrypted);
+					aBuf.length = aBuf_length = UTF8ToUTF16((unsigned char*)(LPTSTR)aBuf, aSizeEncrypted, (unsigned char*)aDataBuf, aSizeEncrypted) - 1;
+					g_memset(aDataBuf, 0, aSizeEncrypted);
+					free(aDataBuf);
+				}
+				else {
+					if (aDataBuf)
+						free(aDataBuf);
+					free(data);
+					return -1;
+				}
+			}
+			else
+				mEncrypt = 1;
+			g_memset(data, 0, aDataSize);
+			free(data);
+		}
+		else
+			mEncrypt = 1;
+	}
 	if (aInContinuationSection)
 	{
 		LPTSTR cp = omit_leading_whitespace(aBuf);
@@ -3534,6 +4385,7 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		if (ignore_load_failure)
 			parameter += 3; // Skip over at most one space or tab, since others might be a literal part of the filename.
 
+		size_t name_len = 0;
 		if (*parameter == '<') // Support explicitly-specified <standard_lib_name>.
 		{
 			LPTSTR parameter_end = _tcschr(parameter, '>');
@@ -3541,24 +4393,58 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 			{
 				++parameter; // Remove '<'.
 				*parameter_end = '\0'; // Remove '>'.
-				bool error_was_shown, file_was_found;
-				// Save the working directory; see the similar line below for details.
-				LPTSTR prev_dir = GetWorkingDir();
-				// Attempt to include a script file from a Lib folder:
-				IncludeLibrary(parameter, parameter_end - parameter, error_was_shown, file_was_found);
-				// Restore the working directory.
-				if (prev_dir)
-				{
-					SetCurrentDirectory(prev_dir);
-					free(prev_dir);
-				}
-				// If any file was included, consider it a success; i.e. allow #include <lib> and #include <lib_func>.
-				if (!error_was_shown && (file_was_found || ignore_load_failure))
-					return CONDITION_TRUE;
-				*parameter_end = '>'; // Restore '>' for display to the user.
-				return error_was_shown ? FAIL : ScriptError(_T("Function library not found."), aBuf);
+				name_len = parameter_end - parameter;
 			}
-			//else invalid syntax; treat it as a regular #include which will almost certainly fail.
+		}
+
+		if (*parameter != '<' && _tcschr(parameter + 1, '|')) {
+			LineBuffer lbuf;
+			LPTSTR sep, beg, end, buf;
+			if (!DerefInclude(lbuf.p, parameter) || !(sep = _tcschr(lbuf.p + 1, '|')))
+				return FAIL;
+			buf = (LPTSTR)_alloca((90 + 2 * (sep - lbuf.p) + _tcsclen(sep + 1)) * sizeof(TCHAR));
+			for (beg = sep - 1, end = sep; beg >= lbuf.p; beg--)
+				if (*beg == '/' || *beg == '\\')
+					break;
+				else if (*beg == '.')
+					end = beg;
+			IObjPtr obj{ Object::Create() };
+			*sep = '\0';
+			auto l = _stprintf(buf, _T("#include %c%s%c\nObjFromPtrAddRef(0x%p)._:="), name_len ? '<' : ' ', lbuf.p, name_len ? '>' : ' ', obj.obj);
+			*end = '\0';
+			_stprintf(buf + l, _T("String(%s(%s))\nExitApp"), beg + 1, sep + 1);
+			LPTSTR script = NULL;
+			if (auto hThread = OpenThread(THREAD_ALL_ACCESS, TRUE, NewThread(buf))) {
+				ExprTokenType token{};
+				if (WaitForSingleObject(hThread, 5000) != WAIT_TIMEOUT && ((Object*)obj.obj)->GetOwnProp(token, _T("_")))
+					script = token.marker;
+			}
+			else return ScriptError(_T("Create thread fail."), aBuf);
+			if (script) {
+				_stprintf(buf, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, mEncrypt ? nullptr : g_SimpleHeap->Alloc(script), _tcslen(script) * sizeof(TCHAR));
+				return LoadIncludedText(script, buf) == OK ? CONDITION_TRUE : FAIL;
+			}
+			else return ignore_load_failure ? CONDITION_TRUE : FAIL;
+		}
+
+		if (name_len)
+		{
+			bool error_was_shown, file_was_found;
+			// Save the working directory; see the similar line below for details.
+			LPTSTR prev_dir = GetWorkingDir();
+			// Attempt to include a script file from a Lib folder:
+			IncludeLibrary(parameter, name_len, error_was_shown, file_was_found);
+			// Restore the working directory.
+			if (prev_dir)
+			{
+				SetCurrentDirectory(prev_dir);
+				free(prev_dir);
+			}
+			// If any file was included, consider it a success; i.e. allow #include <lib> and #include <lib_func>.
+			if (!error_was_shown && (file_was_found || ignore_load_failure))
+				return CONDITION_TRUE;
+			*(parameter + name_len) = '>'; // Restore '>' for display to the user.
+			return error_was_shown ? FAIL : ScriptError(_T("Function library not found."), aBuf);
 		}
 
 		LPTSTR include_path;
@@ -3645,6 +4531,65 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		return result;
 	} // end #DllLoad
 
+	if (IS_DIRECTIVE_MATCH(_T("#UseStdLib")))
+	{
+		switch (Line::ConvertOnOff(parameter))
+		{
+		case TOGGLED_OFF:
+			g_UseStdLib = false;
+			break;
+		case TOGGLED_ON:
+			g_UseStdLib = true;
+			break;
+		default:
+			g_UseStdLib = true;
+			break;
+		}
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#MapCaseSense")))
+	{
+		g_MapCaseSense = Line::ConvertStringCaseSense(parameter);
+		if (SCS_INVALID == g_MapCaseSense)
+		{
+			g_MapCaseSense = 1;
+			return ScriptError(ERR_PARAM1_INVALID, aBuf);
+		}
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#TargetWindowError")))
+	{
+		switch(Line::ConvertOnOff(parameter))
+		{
+			case TOGGLED_ON:
+				g_TargetWindowError = true;
+				break;
+			default:
+				g_TargetWindowError = false;
+				break;
+		}
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#TargetControlError")))
+	{
+		switch (Line::ConvertOnOff(parameter))
+		{
+		case TOGGLED_OFF:
+			g_TargetControlError = false;
+			break;
+		case TOGGLED_ON:
+			g_TargetControlError = true;
+			break;
+		default:
+			g_TargetControlError = false;
+			break;
+		}
+		return CONDITION_TRUE;
+	}
+
 	if (IS_DIRECTIVE_MATCH(_T("#NoTrayIcon")))
 	{
 		g_NoTrayIcon = true;
@@ -3706,7 +4651,7 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		if (!Hotkey::IfExpr(NULL, mLastHotFunc, result_token))		// Set the new criterion.
 			return FAIL;
 
-		g->HotCriterion->OriginalExpr = SimpleHeap::Alloc(parameter);
+		g->HotCriterion->OriginalExpr = g_SimpleHeap->Alloc(parameter);
 		
 		auto func = mLastHotFunc; // AddLine will set mLastHotFunc to nullptr below
 		
@@ -3716,6 +4661,7 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 			return ScriptError(ERR_OUTOFMEM);
 
 		func->mJumpToLine->mAttribute = g->HotCriterion;	// Must be set for PreparseHotkeyIfExpr
+		g->HotCriterion->ThreadID = g_MainThreadID;
 
 		ASSERT(!g->CurrentFunc && !mLastHotFunc); // Should be null due to ACT_BLOCK_END and prior checks.
 		g->CurrentFunc = mLastHotFunc = pending_hotfunc; // Restore any pending hotkey function.
@@ -3842,6 +4788,29 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		return CONDITION_TRUE;
 	}
 
+	if (IS_DIRECTIVE_MATCH(_T("#DllImport")))
+		return LoadDllFunction(parameter) ? CONDITION_TRUE : CONDITION_FALSE;
+
+	if (IS_DIRECTIVE_MATCH(_T("#WindowClassMain")))
+	{
+		if (parameter)
+		{
+			g_WindowClassMain = (LPWSTR)g_SimpleHeap->Malloc(2 + (parameter ? _tcslen(parameter) * 2 : 0));
+			_tcscpy(g_WindowClassMain, parameter);
+		}
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#WindowClassGui")))
+	{
+		if (parameter)
+		{
+			g_WindowClassGUI = (LPWSTR)g_SimpleHeap->Malloc(2 + (parameter ? _tcslen(parameter) * 2 : 0));
+			_tcscpy(g_WindowClassGUI, parameter);
+		}
+		return CONDITION_TRUE;
+	}
+
 	if (IS_DIRECTIVE_MATCH(_T("#Warn")))
 	{
 		if (!parameter)
@@ -3933,6 +4902,34 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 #endif
 	}
 
+	if (IS_DIRECTIVE_MATCH(_T("#Init")) && g_script->mInitFuncs)
+	{
+		parameter = strip_quote_marks(parameter);
+		if (!*parameter)
+			return ScriptError(ERR_PARAM1_INVALID);
+		if (!Var::ValidateName(parameter, DISPLAY_FUNC_ERROR))
+			return FAIL;
+		g_script->mInitFuncs->Append(parameter);
+		return CONDITION_TRUE;
+	}
+
+	if (!_tcsnicmp(directive_name, _T("#DefineDefault"), 14)) {
+		if (!_tcsicmp(directive_name + 14, _T("ObjectValue"))) {
+			if (parameter)
+				g_DefaultObjectValue = g_SimpleHeap->Malloc(parameter);
+			else g_DefaultObjectValue = _T("");
+			return CONDITION_TRUE;
+		}
+		if (!_tcsicmp(directive_name + 14, _T("ArrayValue"))) {
+			Array::sPrototype->SetOwnProp(_T("Default"), parameter ? parameter : _T(""));
+			return CONDITION_TRUE;
+		}
+		if (!_tcsicmp(directive_name + 14, _T("MapValue"))) {
+			Map::sPrototype->SetOwnProp(_T("Default"), parameter ? parameter : _T(""));
+			return CONDITION_TRUE;
+		}
+	}
+
 	// Otherwise, report that this line isn't a directive:
 	return CONDITION_FALSE;
 }
@@ -3957,8 +4954,8 @@ ResultType Script::ConvertDirectiveBool(LPTSTR aBuf, bool &aResult, bool aDefaul
 void ScriptTimer::Disable()
 {
 	mEnabled = false;
-	--g_script.mTimerEnabledCount;
-	if (!g_script.mTimerEnabledCount && !g_nLayersNeedingTimer && !Hotkey::sJoyHotkeyCount)
+	--g_script->mTimerEnabledCount;
+	if (!g_script->mTimerEnabledCount && !g_nLayersNeedingTimer && !Hotkey::sJoyHotkeyCount)
 		KILL_MAIN_TIMER
 	// Above: If there are now no enabled timed subroutines, kill the main timer since there's no other
 	// reason for it to exist if we're here.   This is because or direct or indirect caller is
@@ -4123,7 +5120,7 @@ ResultType Script::AddLabel(LPTSTR aLabelName, bool aAllowDupe)
 		// return
 		return ScriptError(_T("Duplicate label."), aLabelName);
 	}
-	LPTSTR new_name = SimpleHeap::Alloc(aLabelName);
+	LPTSTR new_name = g_SimpleHeap->Alloc(aLabelName);
 	Label *the_new_label = new Label(new_name); // Pass it the dynamic memory area we created.
 	the_new_label->mPrevLabel = last_label;  // Whether NULL or not.
 	if (first_label == NULL)
@@ -4181,6 +5178,8 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 			LPTSTR cp;
 			if (!_tcsnicmp(aLineText, _T("global"), 6))
 			{
+				if (g->CurrentFunc && g->CurrentFunc->mIsMacro)
+					return ScriptError(_T("Global variables are not supported for macros."), aLineText); // Vague error since so rare.
 				cp = aLineText + 6; // The character after the declaration word.
 				declare_type = VAR_DECLARE_GLOBAL;
 			}
@@ -4193,6 +5192,8 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 				}
 				else if (!_tcsnicmp(aLineText, _T("static"), 6)) // Static also implies local (for functions that default to global).
 				{
+					if (g->CurrentFunc && g->CurrentFunc->mIsMacro)
+						return ScriptError(_T("Static variables are not supported for macros."), aLineText); // Vague error since so rare.
 					cp = aLineText + 6; // The character after the declaration word.
 					declare_type = VAR_DECLARE_STATIC;
 				}
@@ -4284,7 +5285,7 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 					//  - Declaring a built-in variable as local or static.
 					// But permit the following:
 					//  - Exact duplicate declarations, such as for two different code paths.
-					if (var->Scope() != declare_type)
+					if ((var->Scope() & ~VAR_MACRO) != declare_type)
 						return ConflictingDeclarationError(Var::DeclarationType(declare_type), var);
 				}
 				else
@@ -4775,6 +5776,7 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 	// occurred above.
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	LPTSTR literal_map;
+	LineBuffer literal_map_buf;
 	if (aLiteralMap)
 	{
 		// Caller's aLiteralMap starts at aLineText, so adjust it so that it starts at the newly
@@ -4783,8 +5785,13 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 	}
 	else
 	{
-		literal_map = (LPTSTR)_alloca(sizeof(TCHAR) * line_length);
-		ZeroMemory(literal_map, sizeof(TCHAR) * line_length);  // Must be fully zeroed for this purpose.
+		if (line_length < 1048576)
+			literal_map = (LPTSTR)_alloca(sizeof(TCHAR) * line_length);
+		else {
+			literal_map_buf.EnsureCapacity(sizeof(TCHAR) * line_length);
+			literal_map = literal_map_buf;
+		}
+		ZeroMemory(literal_map, sizeof(TCHAR)* line_length);  // Must be fully zeroed for this purpose.
 		// Resolve escaped sequences and make a map of which characters in the string should
 		// be interpreted literally rather than as their native function.  In other words,
 		// convert any escape sequences in order from left to right.  This part must be
@@ -5009,7 +6016,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 		new_arg = NULL;  // Just need an empty array in this case.
 	else
 	{
-		new_arg = SimpleHeap::Alloc<ArgStruct>(aArgc);
+		new_arg = g_SimpleHeap->Alloc<ArgStruct>(aArgc);
 
 		int i;
 
@@ -5040,7 +6047,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 			this_new_arg.length = (ArgLengthType)_tcslen(this_aArg);
 			
 			// Create a copy of arg text in persistent memory.
-			this_new_arg.text = SimpleHeap::Alloc(this_aArg, this_new_arg.length);
+			this_new_arg.text = g_SimpleHeap->Alloc(this_aArg, this_new_arg.length);
 
 			///////////////////////////////////////////
 			// Build the list of operands for this arg.
@@ -5068,7 +6075,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 			//////////////////////////////////////////////////////////////
 			if (deref.count)
 			{
-				this_new_arg.deref = SimpleHeap::Alloc<DerefType>(deref.count + 1); // +1 for the "NULL-item" terminator.
+				this_new_arg.deref = g_SimpleHeap->Alloc<DerefType>(deref.count + 1); // +1 for the "NULL-item" terminator.
 				memcpy(this_new_arg.deref, deref.items, deref.count * sizeof(DerefType));
 				// Terminate the list of derefs with a deref that has a NULL marker:
 				this_new_arg.deref[deref.count].marker = NULL;
@@ -5888,7 +6895,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 						tcslcpy(buf, param_start + 1, param_end - param_start); // +1 skips the opening quote and also accounts for the terminator for tcslcpy.
 						ConvertEscapeSequences(buf, NULL); // Raw escape sequences like `n haven't been converted yet, so do it now.
 						this_param.default_type = PARAM_DEFAULT_STR;
-						this_param.default_str = SimpleHeap::Alloc(buf);
+						this_param.default_str = g_SimpleHeap->Alloc(buf);
 						++param_end; // Move beyond the close-quote, for below.
 					}
 				}
@@ -5983,7 +6990,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 	if (param_count)
 	{
 		// Allocate memory only for the actual number of parameters actually present.
-		func.mParam = SimpleHeap::Alloc<FuncParam>(param_count);
+		func.mParam = g_SimpleHeap->Alloc<FuncParam>(param_count);
 		func.mParamCount = param_count - func.mIsVariadic; // i.e. don't count the final "param*" of a variadic function.
 		memcpy(func.mParam, param, param_count * sizeof(FuncParam));
 	}
@@ -6101,7 +7108,7 @@ ResultType Script::DefineClass(LPTSTR aBuf)
 			if (!base_class)
 			{
 				if (   !(base_prototype = Object::CreatePrototype(base_class_name))
-					|| !(base_class = Object::CreateClass(base_prototype))
+					|| !(base_class = Object::CreateClass(base_prototype)) || !base_prototype->Release()
 					// This property will be removed when the class definition is encountered:
 					|| !base_class->SetOwnProp(_T("Line"), ((__int64)mCurrFileIndex << 32) | mCombinedLineNumber)
 					|| !mUnresolvedClasses->SetOwnProp(base_class_name, base_class)  )
@@ -6180,12 +7187,16 @@ ResultType Script::DefineClass(LPTSTR aBuf)
 	if (class_object)
 		prototype = (Object *)class_object->GetOwnPropObj(_T("Prototype"));
 	else
+	{
 		class_object = Object::CreateClass(prototype = Object::CreatePrototype(mClassName));
+		prototype->Release(); // HotKeyIt: CreateClass uses SetBase
+	}
 
 	if (mClassObjectCount)
 	{
 		// Define property outer_class.%class_name%.
 		outer_class->DefineClass(class_name, class_object);
+		class_object->Release();
 	}
 	else
 	{
@@ -6215,7 +7226,7 @@ ResultType Script::DefineClass(LPTSTR aBuf)
 	// or sooner if it's a nested class and the script removes it from the outer class.
 	// Classes with static methods are never freed, since the method itself retains a
 	// reference to the class.
-	class_object->Release();
+	// class_object->Release();
 
 	return OK;
 }
@@ -6569,6 +7580,7 @@ ResultType Script::ResolveClasses()
 		mCurrFileIndex = int(token.value_int64 >> 32);
 		mCombinedLineNumber = LineNumberType(token.value_int64);
 	}
+	base->Release();
 	mCurrLine = NULL;
 	return ScriptError(_T("Unknown class."), name);
 }
@@ -6617,7 +7629,7 @@ void Script::InitFuncLibrary(FuncLibrary &aLib, LPTSTR aPathBase, LPTSTR aPathSu
 	// MAX_PATH on ANSI builds since no path longer than that would work, but doing it this
 	// way simplifies length checks later (and Unicode builds support much longer paths).
 	size_t buf_size = length + MAX_VAR_NAME_LENGTH + FUNC_LIB_EXT_LENGTH + 1;
-	aLib.path = SimpleHeap::Alloc<TCHAR>(buf_size);
+	aLib.path = g_SimpleHeap->Alloc<TCHAR>(buf_size);
 	tmemcpy(aLib.path, buf, length + 1);
 	aLib.length = length;
 }
@@ -6632,7 +7644,7 @@ void Script::IncludeLibrary(LPTSTR aFuncName, size_t aFuncNameLength, bool &aErr
 	int i;
 	DWORD attr;
 
-	static FuncLibrary sLib[FUNC_LIB_COUNT] = {0};
+	thread_local static FuncLibrary sLib[FUNC_LIB_COUNT] = {0};
 
 	if (!sLib[0].path) // Allocate & discover paths only upon first use because many scripts won't use anything from the library. This saves a bit of memory and performance.
 		InitFuncLibraries(sLib);
@@ -6699,7 +7711,164 @@ void Script::IncludeLibrary(LPTSTR aFuncName, size_t aFuncNameLength, bool &aErr
 
 #endif
 
+Var* Script::LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength)
+{
+	if (!g_hWinAPI) {
+		EnterCriticalSection(&g_Critical);
+		if (!g_hWinAPI) {
+			// Load WinApi library
+			LPVOID aDataBuf;
+			HRSRC hWinApi;
+			DWORD szWinApi;
+			hWinApi = FindResource(g_hInstance, _T("WINAPI"), MAKEINTRESOURCE(10));
+			if (!hWinApi) {
+				LeaveCriticalSection(&g_Critical);
+				return NULL;
+			}
+			szWinApi = DecompressBuffer(LockResource(LoadResource(g_hInstance, hWinApi)), aDataBuf, SizeofResource(g_hInstance, hWinApi));
+			// Allocate memory for WinAPI definitions
+			g_hWinAPI = (LPSTR)malloc(szWinApi + sizeof(char));
+			g_hWinAPIlowercase = (LPSTR)malloc(szWinApi + sizeof(char));
+			// copy definitions
+			memcpy(g_hWinAPI, aDataBuf, szWinApi);
+			memcpy(g_hWinAPIlowercase, aDataBuf, szWinApi);
+			free(aDataBuf);
+			// terminate string
+			*(g_hWinAPI + szWinApi) = '\0';
+			*(g_hWinAPIlowercase + szWinApi) = '\0';
+			// we need lowercase so we can search for function case insensitive
+			CharLowerA(g_hWinAPIlowercase);
+		}
+		LeaveCriticalSection(&g_Critical);
+	}
+	// WinApi and #DllImport are always global functions
+	auto* aCurrent_func = g->CurrentFunc;
+	g->CurrentFunc = NULL;
+	TCHAR parameter[1024] = { 0 }; // Should be enough room for any dll function definition
+	memcpy(parameter, aFuncName, aFuncNameLength * sizeof(TCHAR));
+	parameter[aFuncNameLength] = L',';
 
+	// parameterlow is used to find the function definition
+	char parameterlowercase[MAX_PATH] = { '\\' };
+	WideCharToMultiByte(CP_ACP, 0, aFuncName, (int)aFuncNameLength, &parameterlowercase[1], (int)aFuncNameLength + 1, 0, 0);
+	CharLowerA(parameterlowercase);
+	parameterlowercase[aFuncNameLength + 1] = L',';
+	parameterlowercase[aFuncNameLength + 2] = L'\0';
+	LPSTR found;
+	if (found = strstr(g_hWinAPIlowercase, parameterlowercase))
+	{
+		found = g_hWinAPI + (found - g_hWinAPIlowercase);
+		LPTSTR aDest = parameter + aFuncNameLength + 1;
+		LPSTR aDllName = strstr(found, "\t");
+		if (aDllName) {
+			aDllName++;
+			size_t aNameLen = strstr(aDllName, "\\") - aDllName + 1;
+			MultiByteToWideChar(CP_UTF8, 0, aDllName, (int)aNameLen, aDest, (int)aNameLen);
+			aDest = aDest + aNameLen;
+		}
+		MultiByteToWideChar(CP_UTF8, 0, found + 1, (int)aFuncNameLength + 1, aDest, (int)aFuncNameLength * sizeof(TCHAR) + sizeof(TCHAR));
+		// Override _ in the end of definition (ahk function like SendMessage, Sleep, Send, SendInput ...
+		if (*(aFuncName + aFuncNameLength - 1) == L'_')
+		{
+			*(aDest + aFuncNameLength - 1) = L',';
+			*(aDest + aFuncNameLength) = L'\0';
+			aDest = aDest + aFuncNameLength;
+		}
+		else
+		{
+			*(aDest + aFuncNameLength) = L',';
+			aDest = aDest + aFuncNameLength + 1;
+		}
+		_tcscpy(aDest, _T("   ="));
+		auto t = aDest + 2;
+		aDest += 4;
+		for (found = strstr(found, ",") + 1; found != NULL && *found != '\\'; found++)
+		{
+			*aDest = (*found);
+			aDest++;
+		}
+		if (*(--aDest) == _T('*') || *aDest == _T('p') || *aDest == _T('P'))
+			*t = *aDest, t--, aDest--;
+		*t = *aDest, t--, aDest--;
+		if (*aDest == _T('u') || *aDest == _T('U'))
+			*t = *aDest, aDest--;
+		*(aDest + 1) = _T('\0');
+		Var* var = LoadDllFunction(parameter);
+		g->CurrentFunc = aCurrent_func;
+		return var;
+	}
+	g->CurrentFunc = aCurrent_func;
+	return NULL;
+}
+
+Var* Script::LoadVarFromLib(LPTSTR aVarName) {
+#define RESTORE_G_SCRIPT \
+	mFirstLine = aFirstLine;\
+	mLastLine = aLastLine;\
+	mLastLine->mNextLine = NULL;\
+	mCurrLine = aCurrLine;\
+	mClassObjectCount = aClassObjectCount + mClassObjectCount;\
+	mCurrFileIndex = aCurrFileIndex;\
+	mNextLineIsFunctionBody = aNextLineIsFunctionBody;\
+	mCombinedLineNumber = aCombinedLineNumber;
+
+	int aCurrFileIndex = mCurrFileIndex, aCombinedLineNumber = mCombinedLineNumber, aClassObjectCount = mClassObjectCount;
+	bool aNextLineIsFunctionBody = mNextLineIsFunctionBody;
+	Line* aFirstLine = mFirstLine, * aLastLine = mLastLine, * aCurrLine = mCurrLine;
+	Func* aCurrFunc = g->CurrentFunc, *aCurrMacro = g->CurrentMacro;
+	mNextLineIsFunctionBody = false;
+	mClassObjectCount = 0;
+	mFirstLine = NULL, mLastLine = NULL, g->CurrentFunc = NULL;
+
+	bool error_was_shown = false, file_was_found = false;
+	if (g_UseStdLib) {
+		// Save the working directory; see the similar line below for details.
+		LPTSTR prev_dir = GetWorkingDir();
+		// Attempt to include a script file from a Lib folder:
+		IncludeLibrary(aVarName, 0, error_was_shown, file_was_found);
+		// Restore the working directory.
+		if (prev_dir)
+		{
+			SetCurrentDirectory(prev_dir);
+			free(prev_dir);
+		}
+	}
+	TCHAR aScriptName[MAX_VAR_NAME_LENGTH + 10];
+	if ((file_was_found && !error_was_shown) || _stprintf(aScriptName, _T("*LIB\\%s.AHK"), aVarName)
+		&& ((FindResource(g_hInstance, aScriptName + 5, _T("LIB")) || FindResource(NULL, aScriptName + 5, _T("LIB")))
+			&& LoadIncludedFile(aScriptName, false, false)))
+	{
+		if (PreparseExpressions(mFirstLine)
+			&& PreparseExpressions(mHotFuncs) // mHotFuncs first in case they have nested functions, which would be in mFuncs.
+			&& PreparseExpressions(mFuncs)
+			&& PreparseVarRefs()
+			&& PreprocessLocalVars(mHotFuncs)
+			&& PreprocessLocalVars(mFuncs)
+			&& AddLine(ACT_EXIT))
+		{
+			g->CurrentFunc = (UserFunc*)aCurrFunc;
+			g->CurrentMacro = (UserFunc*)aCurrMacro;
+			Line* aTempLine = mFirstLine;
+			Line* t = aLastLine->mPrevLine;
+			if (t && aLastLine->mActionType == ACT_EXIT) {
+				delete aLastLine;
+				aLastLine = t;
+			}
+			aLastLine->mNextLine = aTempLine;
+			aTempLine->mPrevLine = aLastLine;
+			aLastLine = mLastLine;
+			RESTORE_G_SCRIPT;
+			Var* var = FindGlobalVar(aVarName);
+			if (var && var->IsAssignedSomewhere())
+				return var;
+			return NULL;
+		}
+	}
+	g->CurrentFunc = (UserFunc*)aCurrFunc;
+	g->CurrentMacro = (UserFunc *)aCurrMacro;
+	RESTORE_G_SCRIPT;
+	return NULL;
+}
 
 template<typename T, int S>
 T *ScriptItemList<T, S>::Find(LPCTSTR aName, int *apInsertPos)
@@ -6767,7 +7936,8 @@ BuiltInFunc::BuiltInFunc(FuncEntry &bif) : BuiltInFunc(bif.mName)
 	mIsVariadic = bif.mMaxParams == MAX_FUNCTION_PARAMS;
 	mParamCount = mIsVariadic ? bif.mMinParams : bif.mMaxParams;
 	mFID = (BuiltInFunctionID)bif.mID;
-	mOutputVars = bif.mOutputVars;
+	if (bif.mOutputVars[0])
+		mOutputVars = bif.mOutputVars;
 }
 
 
@@ -6795,16 +7965,25 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 // Returns the address of the new function or NULL on failure.
 // The caller must already have verified that this isn't a duplicate function.
 {
-	bool is_static = !_tcsnicmp(aFuncName, _T("Static"), 6) && IS_SPACE_OR_TAB(aFuncName[6]);
-	if (is_static)
+	size_t n = 6;
+	bool is_macro = false;
+	bool is_static = !_tcsnicmp(aFuncName, _T("Static"), n) && IS_SPACE_OR_TAB(aFuncName[n]);
+	if (is_static || (is_macro = !_tcsnicmp(aFuncName, _T("macro"), n = 5) && IS_SPACE_OR_TAB(aFuncName[n])))
 	{
-		if (aClassObject || !g->CurrentFunc)
+		if (is_macro)
+		{
+			if (aClassObject)
+			{
+				ScriptError(_T("Macro is not supported for Methods."), aFuncName);
+				return nullptr;
+			}
+		}
+		else if (aClassObject || !g->CurrentFunc)
 		{
 			ScriptError(ERR_INVALID_FUNCDECL, aFuncName); // Uses a generic message to minimize code size.
 			return nullptr;
 		}
-		size_t n;
-		for (n = 7; IS_SPACE_OR_TAB(aFuncName[n]); ++n);
+		for (++n; IS_SPACE_OR_TAB(aFuncName[n]); ++n);
 		if (aFuncNameLength > n) // Checked for maintainability; should always be true.
 		{
 			aFuncNameLength -= n;
@@ -6825,7 +8004,7 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 	// ValidateName requires that the name be null-terminated, but it isn't in this case.
 	// Doing this first saves doing tcslcpy() into a temporary buffer, and won't leak memory
 	// since the script currently always exits if an error occurs anywhere below:
-	LPTSTR new_name = SimpleHeap::Alloc(aFuncName, aFuncNameLength);
+	LPTSTR new_name = g_SimpleHeap->Alloc(aFuncName, aFuncNameLength);
 
 	if (!aClassObject && *new_name && !Var::ValidateName(new_name, DISPLAY_FUNC_ERROR))  // Variable and function names are both validated the same way.
 		return nullptr; // Above already displayed the error for us.
@@ -6884,7 +8063,7 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 			scope |= VAR_LOCAL_STATIC;
 		}
 		Var *var = aFuncNameLength ? FindVar(aFuncName, aFuncNameLength, FINDVAR_NO_BIF | scope, &varlist, &insert_pos, &result) : NULL;
-		if (var)
+		if (var && (scope == VAR_DECLARE_LOCAL || var->IsReadOnly()))
 		{
 			// Anything found at this early stage must have been created by a prior declaration
 			// or predefined.  Treat it as an error even if var is uninitialized, otherwise:
@@ -6894,13 +8073,14 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 			//     it, but not afterward (as the conflict would be detected by ParseAndAddLine).
 			ConflictingDeclarationError(_T("function"), var);
 			return nullptr;
+		} else if (!var) {
+			if (!aFuncNameLength)
+			{
+				insert_pos = 0;
+				varlist = g->CurrentFunc ? &g->CurrentFunc->mVars : GlobalVars();
+			}
+			var = AddVar(aFuncName, aFuncNameLength, varlist, insert_pos, scope);
 		}
-		if (!aFuncNameLength)
-		{
-			insert_pos = 0;
-			varlist = g->CurrentFunc ? &g->CurrentFunc->mVars : GlobalVars();
-		}
-		var = AddVar(aFuncName, aFuncNameLength, varlist, insert_pos, scope);
 		if (!var)
 			return nullptr;
 		var->Assign(the_new_func);
@@ -6908,7 +8088,8 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 	}
 
 	the_new_func->mOuterFunc = g->CurrentFunc;
-	
+	if (is_macro)
+		the_new_func->mIsMacro = true;
 	// The general rule is that a nested function's namespace includes all of the names that
 	// were in the outer function's namespace by default.  In other words, if the outer function
 	// is assume-global, the nested function should also default to assume-global.
@@ -6937,10 +8118,25 @@ ResultType ScriptItemList<T, INITIAL_SIZE>::Insert(T *aFunc, int aInsertPos)
 	}
 
 	if (aInsertPos != mCount) // Need to make room at the indicated position for this variable.
-		memmove(mItem + aInsertPos + 1, mItem + aInsertPos, (mCount - aInsertPos) * sizeof(Func *));
+		memmove(mItem + aInsertPos + 1, mItem + aInsertPos, (mCount - aInsertPos) * sizeof(T*));
 	//else both are zero or the item is being inserted at the end of the list, so it's easy.
 	mItem[aInsertPos] = aFunc;
 	++mCount;
+	return OK;
+}
+
+
+template<typename T, int INITIAL_SIZE>
+ResultType ScriptItemList<T, INITIAL_SIZE>::Remove(LPCTSTR aName)
+{
+	int aInsertPos;
+	if (!Find(aName, &aInsertPos))
+		return OK;
+	if (aInsertPos != mCount) // Need to make room at the indicated position for this variable.
+		memmove(mItem + aInsertPos, mItem + aInsertPos + 1, (mCount - aInsertPos - 1) * sizeof(Func *));
+	else
+		memset(mItem + aInsertPos, 0, sizeof(Func *));
+	--mCount;
 	return OK;
 }
 
@@ -7052,6 +8248,11 @@ Var *Script::FindVar(LPCTSTR aVarName, size_t aVarNameLength, int aScope
 		return NULL;
 	if (!aVarNameLength) // Caller didn't specify, so use the entire string.
 		aVarNameLength = _tcslen(aVarName);
+	if (!_tcsnicmp(aVarName, _T("macro "), 6))
+	{
+		aVarName += 6;
+		aVarNameLength -= 6;
+	}
 
 	// For the below, no error is reported because callers don't want that.  Instead, simply return
 	// NULL to indicate that names that are illegal or too long are not found.  When the caller later
@@ -7269,7 +8470,7 @@ Var *Script::AddVar(LPCTSTR aVarName, size_t aVarNameLength, VarList *aList, int
 		WarnLocalSameAsGlobal(var_name);
 
 	// Allocate some dynamic memory to pass to the constructor:
-	LPTSTR new_name = SimpleHeap::Malloc(var_name, aVarNameLength);
+	LPTSTR new_name = g_SimpleHeap->Malloc(var_name, aVarNameLength);
 	if (!new_name)
 		// It already displayed the error for us.
 		return NULL;
@@ -7281,6 +8482,8 @@ Var *Script::AddVar(LPCTSTR aVarName, size_t aVarNameLength, VarList *aList, int
 	if (aScope == VAR_LOCAL && (g->CurrentFunc->mDefaultVarType & VAR_LOCAL_STATIC))
 		// v1.0.48: Lexikos: Current function is assume-static, so set static attribute.
 		aScope |= VAR_LOCAL_STATIC;
+	if ((aScope & VAR_DECLARE_LOCAL) == VAR_DECLARE_LOCAL && g->CurrentFunc && g->CurrentFunc->mIsMacro)
+		aScope |= VAR_MACRO;
 
 	Var *the_new_var = new Var(new_name, aScope);
 	if (!the_new_var || !aList->Insert(the_new_var, aInsertPos))
@@ -7302,7 +8505,7 @@ Var *Script::FindOrAddBuiltInVar(LPCTSTR aVarName, VarEntry *aVarEntry)
 	int insert_pos;
 	if (Var *found = mVars.Find(aVarName, &insert_pos))
 		return found;
-	LPTSTR name = SimpleHeap::Malloc(aVarName);
+	LPTSTR name = g_SimpleHeap->Malloc(aVarName);
 	if (!name)
 		return nullptr;
 	Var *the_new_var = new Var(name, aVarEntry, VAR_DECLARE_GLOBAL);
@@ -7384,7 +8587,7 @@ ResultType Script::AddGroup(LPCTSTR aGroupName)
 	if (!Var::ValidateName(aGroupName, DISPLAY_GROUP_ERROR)) // Seems best to use same validation as var names.
 		return FAIL;
 
-	LPTSTR new_name = SimpleHeap::Malloc(aGroupName, aGroupName_length);
+	LPTSTR new_name = g_SimpleHeap->Malloc(aGroupName, aGroupName_length);
 	if (!new_name)
 		return FAIL;  // It already displayed the error for us.
 
@@ -7451,6 +8654,8 @@ ResultType Script::PreparseExpressions(FuncList &aFuncs)
 	{
 		ASSERT(!aFuncs.mItem[i]->IsBuiltIn());
 		auto &func = *(UserFunc *)aFuncs.mItem[i];
+		if (func.mPreprocessLocalVarsDone)
+			continue;
 		g->CurrentFunc = &func;
 		if (!PreparseExpressions(func.mJumpToLine)) // Preparse this function's body.
 			return FAIL;
@@ -7664,7 +8869,7 @@ ResultType Script::PreparseCatchVar(Line *aLine)
 {
 	if (!aLine->mArgc)
 		return OK;
-	auto args = SimpleHeap::Alloc<CatchStatementArgs>();
+	auto args = g_SimpleHeap->Alloc<CatchStatementArgs>();
 	args->output_var = nullptr;
 	args->prototype = nullptr;
 	args->prototype_count = 0;
@@ -7727,7 +8932,7 @@ ResultType Script::PreparseCatchClass(Line *aLine)
 	if (prototype_count) // Currently should always be non-zero due to the length check.
 	{
 		auto args = (CatchStatementArgs *)aLine->mAttribute;
-		args->prototype = SimpleHeap::Alloc<IObject *>(prototype_count);
+		args->prototype = g_SimpleHeap->Alloc<IObject *>(prototype_count);
 		args->prototype_count = prototype_count;
 		memcpy(args->prototype, prototype, prototype_count * sizeof(IObject *));
 	}
@@ -7807,11 +9012,6 @@ ResultType Line::ExpressionToPostfix(ArgStruct &aArg, ExprTokenType *&aInfix)
 	// However, this rule requires a small workaround in the postfix-builder to allow 2**-2 to be
 	// evaluated as 2**(-2) rather than being seen as an error.  v1.0.45: A similar thing is required
 	// to allow the following to work: 2**!1, 2**not 0, 2**~0xFFFFFFFE, 2**&x.
-
-	// IsSet is constructed here because it's a sort of intrinsic function with its own
-	// special rules.  ExprOp<> isn't used because it doesn't have parameter count limits
-	// or a name (which is displayed when the parameter count is invalid, for instance).
-	static BuiltInFunc *sIsSetFunc = new BuiltInFunc { _T("IsSet"), BIF_IsSet, 1, 1 };
 
 	ExprTokenType *infix = NULL;
 	int infix_size = 0, infix_count = 0, allow_for_extra_postfix = 0;
@@ -8323,7 +9523,7 @@ ResultType Line::ExpressionToPostfix(ArgStruct &aArg, ExprTokenType *&aInfix)
 								return LineError(ERR_EXPR_SYNTAX, FAIL, cp-1); // Intentionally vague since the user's intention isn't clear.
 
 							auto callsite = new CallSite();
-							callsite->member = SimpleHeap::Alloc(cp, op_end - cp);
+							callsite->member = g_SimpleHeap->Alloc(cp, op_end - cp);
 
 							SymbolType new_symbol; // Type of token: SYM_FUNC or SYM_DOT (which must be treated differently as it doesn't have parentheses).
 							if (*op_end == '(')
@@ -8394,7 +9594,7 @@ unquoted_literal:
 					}
 					op_end = find_identifier_end(cp);
 					// SYM_STRING: either the "key" in "{key: value}" or a syntax error (might be impossible).
-					LPTSTR str = SimpleHeap::Alloc(cp, op_end - cp);
+					LPTSTR str = g_SimpleHeap->Alloc(cp, op_end - cp);
 					this_literal.SetValue(str, op_end - cp);
 					cp = op_end; // Have the loop process whatever lies at op_end and beyond.
 					continue; // "Continue" to avoid the ++cp at the bottom.
@@ -8469,7 +9669,7 @@ unquoted_literal:
 
 			if (!can_be_optimized_out)
 			{
-				LPTSTR str = SimpleHeap::Alloc(this_deref_ref.marker, this_deref_ref.length);
+				LPTSTR str = g_SimpleHeap->Alloc(this_deref_ref.marker, this_deref_ref.length);
 				infix[infix_count].SetValue(str, this_deref_ref.length);
 				infix_count++;
 			}
@@ -8554,7 +9754,7 @@ unquoted_literal:
 					return LineError(ERR_MISSING_OPEN_PAREN, FAIL, cp);
 				CHECK_AUTO_CONCAT;
 				infix[infix_count].callsite = new CallSite();
-				infix[infix_count].callsite->func = sIsSetFunc;
+				infix[infix_count].callsite->func = g_sIsSetFunc;
 				this_deref_ref.symbol = SYM_FUNC;
 			}
 			infix[infix_count].symbol = this_deref_ref.symbol;
@@ -9143,7 +10343,7 @@ standard_pop_into_postfix: // Use of a goto slightly reduces code size.
 			}
 			else if ((this_postfix->callsite->flags & IT_BITMASK) == IT_CALL)
 			{
-				if (this_postfix->callsite->param_count == 1 && this_postfix->callsite->func == sIsSetFunc)
+				if (this_postfix->callsite->param_count == 1 && this_postfix->callsite->func == g_sIsSetFunc)
 				{
 					if (postfix[postfix_count - 1]->symbol != SYM_VAR && postfix[postfix_count - 1]->symbol != SYM_DYNAMIC)
 					{
@@ -9259,7 +10459,7 @@ end_of_infix_to_postfix:
 		case SYM_FLOAT:
 			// Convert this numeric literal back into a string to ensure the format is consistent.
 			// This also ensures parentheses are not present in the output, for cases like MsgBox (1.0).
-			aArg.text = SimpleHeap::Alloc(TokenToString(only_token, number_buf));
+			aArg.text = g_SimpleHeap->Alloc(TokenToString(only_token, number_buf));
 			aArg.is_expression = false;
 			break;
 		case SYM_STRING:
@@ -9279,7 +10479,7 @@ end_of_infix_to_postfix:
 	}
 
 	// Create a new postfix array and attach it to this arg of this line.
-	aArg.postfix = SimpleHeap::Alloc<ExprTokenType>(postfix_count + 1); // +1 for the terminator item added below.
+	aArg.postfix = g_SimpleHeap->Alloc<ExprTokenType>(postfix_count + 1); // +1 for the terminator item added below.
 
 	int i, j, max_stack = 0, max_alloc = 0;
 	for (i = 0; i < postfix_count; ++i) // Copy the postfix array in physically sorted order into the new postfix array.
@@ -9301,7 +10501,7 @@ end_of_infix_to_postfix:
 		// for later to facilitate detecting variables which are not assigned anywhere.
 		if (new_token.symbol == SYM_VAR && VARREF_IS_WRITE(new_token.var_usage))
 		{
-			new_token.var = g_script.FindOrAddVar(new_token.var_deref->marker, new_token.var_deref->length, FINDVAR_FOR_WRITE);
+			new_token.var = g_script->FindOrAddVar(new_token.var_deref->marker, new_token.var_deref->length, FINDVAR_FOR_WRITE);
 			if (!new_token.var)
 				return FAIL;
 			// This is currently left to FinalizeExpression() to reduce code size:
@@ -9475,6 +10675,8 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 	if (stack_count != 1)
 		return LineError(ERR_EXPR_SYNTAX);
 
+	auto curfunc = g->CurrentFunc;
+	if (!curfunc || !curfunc->mIsMacro)
 	for (auto this_postfix = aArg.postfix; this_postfix->symbol != SYM_INVALID; ++this_postfix)
 	{
 		if (this_postfix->symbol != SYM_VAR)
@@ -9485,7 +10687,44 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 			return FAIL;
 		if (!this_postfix->var->IsAssignedSomewhere()
 			&& this_postfix->var_usage == VARREF_READ) // i.e. VARREF_READ_MAYBE (var?, var ?? value) generates no warning but doesn't mark var as assigned.
-			g_script.WarnUnassignedVar(this_postfix->var, this);
+		{
+			if (this_postfix->var->mType == VAR_NORMAL)
+			{
+				if (this_postfix->var->HasAlreadyWarned())
+					continue;
+				if (this_postfix > aArg.postfix && (this_postfix - 1)->symbol == SYM_OBJECT && static_cast<BuiltInFunc*>((this_postfix - 1)->object)->mBIF == &BIF_Alias) {
+					this_postfix->var_usage = VARREF_REF;
+					continue;
+				}
+				if (this_postfix->var->mScope == VAR_GLOBAL)
+				{
+					if (g_script->LoadVarFromLib(this_postfix->var->mName))
+						continue;
+					if (g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))
+						continue;
+				}
+				else if (curfunc)
+				{
+					auto var = g_script->FindGlobalVar(this_postfix->var->mName);
+					if (var && var->mType == VAR_NORMAL && !var->IsAssignedSomewhere())
+						var = NULL;
+					if (var || (var = g_script->LoadVarFromLib(this_postfix->var->mName)) ||
+						(var = g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))) {
+						g->CurrentFunc->mVars.Remove(this_postfix->var->mName);
+						if (g->CurrentFunc->mVars.mCount == 0 && g->CurrentFunc->mVars.mItem)
+						{
+							free(g->CurrentFunc->mVars.mItem);
+							g->CurrentFunc->mVars.mItem = NULL;
+						}
+						delete this_postfix->var;
+						this_postfix->SetValue(var->mObject);
+						var->mObject->AddRef();
+						continue;
+					}
+				}
+			}
+			g_script->WarnUnassignedVar(this_postfix->var, this);
+		}
 	}
 
 	return OK;
@@ -9495,22 +10734,23 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 //-------------------------------------------------------------------------------------
 
 // Init static vars:
-Line *Line::sLog[] = {NULL};  // Initialize all the array elements.
-DWORD Line::sLogTick[]; // No initialization needed.
-int Line::sLogNext = 0;  // Start at the first element.
+thread_local Line *Line::sLog[] = {NULL};  // Initialize all the array elements.
+thread_local DWORD Line::sLogTick[]; // No initialization needed.
+thread_local int Line::sLogNext = 0;  // Start at the first element.
 
 #ifdef AUTOHOTKEYSC  // Reduces code size to omit things that are unused, and helps catch bugs at compile-time.
-	LPTSTR Line::sSourceFile[1]; // No init needed.
+	thread_local LPTSTR Line::sSourceFile[1]; // No init needed.
 #else
-	LPTSTR *Line::sSourceFile = NULL; // Init to NULL for use with realloc() and for maintainability.
-	int Line::sMaxSourceFiles = 0;
+	thread_local LPTSTR *Line::sSourceFile = NULL; // Init to NULL for use with realloc() and for maintainability.
+	thread_local int Line::sMaxSourceFiles = 0;
 #endif
-	int Line::sSourceFileCount = 0; // Zero source files initially.  The main script will be the first.
+	thread_local int Line::sSourceFileCount = 0; // Zero source files initially.  The main script will be the first.
 
-LPTSTR Line::sDerefBuf = NULL;  // Buffer to hold the values of any args that need to be dereferenced.
-size_t Line::sDerefBufSize = 0;
-int Line::sLargeDerefBufs = 0; // Keeps track of how many large bufs exist on the call-stack, for the purpose of determining when to stop the buffer-freeing timer.
-LPTSTR Line::sArgDeref[MAX_ARGS]; // No init needed.
+thread_local LPTSTR Line::sDerefBuf = NULL;  // Buffer to hold the values of any args that need to be dereferenced.
+thread_local LPTSTR Line::sDerefBufBackup = NULL;  // Buffer backup to cleanup on exit if needed.
+thread_local size_t Line::sDerefBufSize = 0;
+thread_local int Line::sLargeDerefBufs = 0; // Keeps track of how many large bufs exist on the call-stack, for the purpose of determining when to stop the buffer-freeing timer.
+thread_local LPTSTR Line::sArgDeref[MAX_ARGS]; // No init needed.
 
 
 void Line::FreeDerefBufIfLarge()
@@ -9522,7 +10762,7 @@ void Line::FreeDerefBufIfLarge()
 		// deref buffer (they make copies of anything they need prior to calling MsgSleep() or anything
 		// else that might pump messages and thus result in a call to us here).
 		free(sDerefBuf); // The above size-check has ensured this is non-NULL.
-		SET_S_DEREF_BUF(NULL, 0);
+		SET_S_DEREF_BUF_BKP(NULL, 0);
 		--sLargeDerefBufs;
 		if (!sLargeDerefBufs)
 			KILL_DEREF_TIMER
@@ -9575,6 +10815,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 	ResultType if_condition, result;
 	LONG_OPERATION_INIT
 	global_struct &g = *::g; // Reduces code size and may improve performance. Eclipsing ::g with local g makes compiler remind/enforce the use of the right one.
+	DWORD aThreadID = CURRENT_THREADID;
 
 	for (Line *line = this; line != NULL;)
 	{
@@ -9616,30 +10857,37 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			// g.UninterruptedLineCount and update g.AllowThreadToBeInterrupted, rather than doing
 			// those things on-demand in IsInterruptible().  If those checks were moved to
 			// IsInterruptible(), they might compare against a different/changed value of
-			// g_script.mUninterruptedLineCountMax because IsInterruptible() is called only upon demand.
+			// g_script->mUninterruptedLineCountMax because IsInterruptible() is called only upon demand.
 			// THIS SECTION DOES NOT CHECK g.ThreadStartTime because that only needs to be
 			// checked on demand by callers of IsInterruptible().
-			if (g.UninterruptedLineCount > g_script.mUninterruptedLineCountMax // See above.
-				&& g_script.mUninterruptedLineCountMax > -1)
+			if (g.UninterruptedLineCount > g_script->mUninterruptedLineCountMax // See above.
+				&& g_script->mUninterruptedLineCountMax > -1)
 				g.AllowThreadToBeInterrupted = true;
 		}
 
 		// At this point, a pause may have been triggered either by the above MsgSleep()
 		// or due to the action of a command (e.g. Pause, or perhaps tray menu "pause" was selected during Sleep):
 		while (g.IsPaused) // An initial "if (g.IsPaused)" prior to the loop doesn't make it any faster.
-			MsgSleep(INTERVAL_UNSPECIFIED);  // Must check often to periodically run timed subroutines.
+		{
+			if ((char)g.IsPaused == -1)	// thqby: Used to terminate a thread
+				return EARLY_RETURN;
+			if (g_MainThreadID == aThreadID)
+				MsgSleep(INTERVAL_UNSPECIFIED);  // Must check often to periodically run timed subroutines.
+			else
+				Sleep(SLEEP_INTERVAL);
+		}
 
 		// Do these only after the above has had its opportunity to spend a significant amount
 		// of time doing what it needed to do.  i.e. do these immediately before the line will actually
 		// be run so that the time it takes to run will be reflected in the ListLines log.
-        g_script.mCurrLine = line;  // Simplifies error reporting when we get deep into function calls.
+        g_script->mCurrLine = line;  // Simplifies error reporting when we get deep into function calls.
 
 		if (g.ListLinesIsEnabled)
 			LOG_LINE(line)
 
 #ifdef CONFIG_DEBUGGER
-		if (g_Debugger.IsConnected() && line->mActionType != ACT_WHILE) // L31: PreExecLine of ACT_WHILE is now handled in PerformLoopWhile() where inspecting A_Index will yield the correct result.
-			g_Debugger.PreExecLine(line);
+		if (g_Debugger->IsConnected() && line->mActionType != ACT_WHILE) // L31: PreExecLine of ACT_WHILE is now handled in PerformLoopWhile() where inspecting A_Index will yield the correct result.
+			g_Debugger->PreExecLine(line);
 #endif
 
 		// Do this only after the opportunity to Sleep (above) has passed, because during
@@ -9968,7 +11216,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 				else
 					// The open of a remote key failed (we know it's remote otherwise it should have
 					// failed earlier rather than here).
-					result = g_script.Win32Error();
+					result = g_script->Win32Error();
 				break;
 			}
 
@@ -10059,7 +11307,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 						result = args->output_var->Assign(*our_token);
 				if (!result)
 				{
-					g_script.FreeExceptionToken(our_token);
+					g_script->FreeExceptionToken(our_token);
 					return FAIL;
 				}
 			}
@@ -10096,7 +11344,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 					UnhandledException_was_not_called = true; // Because THROW didn't have our_token to pass to it.
 				}
 				else
-					g_script.FreeExceptionToken(our_token); // Get this out of the way now in case of early "goto" or "return".
+					g_script->FreeExceptionToken(our_token); // Get this out of the way now in case of early "goto" or "return".
 			}
 			g.ExcptMode = outer_excptmode; // Reset it now in case of early "goto" or "return".
 
@@ -10119,12 +11367,13 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 					// Otherwise: an exception of appropriate type was not thrown, so skip this 'catch'.
 					line = line->mRelatedLine;
 				}
-				if (!bHasCatch && g.ThrownToken && line->mActionType != ACT_FINALLY
-					&& Object::HasBase(*g.ThrownToken, ErrorPrototype::Error)) // Make `try {}` equivalent to `try {} catch {}` without a class.
+				if (!bHasCatch && g.ThrownToken && line->mActionType != ACT_FINALLY)
+					// thqby: Other types may be thrown
+					//&& Object::HasBase(*g.ThrownToken, ErrorPrototype::Error)) // Make `try {}` equivalent to `try {} catch {}` without a class.
 				{
 					// An exception was thrown, but no 'catch' nor 'finally' is present.
 					// In this case 'try' acts as a catch-all.
-					g_script.FreeExceptionToken(g.ThrownToken);
+					g_script->FreeExceptionToken(g.ThrownToken);
 					result = OK;
 				}
 				if (!g.ThrownToken && line->mActionType == ACT_ELSE && result == OK && !jump_to_line)
@@ -10162,7 +11411,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 				if (res != OK || invalid_jump)
 				{
 					if (thrown_token) // The new error takes precedence over this one.
-						g_script.FreeExceptionToken(thrown_token);
+						g_script->FreeExceptionToken(thrown_token);
 					if (res == FAIL || res == EARLY_EXIT)
 						// Above: It's borderline whether Exit should be valid here, but it's allowed for
 						// two reasons: 1) if the script was non-persistent it could have already terminated
@@ -10170,7 +11419,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 						return res;
 					// The remaining cases are all invalid jumps/control flow statements.  All such cases
 					// should be detected at load time, but it seems best to keep this for maintainability:
-					return g_script.mCurrLine->LineError(ERR_BAD_JUMP_INSIDE_FINALLY);
+					return g_script->mCurrLine->LineError(ERR_BAD_JUMP_INSIDE_FINALLY);
 				}
 				g.ThrownToken = thrown_token; // If non-NULL, this was thrown within the try block.
 			}
@@ -10184,7 +11433,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 				// mCurrLine is more likely to be relevant than `line`, which at this point is probably the
 				// line after the TRY/ELSE.  This is only used if ThrownToken doesn't have valid File/Line
 				// properties; i.e. it's not a proper Error, so it's something not intended for error-reporting.
-				return g_script.UnhandledException(g_script.mCurrLine);
+				return g_script->UnhandledException(g_script->mCurrLine);
 			}
 			
 			if (aMode == ONLY_ONE_LINE || result != OK)
@@ -10250,7 +11499,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			// Throw the newly-created token
 			g.ThrownToken = token;
 			if (!(g.ExcptMode & EXCPTMODE_CATCH))
-				g_script.UnhandledException(line);
+				g_script->UnhandledException(line);
 			return FAIL;
 		}
 
@@ -10540,6 +11789,13 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			// Remove this line from the main list, so that it won't be executed again during normal flow.
 			line->mPrevLine->mNextLine = line->mNextLine;
 			line->mNextLine->mPrevLine = line->mPrevLine;
+			// add static line to Script::mLastStaticLine list
+			if (g_script->mLastStaticLine) {
+				line->mPrevLine = g_script->mLastStaticLine;
+				g_script->mLastStaticLine = line;
+			}
+			else
+				line->mPrevLine = NULL, g_script->mLastStaticLine = line;
 			if (aMode == ONLY_ONE_LINE)
 				return result;
 			line = line->mNextLine;
@@ -10668,13 +11924,13 @@ ResultType HotkeyCriterion::Eval(LPTSTR aHotkeyName)
 	g->HotCriterion = this;
 
 	// Update A_ThisHotkey, useful if #HotIf calls a function to do its dirty work.
-	LPTSTR prior_hotkey_name[] = { g_script.mThisHotkeyName, g_script.mPriorHotkeyName };
-	DWORD prior_hotkey_time[] = { g_script.mThisHotkeyStartTime, g_script.mPriorHotkeyStartTime };
-	g_script.mPriorHotkeyName = g_script.mThisHotkeyName;			// For consistency
-	g_script.mPriorHotkeyStartTime = g_script.mThisHotkeyStartTime; //
-	g_script.mThisHotkeyName = aHotkeyName;
-	g_script.mThisHotkeyStartTime = // Updated for consistency.
-	g_script.mLastPeekTime = GetTickCount();
+	LPTSTR prior_hotkey_name[] = { g_script->mThisHotkeyName, g_script->mPriorHotkeyName };
+	DWORD prior_hotkey_time[] = { g_script->mThisHotkeyStartTime, g_script->mPriorHotkeyStartTime };
+	g_script->mPriorHotkeyName = g_script->mThisHotkeyName;			// For consistency
+	g_script->mPriorHotkeyStartTime = g_script->mThisHotkeyStartTime; //
+	g_script->mThisHotkeyName = aHotkeyName;
+	g_script->mThisHotkeyStartTime = // Updated for consistency.
+	g_script->mLastPeekTime = GetTickCount();
 
 	// CALL THE CALLBACK
 	ExprTokenType param = aHotkeyName;
@@ -10692,10 +11948,10 @@ ResultType HotkeyCriterion::Eval(LPTSTR aHotkeyName)
 	g_HotExprLFW = g->hWndLastUsed; // Even if above failed, for simplicity.
 
 	// A_ThisHotkey must be restored else A_PriorHotkey will get an incorrect value later.
-	g_script.mThisHotkeyName = prior_hotkey_name[0];
-	g_script.mThisHotkeyStartTime = prior_hotkey_time[0];
-	g_script.mPriorHotkeyName = prior_hotkey_name[1];
-	g_script.mPriorHotkeyStartTime = prior_hotkey_time[1];
+	g_script->mThisHotkeyName = prior_hotkey_name[0];
+	g_script->mThisHotkeyStartTime = prior_hotkey_time[0];
+	g_script->mPriorHotkeyName = prior_hotkey_name[1];
+	g_script->mPriorHotkeyStartTime = prior_hotkey_time[1];
 
 	ResumeUnderlyingThread();
 
@@ -10783,14 +12039,14 @@ ResultType Line::PerformLoopWhile(ResultToken *aResultToken, Line *&aJumpToLine)
 
 	for (;; ++g.mLoopIteration)
 	{
-		g_script.mCurrLine = this; // For error-reporting purposes.
+		g_script->mCurrLine = this; // For error-reporting purposes.
 #ifdef CONFIG_DEBUGGER
 		// L31: Let the debugger break at the 'While' line each iteration. Before this change,
 		// a While loop with empty body such as While FuncWithSideEffect() {} would be "hit"
 		// (via breakpoint or step) only once even if the loop had multiple iterations.
 		// A_Index was also reported as "0"; it will now be reported correctly.
-		if (g_Debugger.IsConnected())
-			g_Debugger.PreExecLine(this);
+		if (g_Debugger->IsConnected())
+			g_Debugger->PreExecLine(this);
 #endif
 		// Evaluate the expression only now that A_Index has been set.
 		auto args_result = ExpandArgs();
@@ -10819,13 +12075,13 @@ ResultType Line::PerformLoopWhile(ResultToken *aResultToken, Line *&aJumpToLine)
 
 bool Line::EvaluateLoopUntil(ResultType &aResult)
 {
-	g_script.mCurrLine = this; // For error-reporting purposes.
+	g_script->mCurrLine = this; // For error-reporting purposes.
 	if (g->ListLinesIsEnabled)
 		LOG_LINE(this);
 #ifdef CONFIG_DEBUGGER
 	// Let the debugger break at or step onto UNTIL.
-	if (g_Debugger.IsConnected())
-		g_Debugger.PreExecLine(this);
+	if (g_Debugger->IsConnected())
+		g_Debugger->PreExecLine(this);
 #endif
 	aResult = ExpandArgs();
 	if (aResult != OK)
@@ -11571,7 +12827,7 @@ ResultType Line::PerformLoopReadFile(ResultToken *aResultToken, Line *&aJumpToLi
 		// probably best to throw an error.
 		DWORD error = GetLastError();
 		if (  !(mRelatedLine->mActionType == ACT_ELSE && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND))  )
-			return g_script.Win32Error(error);
+			return g_script->Win32Error(error);
 		// Otherwise, execute the ELSE below.
 	}
 
@@ -11628,15 +12884,26 @@ ResultType Line::PerformAssign()
 	
 	if (!mArg[1].is_expression)
 	{
+		Var* output_var = VAR(mArg[0]), * aMacroVar;
+		if (g->CurrentMacro && !(output_var->mScope & VAR_MACRO) && (aMacroVar = g_script->FindVar(output_var->mName, mArg[0].length, FINDVAR_FOR_READ)))
+			output_var = aMacroVar;
 		ASSERT(mArg[1].postfix);
 		// Examples of assignments this covers:
 		//		x := 123
 		//		x := 1.0
 		//		x := "quoted literal string"
 		//		x := normal_var  ; but not VAR_VIRTUAL or VAR_CONSTANT
-		if (mArg[1].postfix->symbol == SYM_VAR && mArg[1].postfix->var->IsUninitialized())
-			return g_script.VarUnsetError(mArg[1].postfix->var); // !is_expression implies VAR_NORMAL, so InitializeConstant() isn't needed here.
-		Var *output_var = VAR(mArg[0]);
+		if (mArg[1].postfix->symbol == SYM_VAR)
+		{
+			Var* aSourceVar = mArg[1].postfix->var;
+			if (g->CurrentMacro && !(aSourceVar->mScope & VAR_MACRO) && (aMacroVar = g_script->FindVar(aSourceVar->mName, 0, FINDVAR_FOR_READ)))
+				aSourceVar = aMacroVar;
+			if (aSourceVar->IsUninitialized())
+				return g_script->VarUnsetError(mArg[1].postfix->var); // !is_expression implies VAR_NORMAL, so InitializeConstant() isn't needed here.
+			return output_var->Assign(*aSourceVar);
+		}
+		// HotKeyIt override routine for manually added BuildIn variables
+		// if (!(mArg[1].postfix->symbol == SYM_VAR && (mArg[1].postfix->var->mType == VAR_BUILTIN)))
 		return output_var->Assign(*mArg[1].postfix);
 	}
 
@@ -11790,7 +13057,23 @@ LPTSTR Line::LogToText(LPTSTR aBuf, int aBufSize) // aBufSize should be an int t
 			if (last_file_index != sLog[line_index]->mFileIndex)
 			{
 				last_file_index = sLog[line_index]->mFileIndex;
+#ifdef _USRDLL
+				// terminate source file if it contains new lines
+				LPTSTR new_line_pos = _tcschr(sSourceFile[last_file_index], '\r');
+				if (!new_line_pos)
+					new_line_pos = _tcschr(sSourceFile[last_file_index], '\n');
+				TCHAR new_line_char = NULL;
+				if (new_line_pos)
+				{
+					new_line_char = *new_line_pos;
+					*new_line_pos = '\0';
+				}
+#endif
 				aBuf += sntprintf(aBuf, BUF_SPACE_REMAINING, _T("---- %s\r\n"), sSourceFile[last_file_index]);
+#ifdef _USRDLL
+				if (new_line_pos)
+					*new_line_pos = new_line_char;
+#endif
 			}
 #endif
 			space_remaining = BUF_SPACE_REMAINING;  // Resolve macro only once for performance.
@@ -11891,7 +13174,7 @@ void ToggleSuspendState()
 	g_IsSuspended = !g_IsSuspended;
 	Hotstring::SuspendAll(g_IsSuspended);  // Must do this prior to ManifestAllHotkeysHotstringsHooks() to avoid incorrect removal of hook.
 	Hotkey::ManifestAllHotkeysHotstringsHooks(); // Update the state of all hotkeys based on the complex interdependencies hotkeys have with each another.
-	g_script.UpdateTrayIcon();
+	g_script->UpdateTrayIcon();
 	CheckMenuItem(GetMenu(g_hWnd), ID_FILE_SUSPEND, g_IsSuspended ? MF_CHECKED : MF_UNCHECKED);
 }
 
@@ -11973,17 +13256,21 @@ void PauseCurrentThread()
 	// in case we are in a hotkey subroutine and in case this hotkey has a buffered repeat-again
 	// action pending, which the user probably wouldn't want to happen after the script is unpaused:
 	Hotkey::ResetRunAgainAfterFinished();
-	auto &g = *::g;
+	auto& g = *::g;
 	g.IsPaused = true;
 	++g_nPausedThreads; // For this purpose the idle thread is counted as a paused thread.
-	g_script.UpdateTrayIcon();
+	g_script->UpdateTrayIcon();
 	// Don't return until the script is unpaused.  This is done for two reasons:
 	// 1) Pause() can be called as part of an expression, in which case it seems more intuitive for
 	//    the script to pause immediately rather than after evaluating more of the expression.
 	// 2) If `return Pause()` is used, the thread might end before checking g.IsPaused, in which
 	//    case g_nPausedThreads would not be adjusted and timers would forever be disabled.
 	while (g.IsPaused)
+	{
+		if ((char)g.IsPaused == -1)	// thqby: Used to terminate a thread
+			return;
 		MsgSleep(INTERVAL_UNSPECIFIED);
+	}
 }
 
 
@@ -11994,10 +13281,13 @@ ResultType Script::PreprocessLocalVars(FuncList &aFuncs)
 	{
 		ASSERT(!aFuncs.mItem[i]->IsBuiltIn());
 		auto &func = *(UserFunc *)aFuncs.mItem[i];
+		if (func.mPreprocessLocalVarsDone)
+			continue;
 		if (!PreprocessLocalVars(func))
 			return FAIL;
 		// Nested functions will be preparsed next, due to the fact that they immediately
 		// follow the outer function in aFuncs.
+		func.mPreprocessLocalVarsDone = true;
 	}
 	return OK;
 }
@@ -12050,7 +13340,7 @@ ResultType Script::PreprocessLocalVars(UserFunc &aFunc)
 	}
 	if (closure_count)
 	{
-		aFunc.mClosure = SimpleHeap::Alloc<ClosureInfo>(closure_count);
+		aFunc.mClosure = g_SimpleHeap->Alloc<ClosureInfo>(closure_count);
 		for (int v = 0; v < var_count; ++v)
 		{
 			Var &var = *vars[v];
@@ -12069,8 +13359,8 @@ ResultType Script::PreprocessLocalVars(UserFunc &aFunc)
 		// Upvars are vars local to an outer function which are referenced by aFunc.
 		// They might be local to aFunc.mOuterFunc or one further out.  In the latter
 		// case, aFunc.mOuterFunc contains a downvar which is also one of its upvars.
-		aFunc.mUpVar = SimpleHeap::Alloc<Var*>(aFunc.mUpVarCount);
-		aFunc.mUpVarIndex = SimpleHeap::Alloc<int>(aFunc.mUpVarCount);
+		aFunc.mUpVar = g_SimpleHeap->Alloc<Var*>(aFunc.mUpVarCount);
+		aFunc.mUpVarIndex = g_SimpleHeap->Alloc<int>(aFunc.mUpVarCount);
 
 		auto &outer = *aFunc.mOuterFunc; // Always non-null when aFunc.mUpVarCount > 0.
 		int upvar_count = 0;
@@ -12099,7 +13389,7 @@ ResultType Script::PreprocessLocalVars(UserFunc &aFunc)
 	if (aFunc.mDownVarCount)
 	{
 		// Downvars are vars local to aFunc which are referenced by a nested function.
-		aFunc.mDownVar = SimpleHeap::Alloc<Var*>(aFunc.mDownVarCount);
+		aFunc.mDownVar = g_SimpleHeap->Alloc<Var*>(aFunc.mDownVarCount);
 		
 		int downvar_count = 0;
 		for (int v = 0; v < var_count; ++v)
@@ -12119,6 +13409,7 @@ ResultType Script::PreprocessLocalVars(UserFunc &aFunc)
 
 ResultType Script::PreparseVarRefs()
 {
+	g->CurrentFunc = g->CurrentMacro;
 	// AddLine() and ExpressionToPostfix() currently leave validation of output variables
 	// and lvalues to this function, to reduce code size.  Search for "VarIsReadOnlyError".
 	for (Line *line = mFirstLine; line; line = line->mNextLine)
@@ -12128,7 +13419,7 @@ ResultType Script::PreparseVarRefs()
 		case ACT_BLOCK_BEGIN: if (line->mAttribute) g->CurrentFunc = (UserFunc *)line->mAttribute; break;
 		case ACT_BLOCK_END: if (line->mAttribute) g->CurrentFunc = g->CurrentFunc->mOuterFunc; break;
 		}
-		
+
 		mCurrLine = line; // For error-reporting.
 
 		for (int a = 0; a < line->mArgc; ++a)
@@ -12285,7 +13576,7 @@ LPTSTR Script::ListKeyHistory(LPTSTR aBuf, int aBufSize) // aBufSize should be a
 		_T("\r\nModifiers (GetKeyState() now) = %s")
 		_T("\r\n")
 		, win_title
-		//, SimpleHeap::GetBlockCount()
+		//, g_SimpleHeap->GetBlockCount()
 		, g_KeybdHook == NULL ? _T("no") : _T("yes")
 		, g_MouseHook == NULL ? _T("no") : _T("yes")
 		, mTimerEnabledCount, mTimerCount, timer_list
@@ -12644,4 +13935,153 @@ ResultType Script::ActionExec(LPTSTR aAction, LPTSTR aParams, LPTSTR aWorkingDir
 	if (!aProcess && hprocess)
 		CloseHandle(hprocess); // Required to avoid memory leak.
 	return OK;
+}
+
+
+Var* LoadDllFunction(LPTSTR parameter)
+{
+	LPTSTR aFuncName = omit_leading_whitespace(parameter);
+	// backup current function
+	// Func currentfunc = **g_script->mFunc;
+	if (!(parameter = _tcschr(parameter, ',')) || !*parameter) {
+		g_script->ScriptError(ERR_PARAM2_REQUIRED, parameter);
+		return NULL;
+	}
+	else
+		parameter++;
+	if (_tcschr(aFuncName, ','))
+		*(_tcschr(aFuncName, ',')) = '\0';
+	ltrim(parameter);
+	if (!*aFuncName) {
+		g_script->ScriptError(_T("Empty function name, make sure to use space after #DllImport not ','."), parameter); // Seems more descriptive than "Function already defined."
+		return NULL;
+	}
+
+	void* function = NULL; // Will hold the address of the function to be called.
+	LPTSTR path;
+	if (!g_script->DerefInclude(path, parameter) || _tcschr(path, '%'))
+	{
+		g_script->ScriptError(_T("Reference not allowed here, use & where possible. Only %A_AhkPath% %A_AhkDir% %A_DllPath% %A_DllDir% %A_ScriptDir% %A_AppData[Common]% %A_ThreadID% %A_PtrSize% can be used here."), parameter);
+		if (path)
+			free(path);
+		return NULL;
+	}
+	parameter = path;
+	// terminate dll\function name, find it and jump to next parameter
+	if (_tcschr(parameter, ','))
+		*(_tcschr(parameter, ',')) = '\0';
+	parameter = omit_leading_whitespace(parameter);
+	if (IsNumeric(parameter))
+		function = (void*)ATOI64(parameter);
+	else {
+		LPTSTR dll_name = _tcsrchr(parameter, '\\');
+		if (dll_name)
+		{
+			*dll_name = '\0';
+			if (!GetModuleHandle(parameter))
+				LoadLibrary(parameter);
+			*dll_name = '\\';
+		}
+		function = (void*)GetDllProcAddress(parameter);
+		if (!function && !dll_name) {
+#ifdef UNICODE
+			char function_name[MAX_PATH];
+			WideCharToMultiByte(CP_ACP, 0, parameter, -1, function_name, MAX_PATH, NULL, NULL);
+#else
+			char* function_name = parameter;
+#endif
+			function = GetProcAddress(g_hInstance, function_name);
+
+			if (!function && RegExMatch(parameter, _T("^[A-Za-z\\d+/=]+(:[A-Za-z\\d+/=]+)?\\s*$")))
+			{
+				LPTSTR p;
+#ifdef _WIN64
+				if (p = _tcschr(parameter, ':'))
+					parameter = p + 1;
+#endif
+				DWORD s, i = 0, flag = CRYPT_STRING_HEX;
+				if (p = _tcschr(parameter, ':'))
+					s = (DWORD)(p - parameter);
+				else
+					s = (DWORD)_tcslen(parameter);
+				while (s && IS_SPACE_OR_TAB(parameter[s - 1])) s--;
+				if (s) {
+					for (; i < s && flag == CRYPT_STRING_HEX; i++)
+						if (!isxdigit(parameter[i])) flag = CRYPT_STRING_BASE64;
+					if (CryptStringToBinary(parameter, s, flag, NULL, &i, NULL, NULL)) {
+						if (!(function = (void*)g_SimpleHeap->Malloc(i))) {
+							free(path);
+							g_script->ScriptError(ERR_OUTOFMEM);
+							return NULL;
+						}
+						CryptStringToBinary(parameter, s, flag, (BYTE*)function, &i, NULL, NULL);
+						VirtualProtect(function, i, PAGE_EXECUTE_READWRITE, &s);
+					}
+				}
+			}
+		}
+	}
+	if (!function) {
+		g_script->ScriptError(ERR_NONEXISTENT_FUNCTION, parameter);
+		free(path);
+		return NULL;
+	}
+	VarList* varlist;
+	int insert_pos, insert_into = VAR_DECLARE_GLOBAL;
+	Var* found_var = g_script->FindVar(aFuncName, _tcslen(aFuncName), insert_into, &varlist, &insert_pos);
+	if (found_var)
+	{
+		if (found_var->IsAssignedSomewhere()) {
+			g_script->ScriptError(_T("Duplicate function definition."), aFuncName); // Seems more descriptive than "Function already defined."
+			free(path);
+			return NULL;
+		}
+	}
+	else
+		if (!(found_var = g_script->AddVar(aFuncName, _tcslen(aFuncName), varlist, insert_pos, insert_into))) {
+			free(path);
+			return NULL; // It already displayed the error.
+		}
+
+	parameter = parameter + _tcslen(parameter) + 1;
+	LPTSTR parm = g_SimpleHeap->Malloc(parameter);
+	bool has_return = false;
+	int aParamCount = !*parm || ATOI(parm) ? 0 : 1;
+	if (*parm)
+		for (; _tcschr(parameter, ','); aParamCount++)
+		{
+			if (parameter = _tcschr(parameter, ','))
+				parameter++;
+		}
+	if (aParamCount < 1) {
+		g_script->ScriptError(ERR_PARAM3_REQUIRED, parameter);
+		free(path);
+		return NULL;
+	}
+
+	ExprTokenType* exps = (ExprTokenType*)_alloca((++aParamCount) * sizeof(ExprTokenType));
+	ExprTokenType** arr = (ExprTokenType**)_alloca(aParamCount * sizeof(ExprTokenType*));
+	exps->SetValue((UINT64)function);
+	arr[0] = exps;
+	LPTSTR this_param;
+	for (int i = 1; i < aParamCount; i++)
+	{
+		this_param = _tcschr(parm, ',');
+		exps[i].SetValue(omit_leading_whitespace(parm));
+		arr[i] = &exps[i];
+		if (this_param)
+		{
+			*this_param = '\0';
+			parm = this_param + 1;
+		}
+	}
+	auto obj = DynaToken::Create(arr, aParamCount);
+	if (!obj) {
+		free(path);
+		return NULL;
+	}
+	found_var->AssignSkipAddRef(obj);
+	found_var->MakeReadOnly();
+	free(path);
+	return found_var;
 }

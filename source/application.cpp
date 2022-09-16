@@ -21,6 +21,38 @@ GNU General Public License for more details.
 #include "util.h" // for strlcpy()
 #include "resources/resource.h"  // For ID_TRAY_OPEN.
 
+VOID CALLBACK ThreadExitApp(ULONG_PTR dwParam)
+{
+	g_script->ExitApp(EXIT_CLOSE);
+}
+
+int CanScrollInDirection(HWND aHwnd, DWORD aMessage, DWORD aStyle, WPARAM wParam)
+{
+	if ((aMessage == WM_MOUSEWHEEL && !(aStyle & WS_VSCROLL))
+		|| (aMessage == WM_MOUSEHWHEEL && !(aStyle & WS_HSCROLL)))
+		return 0;
+	SHORT direction = HIWORD(wParam);
+	SCROLLINFO si = { sizeof(SCROLLINFO) };
+	si.fMask = SIF_POS|SIF_RANGE|SIF_PAGE;
+	if (!GetScrollInfo(aHwnd, aMessage == WM_MOUSEWHEEL ? SB_VERT : SB_HORZ, &si))
+		return 0; // cannot retrive scrollinfo
+	// Scrolbar is disabled
+	if (si.nMax == si.nMin)
+		return 0;
+	else if (aMessage == WM_MOUSEWHEEL)
+	{ // check if VScroll is at limit and we can't scroll further
+		if (direction > 0 && si.nPos == si.nMin
+			|| direction < 0 && si.nPos + si.nPage - 1 == si.nMax)
+			return 0;
+	}
+	else
+	{	// check if HScroll is at limit and we can't scroll further
+		if (direction < 0 && si.nPos == si.nMin
+			|| direction > 0 && si.nPos + si.nPage - 1 == si.nMax)
+			return 0;
+	}
+	return 1;
+}
 
 bool MsgSleep(int aSleepDuration, MessageMode aMode)
 // Returns true if it launched at least one thread, and false otherwise.
@@ -167,7 +199,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 	// aSleepDuration greater than 0 is about to be done and there are some
 	// script timers that need to be watched (this happens when aMode == WAIT_FOR_MESSAGES).
 	// UPDATE: Make this a macro so that it is dynamically resolved every time, in case
-	// the value of g_script.mTimerEnabledCount changes on-the-fly.
+	// the value of g_script->mTimerEnabledCount changes on-the-fly.
 	// UPDATE #2: The below has been changed in light of the fact that the main timer is
 	// now kept always-on whenever there is at least one enabled timed subroutine.
 	// This policy simplifies ExecUntil() and long-running commands such as FileSetAttrib.
@@ -181,7 +213,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 		++g_nLayersNeedingTimer;  // IsCycleComplete() is responsible for decrementing this for us.
 		SET_MAIN_TIMER
 		// Reasons why the timer might already have been on:
-		// 1) g_script.mTimerEnabledCount is greater than zero or there are joystick hotkeys.
+		// 1) g_script->mTimerEnabledCount is greater than zero or there are joystick hotkeys.
 		// 2) another instance of MsgSleep() (beneath us in the stack) needs it (see the comments
 		//    in IsCycleComplete() near KILL_MAIN_TIMER for details).
 	}
@@ -237,6 +269,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// (if they're installed).  Otherwise, there's greater risk of keyboard/mouse lag.
 			// PeekMessage(), depending on how, and how often it's called, will also do this, but
 			// I'm not as confident in it.
+			SleepEx(0, true); // used to exit thread
 			if (GetMessage(&msg, NULL, 0, MSG_FILTER_MAX) == -1) // -1 is an error, 0 means WM_QUIT
 				continue; // Error probably happens only when bad parameters were passed to GetMessage().
 			//else let any WM_QUIT be handled below.
@@ -250,7 +283,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				&& GetWindowThreadProcessId(fore_window, NULL) == g_MainThreadID) // And it belongs to our main thread (the main thread is the only one that owns any windows).
 			{
 				do_special_msg_filter = false; // Set default.
-                if (g_nFileDialogs) // v1.0.44.12: Also do the special Peek/msg filter below for FileSelect because testing shows that frequently-running timers disrupt the ability to double-click.
+				if (g_nFileDialogs) // v1.0.44.12: Also do the special Peek/msg filter below for FileSelect because testing shows that frequently-running timers disrupt the ability to double-click.
 				{
 					GetClassName(fore_window, wnd_class_name, _countof(wnd_class_name));
 					do_special_msg_filter = !_tcscmp(wnd_class_name, _T("#32770"));  // Due to checking g_nFileDialogs above, this means that this dialog is probably FileSelect rather than MsgBox/InputBox/DirSelect (even if this guess is wrong, it seems fairly inconsequential to filter the messages since other pump beneath us on the call-stack will handle them ok).
@@ -327,7 +360,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// did a Sleep(0).
 				if (aSleepDuration == 0 && !sleep0_was_done)
 				{
-					Sleep(0);
+					SleepEx(0, true);
 					sleep0_was_done = true;
 					// Now start a new iteration of the loop that will see if we
 					// received any messages during the up-to-20ms delay (perhaps even more)
@@ -366,7 +399,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 					// when SendInput is unavailable).  Note that if aSleepDuration == 0, Sleep(0)
 					// was already called above or by a prior iteration.
 					if (aSleepDuration > 0)
-						Sleep(5); // This is a somewhat arbitrary value: the intent of a value below 10 is to avoid yielding more than one timeslice on all systems even if they have unusual timeslice sizes / system timers.
+						SleepEx(5, true); // This is a somewhat arbitrary value: the intent of a value below 10 is to avoid yielding more than one timeslice on all systems even if they have unusual timeslice sizes / system timers.
 					++messages_received; // Don't repeat this section.
 					continue;
 				}
@@ -406,7 +439,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 					if (this_layer_needs_timer)\
 					{\
 						--g_nLayersNeedingTimer;\
-						if (aSleepDuration > 0 && !g_nLayersNeedingTimer && !g_script.mTimerEnabledCount && !Hotkey::sJoyHotkeyCount)\
+						if (aSleepDuration > 0 && !g_nLayersNeedingTimer && !g_script->mTimerEnabledCount && !Hotkey::sJoyHotkeyCount)\
 							KILL_MAIN_TIMER \
 					}\
 					return return_value;\
@@ -420,13 +453,13 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// The below is checked here rather than in IsCycleComplete() because
 				// that function is sometimes called more than once prior to returning
 				// (e.g. empty_the_queue_via_peek) and we only want this to be decremented once:
-				if (IsCycleComplete(aSleepDuration, start_time, allow_early_return)) // v1.0.44.11: IsCycleComplete() must be called for all modes, but now its return value is checked due to the new g_DeferMessagesForUnderlyingPump mode.
+				if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || (char)::g->IsPaused == -1) // v1.0.44.11: IsCycleComplete() must be called for all modes, but now its return value is checked due to the new g_DeferMessagesForUnderlyingPump mode.
 					RETURN_FROM_MSGSLEEP
 				// Otherwise (since above didn't return) combined logic has ensured that all of the following are true:
 				// 1) aSleepDuration > 0
 				// 2) !empty_the_queue_via_peek
 				// 3) The above two combined with logic above means that g_DeferMessagesForUnderlyingPump==true.
-				Sleep(5); // Since Peek() didn't find a message, avoid maxing the CPU.  This is a somewhat arbitrary value: the intent of a value below 10 is to avoid yielding more than one timeslice on all systems even if they have unusual timeslice sizes / system timers.
+				SleepEx(5, true); // Since Peek() didn't find a message, avoid maxing the CPU.  This is a somewhat arbitrary value: the intent of a value below 10 is to avoid yielding more than one timeslice on all systems even if they have unusual timeslice sizes / system timers.
 				continue;
 			}
 			// else Peek() found a message, so process it below.
@@ -438,7 +471,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 
 		// For max. flexibility, it seems best to allow the message filter to have the first
 		// crack at looking at the message, before even TRANSLATE_AHK_MSG:
-		if (g_MsgMonitor.Count() && MsgMonitor(msg.hwnd, msg.message, msg.wParam, msg.lParam, &msg, msg_reply))  // Count is checked here to avoid function-call overhead.
+		if (g_MsgMonitor && g_MsgMonitor->Count() && MsgMonitor(msg.hwnd, msg.message, msg.wParam, msg.lParam, &msg, msg_reply))  // Count is checked here to avoid function-call overhead.
 		{
 			continue; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
 			// NOTE: Above does "continue" and ignores msg_reply.  This is because testing shows that
@@ -577,6 +610,37 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				{
 					TreeView_EndEditLabelNow(GuiType::sTreeWithEditInProgress, TRUE); // Cancel without saving.
 					continue;
+				}
+			}
+			else if (msg.message == WM_MOUSEWHEEL || msg.message == WM_MOUSEHWHEEL)
+			{	// Scroll message send to Gui when control under mouse is not focused control
+				// If the window under the cursor is not the control that has focus...
+				HWND control_under_mouse = WindowFromPoint(msg.pt);
+				DWORD style_under_mouse = GetWindowLong(control_under_mouse, GWL_STYLE);
+
+				// first check if control under mouse is not focused control
+				// or it is one of AutoHotkey Guis has a scrollbar but it is disabled or reached max or min
+				if (GuiType::FindGui(GetParent(control_under_mouse)) && (control_under_mouse != msg.hwnd
+					|| !CanScrollInDirection(control_under_mouse, msg.message, style_under_mouse, msg.wParam))) {
+					// Check if control belongs to one of our Guis
+					if (control_under_mouse != msg.hwnd
+						&& CanScrollInDirection(control_under_mouse, msg.message, style_under_mouse, msg.wParam))
+					{
+						SendMessage(control_under_mouse, msg.message, msg.wParam, msg.lParam);
+						continue;
+					}
+				}
+				if (!CanScrollInDirection(msg.hwnd, msg.message, GetWindowLong(msg.hwnd, GWL_STYLE), msg.wParam))
+				{
+					// Keep getting the parent gui until we find one with scrollbars showing
+					pgui = GuiType::FindGui(GetParent(msg.hwnd));
+					while (pgui && !(pgui && CanScrollInDirection(pgui->mHwnd, msg.message, pgui->mStyle, msg.wParam)))
+						pgui = GuiType::FindGui(GetParent(pgui->mHwnd));
+					if (pgui)
+					{
+						SendMessage(pgui->mHwnd, msg.message, msg.wParam, msg.lParam);
+						continue;
+					}
 				}
 			}
 
@@ -730,7 +794,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				}
 				else
 					pgui = NULL; // Set for use in later sections.
-				if (   !(menu_item = g_script.FindMenuItemByID((UINT)msg.lParam))   ) // Item not found.
+				if (   !(menu_item = g_script->FindMenuItemByID((UINT)msg.lParam))   ) // Item not found.
 					continue; // ignore the msg
 				// And just in case a menu item that lacks a label (such as a separator) is ever
 				// somehow selected (perhaps via someone sending direct messages to us, bypassing
@@ -772,12 +836,12 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// Otherwise, continue on and let a new thread be created to handle this hotstring.
 				// Since this isn't an auto-replace hotstring, set this value to support
 				// the built-in variable A_EndChar:
-				g_script.mEndChar = hs->mEndCharRequired ? (TCHAR)LOWORD(msg.lParam) : 0; // v1.0.48.04: Explicitly set 0 when hs->mEndCharRequired==false because LOWORD is used for something else in that case.
+				g_script->mEndChar = hs->mEndCharRequired ? (TCHAR)LOWORD(msg.lParam) : 0; // v1.0.48.04: Explicitly set 0 when hs->mEndCharRequired==false because LOWORD is used for something else in that case.
 				priority = hs->mPriority;
 				break;
 
 			case AHK_CLIPBOARD_CHANGE: // Due to the registration of an OnClipboardChange function in the script.
-				if (g_script.mOnClipboardChangeIsRunning)
+				if (g_script->mOnClipboardChangeIsRunning)
 					continue;
 				priority = 0;  // Always use default for now.
 				break;
@@ -950,7 +1014,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// WM_TIMER messages and thus hurt performance).
 			// UPDATE: But don't kill it if it should be always-on to support the existence of
 			// at least one enabled timed subroutine or joystick hotkey:
-			//if (!g_script.mTimerEnabledCount && !Hotkey::sJoyHotkeyCount)
+			//if (!g_script->mTimerEnabledCount && !Hotkey::sJoyHotkeyCount)
 			//	KILL_MAIN_TIMER;
 
 			switch(msg.message)
@@ -966,13 +1030,13 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			default: // hotkey or hotstring
 				// Just prior to launching the hotkey, update these values to support built-in
 				// variables such as A_TimeSincePriorHotkey:
-				g_script.mPriorHotkeyName = g_script.mThisHotkeyName;
-				g_script.mPriorHotkeyStartTime = g_script.mThisHotkeyStartTime;
+				g_script->mPriorHotkeyName = g_script->mThisHotkeyName;
+				g_script->mPriorHotkeyStartTime = g_script->mThisHotkeyStartTime;
 				// Unlike hotkeys -- which can have a name independent of their label by being created or updated
 				// with the HOTKEY command -- a hot string's unique name is always its label since that includes
 				// the options that distinguish between (for example) :c:ahk:: and ::ahk::
-				g_script.mThisHotkeyName = (msg.message == AHK_HOTSTRING) ? hs->mName : hk->mName;
-				g_script.mThisHotkeyStartTime = GetTickCount(); // Fixed for v1.0.35.10 to not happen for GUI threads.
+				g_script->mThisHotkeyName = (msg.message == AHK_HOTSTRING) ? hs->mName : hk->mName;
+				g_script->mThisHotkeyStartTime = GetTickCount(); // Fixed for v1.0.35.10 to not happen for GUI threads.
 			}
 
 			// Make every newly launched subroutine start off with the global default values that
@@ -981,7 +1045,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			global_struct &g = *::g; // ONLY AFTER above is it safe to "lock in". Reduces code size a bit (31 bytes currently) and may improve performance.  Eclipsing ::g with local g makes compiler remind/enforce the use of the right one.
 
 			// Do this nearly last, right before launching the thread:
-			g_script.mLastPeekTime = GetTickCount();
+			g_script->mLastPeekTime = GetTickCount();
 			// v1.0.38.04: The above now resets mLastPeekTime too to reduce situations in which a thread
 			// doesn't even run one line before being interrupted by another thread.  Here's how that would
 			// happen: ExecUntil() would see that a Peek() is due and call PeekMessage().  The Peek() will
@@ -999,10 +1063,10 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// completely resolve it, mLastPeekTime could instead be set to zero as a special value that
 			// ExecUntil recognizes to do the following processing, but this processing reduces performance
 			// by 2.5% in a simple addition-loop benchmark:
-			//if (g_script.mLastPeekTime)
+			//if (g_script->mLastPeekTime)
 			//	LONG_OPERATION_UPDATE
 			//else
-			//	g_script.mLastPeekTime = GetTickCount();
+			//	g_script->mLastPeekTime = GetTickCount();
 
 			switch (msg.message)
 			{
@@ -1250,11 +1314,11 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			{
 				int type = CountClipboardFormats() ? (IsClipboardFormatAvailable(CF_NATIVETEXT) || IsClipboardFormatAvailable(CF_HDROP) ? 1 : 2) : 0;
 				ExprTokenType param ((__int64)type);
-				g_script.mOnClipboardChangeIsRunning = true;
+				g_script->mOnClipboardChangeIsRunning = true;
 				DEBUGGER_STACK_PUSH(_T("OnClipboardChange"))
-				g_script.mOnClipboardChange.Call(&param, 1, 1);
+				g_script->mOnClipboardChange.Call(&param, 1, 1);
 				DEBUGGER_STACK_POP()
-				g_script.mOnClipboardChangeIsRunning = false;
+				g_script->mOnClipboardChangeIsRunning = false;
 				break;
 			}
 
@@ -1312,7 +1376,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				continue; // The above condition is possible only when the AutoExec section had ended prior to the thread we just launched.
 
 			// Otherwise a script thread other than the idle thread has just been resumed.
-			if (IsCycleComplete(aSleepDuration, start_time, allow_early_return))
+			if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || (char)::g->IsPaused == -1)
 			{
 				// Check for messages once more in case the subroutine that just completed
 				// above didn't check them that recently.  This is done to minimize the time
@@ -1371,7 +1435,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// in preparation for ending this instance/layer, only to be possibly,
 			// but extremely rarely, interrupted/recursed yet again if that final
 			// peek were to detect a recursable message):
-			if (IsCycleComplete(aSleepDuration, start_time, allow_early_return))
+			if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || (char)::g->IsPaused == -1)
 				RETURN_FROM_MSGSLEEP
 			// Otherwise, stay in the blessed GetMessage() state until the time has expired:
 			continue;
@@ -1412,7 +1476,12 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// The app normally terminates before WM_QUIT is ever seen here because of the way
 			// WM_CLOSE is handled by MainWindowProc().  However, this is kept here in case anything
 			// external ever explicitly posts a WM_QUIT to our thread's queue:
-			g_script.ExitApp(EXIT_CLOSE);
+			// return from message loop if we are exiting a thread.
+			if (g_FirstThreadID != g_MainThreadID) {
+				PostThreadMessage(g_MainThreadID, WM_QUIT, 0, 0);
+				return false;
+			}
+			g_script->ExitApp(EXIT_CLOSE);
 			continue; // Since ExitApp() won't necessarily exit.
 		} // switch()
 break_out_of_main_switch:
@@ -1486,7 +1555,7 @@ ResultType IsCycleComplete(int aSleepDuration, DWORD aStartTime, bool aAllowEarl
 	// beneficial in terms of increasing GUI & script responsiveness, so it is kept.
 	// The following might also improve performance slightly by avoiding extra Peek() calls, while also
 	// reducing premature thread interruptions.
-	g_script.mLastPeekTime = tick_now;
+	g_script->mLastPeekTime = tick_now;
 	return OK;
 }
 
@@ -1499,7 +1568,7 @@ bool CheckScriptTimers()
 // This is because threads some events might get queued up for our thread during the execution
 // of the timer subroutines here.  When those subroutines finish, if we return directly to a dialog's
 // message pump, and such pending messages might be discarded or mishandled.
-// Caller should already have checked the value of g_script.mTimerEnabledCount to ensure it's
+// Caller should already have checked the value of g_script->mTimerEnabledCount to ensure it's
 // greater than zero, since we don't check that here (for performance).
 // This function will go through the list of timed subroutines only once and then return to its caller.
 // It does it only once so that it won't keep a thread beneath it permanently suspended if the sum
@@ -1543,7 +1612,7 @@ bool CheckScriptTimers()
 	// Note: It seems inconsequential if a subroutine that the below loop executes causes a
 	// new timer to be added to the linked list while the loop is still enumerating the timers.
 
-	for (at_least_one_timer_launched = FALSE, ptimer = g_script.mFirstTimer
+	for (at_least_one_timer_launched = FALSE, ptimer = g_script->mFirstTimer
 		; ptimer != NULL
 		; ptimer = next_timer)
 	{
@@ -1608,7 +1677,7 @@ bool CheckScriptTimers()
 		// v1.0.38.04: The following line is done prior to the timer launch to reduce situations
 		// in which a timer thread is interrupted before it can execute even a single line.
 		// Search for mLastPeekTime in MsgSleep() for detailed explanation.
-		g_script.mLastPeekTime = tick_start; // It's valid to reset this because by definition, "msg" just came in to our caller via Get() or Peek(), both of which qualify as a Peek() for this purpose.
+		g_script->mLastPeekTime = tick_start; // It's valid to reset this because by definition, "msg" just came in to our caller via Get() or Peek(), both of which qualify as a Peek() for this purpose.
 
 		// This next line is necessary in case a prior iteration of our loop invoked a different
 		// timed subroutine that changed any of the global struct's values.  In other words, make
@@ -1644,7 +1713,7 @@ bool CheckScriptTimers()
 				next_timer->mDeleteLocked++; // Prevent next_timer from being deleted.
 			// The following call can trigger __delete, which can cause further changes to timers,
 			// either directly via SetTimer or via thread interruption.
-			g_script.DeleteTimer(this_timer->mCallback->ToObject());
+			g_script->DeleteTimer(this_timer->mCallback->ToObject());
 			if (next_timer)
 				next_timer->mDeleteLocked--; // Might still be non-zero due to thread interruption.
 			// Now also check next_timer, in case it was disabled while __delete was executing.
@@ -1678,7 +1747,7 @@ void PollJoysticks()
 {
 	// Even if joystick hotkeys aren't currently allowed to fire, poll it anyway so that hotkey
 	// messages can be buffered for later.
-	static DWORD sButtonsPrev[MAX_JOYSTICKS] = {0}; // Set initial state to "all buttons up for all joysticks".
+	thread_local static DWORD sButtonsPrev[MAX_JOYSTICKS] = {0}; // Set initial state to "all buttons up for all joysticks".
 	JOYINFOEX jie;
 	DWORD buttons_newly_down;
 
@@ -1726,12 +1795,12 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 	//	return false;
 
 	bool result = false; // Set default: Tell the caller to give this message any additional/default processing.
-	MsgMonitorInstance inst (g_MsgMonitor); // Register this instance so that index can be adjusted by BIF_OnMessage if an item is deleted.
+	MsgMonitorInstance inst (*g_MsgMonitor); // Register this instance so that index can be adjusted by BIF_OnMessage if an item is deleted.
 
 	// Linear search vs. binary search should perform better on average because the vast majority
 	// of message monitoring scripts are expected to monitor only a few message numbers.
 	for (inst.index = 0; inst.index < inst.count; ++inst.index)
-		if (g_MsgMonitor[inst.index].msg == aMsg)
+		if ((*g_MsgMonitor)[inst.index].msg == aMsg && (*g_MsgMonitor)[inst.index].hwnd == aWnd)
 		{
 			if (MsgMonitor(inst, aWnd, aMsg, awParam, alParam, apMsg, aMsgReply))
 			{
@@ -1739,13 +1808,23 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 				break;
 			}
 		}
+	if (!result)
+		for (inst.index = 0; inst.index < inst.count; ++inst.index)
+			if ((*g_MsgMonitor)[inst.index].msg == aMsg && (*g_MsgMonitor)[inst.index].hwnd == 0)
+			{
+				if (MsgMonitor(inst, aWnd, aMsg, awParam, alParam, apMsg, aMsgReply))
+				{
+					result = true;
+					break;
+				}
+			}
 
 	return result;
 }
 
 bool MsgMonitor(MsgMonitorInstance &aInstance, HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg, LRESULT &aMsgReply)
 {
-	MsgMonitorStruct *monitor = &g_MsgMonitor[aInstance.index];
+	MsgMonitorStruct *monitor = &(*g_MsgMonitor)[aInstance.index];
 	IObject *func = monitor->func; // In case monitor item gets deleted while the function is running (e.g. by the function itself).
 
 	// Many of the things done below are similar to the thread-launch procedure used in MsgSleep(),
@@ -1772,7 +1851,7 @@ bool MsgMonitor(MsgMonitorInstance &aInstance, HWND aWnd, UINT aMsg, WPARAM awPa
 	// v1.0.38.04: Below was added to maximize responsiveness to incoming messages.  The reasoning
 	// is similar to why the same thing is done in MsgSleep() prior to its launch of a thread, so see
 	// MsgSleep for more comments:
-	g_script.mLastPeekTime = GetTickCount();
+	g_script->mLastPeekTime = GetTickCount();
 	++monitor->instance_count;
 
 	// Set up the array of parameters for func->Invoke().
@@ -1820,7 +1899,7 @@ bool MsgMonitor(MsgMonitorInstance &aInstance, HWND aWnd, UINT aMsg, WPARAM awPa
 	// checked to avoid wrongly decrementing some other msg monitor's instance_count.
 	if (!aInstance.deleted)
 	{
-		monitor = &g_MsgMonitor[aInstance.index]; // Retrieve it again in case it was moved.
+		monitor = &(*g_MsgMonitor)[aInstance.index]; // Retrieve it again in case it was moved.
 		if (monitor->instance_count) // Checked for maintainability.  Zero should be impossible due to the "deleted" check.
 			--monitor->instance_count;
 	}
@@ -1868,7 +1947,7 @@ void InitNewThread(int aPriority, bool aSkipUninterruptible, bool aIncrementThre
 	// needs to be checked unless the caller said it wasn't needed.  In any case, if the tray icon is already
 	// in the right state (which it usually, since paused threads are rare), UpdateTrayIcon() is a very fast call.
 	if (aIncrementThreadCountAndUpdateTrayIcon)
-		g_script.UpdateTrayIcon(); // Must be done ONLY AFTER updating "g" (e.g, ++g) and/or g->IsPaused.
+		g_script->UpdateTrayIcon(); // Must be done ONLY AFTER updating "g" (e.g, ++g) and/or g->IsPaused.
 
 	if (aSkipUninterruptible)
 		return;
@@ -1876,13 +1955,13 @@ void InitNewThread(int aPriority, bool aSkipUninterruptible, bool aIncrementThre
 	if (!g.ThreadIsCritical)
 		g.ThreadIsCritical = aIsCritical;
 
-	if (g_script.mUninterruptibleTime && g_script.mUninterruptedLineCountMax // Both components must be non-zero to start off uninterruptible.
+	if (g_script->mUninterruptibleTime && g_script->mUninterruptedLineCountMax // Both components must be non-zero to start off uninterruptible.
 		|| g.ThreadIsCritical) // v1.0.38.04.
 	{
 		g.AllowThreadToBeInterrupted = false;
 		if (!g.ThreadIsCritical)
 		{
-			if (g_script.mUninterruptibleTime < 0) // A setting of -1 (or any negative) means the thread's uninterruptibility never times out.
+			if (g_script->mUninterruptibleTime < 0) // A setting of -1 (or any negative) means the thread's uninterruptibility never times out.
 				g.UninterruptibleDuration = -1; // "Lock in" the above because for backward compatibility, above is not supposed to affect threads after they're created. Override the default value contained in g_default.
 				//g.ThreadStartTime doesn't need to be set when g.UninterruptibleDuration < 0.
 			else // It's now known to be >0 (due to various checks above).
@@ -1894,7 +1973,7 @@ void InitNewThread(int aPriority, bool aSkipUninterruptible, bool aIncrementThre
 				// when IsInterruptible() is called, which might not happen in between changes to the setting.
 				// For explanation of why two fields instead of one are used, see comments in IsInterruptible().
 				g.ThreadStartTime = GetTickCount();
-				g.UninterruptibleDuration = g_script.mUninterruptibleTime;
+				g.UninterruptibleDuration = g_script->mUninterruptibleTime;
 			}
 		}
 		//else g.ThreadIsCritical==true, in which case the values set above won't matter; so they're not set.
@@ -1908,7 +1987,7 @@ void InitNewThread(int aPriority, bool aSkipUninterruptible, bool aIncrementThre
 void ResumeUnderlyingThread()
 {
 	if (g->ThrownToken)
-		g_script.FreeExceptionToken(g->ThrownToken);
+		g_script->FreeExceptionToken(g->ThrownToken);
 
 
 	// The following section handles the switch-over to the former/underlying "g" item:
@@ -1927,16 +2006,16 @@ void ResumeUnderlyingThread()
 	// we're about to resume is different from our previous paused state.  Do this even
 	// when the macro is used by CheckScriptTimers(), which although it might not technically
 	// need it, lends maintainability and peace of mind.
-	g_script.UpdateTrayIcon();
+	g_script->UpdateTrayIcon();
 
 	if (!g_nThreads)
 	{
 		// If this was the last running thread and the script has nothing keeping it open (hotkeys, Gui,
 		// message monitors, etc.) then it should terminate now:
 		if (!g_OnExitIsRunning)
-			g_script.ExitIfNotPersistent(EXIT_EXIT);
+			g_script->ExitIfNotPersistent(EXIT_EXIT);
 		// Since above didn't ExitApp(), reset the exit code for when we do eventually ExitApp():
-		g_script.mPendingExitCode = 0;
+		g_script->mPendingExitCode = 0;
 	}
 }
 
@@ -1977,8 +2056,8 @@ BOOL IsInterruptible()
 	//     (currently unlikely since MSG_FILTER_MAX calls it).  This could cause a TickCount to get too
 	//     stale and have the same consequences as described in #2 above.
 	// OVERALL: Although the method used here can wrongly extend the uninterruptibility of a thread by as
-	// much as 100%, since g_script.mUninterruptible time defaults to 17 milliseconds (and in practice is
-	// rarely raised beyond 1000) it doesn't matter much in those cases. Even when g_script.mUninterruptible
+	// much as 100%, since g_script->mUninterruptible time defaults to 17 milliseconds (and in practice is
+	// rarely raised beyond 1000) it doesn't matter much in those cases. Even when g_script->mUninterruptible
 	// is large such as 20 days, this method can be off by no more than 20 days, which isn't too bad
 	// in percentage terms compared to the alternative, which could cause a timeout of 15 milliseconds to
 	// increase to 24 days.  Windows Vista and beyond have a 64-bit tickcount available, so that may be of
@@ -1988,7 +2067,7 @@ BOOL IsInterruptible()
 	// because GetTickCount() updates in increments of 15 or 16 and therefore 16 can be virtually no time
 	// at all.  It might also be needed for larger values if the system is busy.
 	if (   !g->AllowThreadToBeInterrupted // Those who check whether g->AllowThreadToBeInterrupted==false should then check whether it should be made true.
-		&& g->UninterruptibleDuration > -1 // Must take precedence over the below.  g_script.mUninterruptibleTime is not checked because it's supposed to go into effect during thread creation, not after the thread is running and has possibly changed the timeout via 'Thread "Interrupt"'.
+		&& g->UninterruptibleDuration > -1 // Must take precedence over the below.  g_script->mUninterruptibleTime is not checked because it's supposed to go into effect during thread creation, not after the thread is running and has possibly changed the timeout via 'Thread "Interrupt"'.
 		&& (DWORD)(GetTickCount()- g->ThreadStartTime) >= (DWORD)g->UninterruptibleDuration // See big comment section above.
 		&& g->UninterruptedLineCount // In case of "Critical" on the first line.  See v2.0 comment above.
 		)
@@ -2060,3 +2139,22 @@ VOID CALLBACK RefreshInterruptibility(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DW
 {
 	IsInterruptible(); // Search on RefreshInterruptibility for comments.
 }
+
+#ifndef _USRDLL
+bool AHKModule()
+{
+#ifndef _DEBUG
+	thread_local static double sQPCtimer = 0;
+	double aQPCtimer, freq;
+	QueryPerformanceFrequency((LARGE_INTEGER*)&freq);
+	QueryPerformanceCounter((LARGE_INTEGER*)&aQPCtimer);
+	double time = (aQPCtimer - sQPCtimer) / freq;
+	sQPCtimer = aQPCtimer;
+	TCHAR buf[MAX_INTEGER_LENGTH];
+	FTOA(time, buf, MAX_INTEGER_LENGTH);
+	if (time > 1 || time < 0.00001)
+		return false;
+#endif
+	return true;
+}
+#endif

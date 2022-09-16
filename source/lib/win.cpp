@@ -22,6 +22,15 @@ GNU General Public License for more details.
 #include "abi.h"
 
 
+__declspec(noinline)
+ResultType ThrowTargetError(ResultToken &aResultToken, LPTSTR aMsg, LPTSTR aExtraInfo = nullptr)
+{
+	if ((!g_TargetWindowError && aMsg == ERR_NO_WINDOW) || (!g_TargetControlError && aMsg == ERR_NO_CONTROL))
+		return FAIL;
+	return aResultToken.Error(aMsg, aExtraInfo, ErrorPrototype::Target);
+}
+
+
 
 BIF_DECL(BIF_WinShow)
 {
@@ -56,7 +65,7 @@ BIF_DECL(BIF_WinShow)
 		if (!ParamIndexIsOmittedOrEmpty(2))
 			is_ahk_group = false;  // Override the default.
 	if (is_ahk_group)
-		if (WinGroup *group = g_script.FindGroup(omit_leading_whitespace(aTitle + 9)))
+		if (WinGroup *group = g_script->FindGroup(omit_leading_whitespace(aTitle + 9)))
 		{
 			group->ActUponAll(action, wait_time); // It will do DoWinDelay if appropriate.
 			_f_return_retval;
@@ -72,7 +81,7 @@ BIF_DECL(BIF_WinShow)
 		case FAIL: return;
 		case OK:
 			if (!target_window) // Specified a HWND of 0, or IsWindow() returned false.
-				_f_throw(ERR_NO_WINDOW, ErrorPrototype::Target);
+				_f__ret(ThrowTargetError(aResultToken, ERR_NO_WINDOW));
 		}
 	}
 
@@ -88,7 +97,7 @@ BIF_DECL(BIF_WinShow)
 		_f_param_string_opt(aExcludeText, 4);
 		if (!WinClose(*g, aTitle, aText, wait_time, aExcludeTitle, aExcludeText, action == FID_WinKill))
 			// Currently WinClose returns NULL only for this case; it doesn't confirm the window closed.
-			_f_throw(ERR_NO_WINDOW, ErrorPrototype::Target);
+			_f__ret(ThrowTargetError(aResultToken, ERR_NO_WINDOW));
 		DoWinDelay;
 		_f_return_retval;
 	}
@@ -107,7 +116,7 @@ BIF_DECL(BIF_WinShow)
 		if (need_restore)
 			g->DetectHiddenWindows = false;
 		if (!target_window)
-			_f_throw(ERR_NO_WINDOW, ErrorPrototype::Target);
+			_f__ret(ThrowTargetError(aResultToken, ERR_NO_WINDOW));
 	}
 
 	// WinGroup's EnumParentActUponAll() is quite similar to the following, so the two should be
@@ -183,7 +192,7 @@ BIF_DECL(BIF_WinActivate)
 		case FAIL: return;
 		case OK:
 			if (!target_hwnd)
-				_f_throw(ERR_NO_WINDOW, ErrorPrototype::Target);
+				_f__ret(ThrowTargetError(aResultToken, ERR_NO_WINDOW));
 			SetForegroundWindowEx(target_hwnd);
 			DoWinDelay;
 			_f_return_retval;
@@ -196,7 +205,7 @@ BIF_DECL(BIF_WinActivate)
 	_f_param_string_opt(aExcludeText, 3);
 
 	if (!WinActivate(*g, aTitle, aText, aExcludeTitle, aExcludeText, _f_callee_id == FID_WinActivateBottom, true))
-		_f_throw(ERR_NO_WINDOW, ErrorPrototype::Target);
+		_f__ret(ThrowTargetError(aResultToken, ERR_NO_WINDOW));
 
 	// It seems best to do these sleeps here rather than in the windowing
 	// functions themselves because that way, the program can use the
@@ -212,7 +221,7 @@ BIF_DECL(BIF_WinActivate)
 
 bif_impl FResult GroupAdd(LPCTSTR aGroup, LPCTSTR aTitle, LPCTSTR aText, LPCTSTR aExcludeTitle, LPCTSTR aExcludeText)
 {
-	auto group = g_script.FindGroup(aGroup, true);
+	auto group = g_script->FindGroup(aGroup, true);
 	if (!group)
 		return FR_FAIL; // It already displayed the error for us.
 	return group->AddWindow(aTitle, aText, aExcludeTitle, aExcludeText) ? OK : FR_FAIL;
@@ -223,7 +232,7 @@ bif_impl FResult GroupAdd(LPCTSTR aGroup, LPCTSTR aTitle, LPCTSTR aText, LPCTSTR
 bif_impl FResult GroupActivate(LPCTSTR aGroup, LPCTSTR aMode, __int64 *aRetVal)
 {
 	WinGroup *group;
-	if (   !(group = g_script.FindGroup(aGroup, true))   ) // Last parameter -> create-if-not-found.
+	if (   !(group = g_script->FindGroup(aGroup, true))   ) // Last parameter -> create-if-not-found.
 		return FR_FAIL; // It already displayed the error for us.
 	
 	TCHAR mode = 0;
@@ -244,7 +253,7 @@ bif_impl FResult GroupActivate(LPCTSTR aGroup, LPCTSTR aMode, __int64 *aRetVal)
 
 bif_impl FResult GroupDeactivate(LPCTSTR aGroup, LPCTSTR aMode)
 {
-	auto group = g_script.FindGroup(aGroup);
+	auto group = g_script->FindGroup(aGroup);
 	if (!group)
 		return FR_E_ARG(0);
 	TCHAR mode = 0;
@@ -262,7 +271,7 @@ bif_impl FResult GroupDeactivate(LPCTSTR aGroup, LPCTSTR aMode)
 
 bif_impl FResult GroupClose(LPCTSTR aGroup, LPCTSTR aMode)
 {
-	auto group = g_script.FindGroup(aGroup);
+	auto group = g_script->FindGroup(aGroup);
 	if (!group)
 		return FR_E_ARG(0);
 	TCHAR mode = 0;
@@ -577,7 +586,7 @@ error:
 	_f_throw_win32();
 
 control_error:
-	_f_throw(ERR_NO_CONTROL, aControl, ErrorPrototype::Target);
+	_f__ret(ThrowTargetError(aResultToken, ERR_NO_CONTROL));
 }
 
 
@@ -1744,12 +1753,12 @@ BIF_DECL(BIF_WinGet)
 		case FAIL: return;
 		case OK:
 			if (!target_window)
-				_f_throw(ERR_NO_WINDOW, ErrorPrototype::Target);
+				_f__ret(ThrowTargetError(aResultToken, ERR_NO_WINDOW));
 		}
 	if (!target_window)
 		target_window = WinExist(*g, aTitle, aText, aExcludeTitle, aExcludeText, cmd == FID_WinGetIDLast);
 	if (!target_window)
-		_f_throw(ERR_NO_WINDOW, ErrorPrototype::Target);
+		_f__ret(ThrowTargetError(aResultToken, ERR_NO_WINDOW));
 
 	switch(cmd)
 	{
@@ -2046,7 +2055,7 @@ ResultType DetermineTargetWindow(HWND &aWindow, ResultToken &aResultToken, ExprT
 		if (result != CONDITION_FALSE)
 		{
 			if (result == OK && !aWindow)
-				return aResultToken.Error(ERR_NO_WINDOW, ErrorPrototype::Target);
+				return ThrowTargetError(aResultToken, ERR_NO_WINDOW);
 			return result;
 		}
 	}
@@ -2060,7 +2069,7 @@ ResultType DetermineTargetWindow(HWND &aWindow, ResultToken &aResultToken, ExprT
 	aWindow = Line::DetermineTargetWindow(param[0], param[1], param[2], param[3]);
 	if (aWindow)
 		return OK;
-	return aResultToken.Error(ERR_NO_WINDOW, param[0], ErrorPrototype::Target);
+	return ThrowTargetError(aResultToken, ERR_NO_WINDOW, param[0]);
 }
 
 
@@ -2080,7 +2089,7 @@ ResultType DetermineTargetControl(HWND &aControl, HWND &aWindow, ResultToken &aR
 		case OK:
 			aControl = aWindow;
 			if (!aControl)
-				return aResultToken.Error(ERR_NO_CONTROL, ErrorPrototype::Target);
+				return ThrowTargetError(aResultToken, ERR_NO_CONTROL);
 			return OK;
 		case FAIL:
 			return FAIL;
@@ -2092,7 +2101,7 @@ ResultType DetermineTargetControl(HWND &aControl, HWND &aWindow, ResultToken &aR
 		return FAIL;
 	aControl = control_spec ? ControlExist(aWindow, control_spec) : aWindow;
 	if (!aControl && aThrowIfNotFound)
-		return aResultToken.Error(ERR_NO_CONTROL, ErrorPrototype::Target);
+		return ThrowTargetError(aResultToken, ERR_NO_CONTROL);
 	return OK;
 }
 

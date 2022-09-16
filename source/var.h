@@ -46,6 +46,7 @@ typedef UINT_PTR VarSizeType;  // jackieku(2009-10-23): Change this to UINT_PTR 
 #define VARSIZE_MAX ((VarSizeType) ~0)
 #define VARSIZE_ERROR VARSIZE_MAX
 
+thread_local extern SimpleHeap* g_SimpleHeap;
 class Var; // Forward declaration.
 // #pragma pack(4) not used here because although it would currently save 4 bytes per VarBkp struct (28 vs. 32),
 // it would probably reduce performance since VarBkp items are stored in contiguous array rather than a
@@ -117,7 +118,7 @@ class VarRef;
 #endif
 class Var
 {
-private:
+public:
 	// Keep VarBkp (above) in sync with any changes made to the members here.
 	union // 64-bit members kept at the top of the struct to reduce the chance that they'll span 2 64-bit regions.
 	{
@@ -174,6 +175,7 @@ private:
 	#define VAR_LOCAL_FUNCPARAM	0x10 // Indicates this local var is a function's parameter.  VAR_LOCAL_DECLARED should also be set.
 	#define VAR_LOCAL_STATIC	0x20 // Indicates this local var retains its value between function calls.
 	#define VAR_DECLARED		0x40 // Indicates this var was declared somehow, not automatic.
+	#define VAR_MACRO			0x80
 	UCHAR mScope;  // Bitwise combination of the above flags.
 	VarTypeType mType; // Keep adjacent/contiguous with the above due to struct alignment, to save memory.
 	// Performance: Rearranging mType and the other byte-sized members with respect to each other didn't seem
@@ -240,7 +242,7 @@ public:
 	// The biggest offender of buffer overflow in sEmptyString is DllCall, which happens most frequently
 	// when a script forgets to call VarSetStrCapacity before passing a buffer to some function that writes a
 	// string to it.  There is now some code there that tries to detect when that happens.
-	static TCHAR sEmptyString[1]; // See above.
+	thread_local static TCHAR sEmptyString[1]; // See above.
 
 	void Get(ResultToken &aResultToken);
 	ResultType AssignHWND(HWND aWnd);
@@ -892,14 +894,14 @@ public:
 	Var() : Var(_T(""), VAR_VARREF)
 	{
 		// Vars constructed this way are for temporary use, and therefore must have mHowAllocated set
-		// as below to prevent the use of SimpleHeap::Malloc().  Otherwise, each Var could allocate
+		// as below to prevent the use of g_SimpleHeap->Malloc().  Otherwise, each Var could allocate
 		// some memory which cannot be freed until the program exits.
 		mHowAllocated = ALLOC_MALLOC;
 	}
 
-	void *operator new(size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
+	void *operator new(size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
 	void *operator new(size_t aBytes, void *p) {return p;}
-	void *operator new[](size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
+	void *operator new[](size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
 	void operator delete(void *aPtr) {}
 	void operator delete(void *aPtr, void *) {}
 	void operator delete[](void *aPtr) {}

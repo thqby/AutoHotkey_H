@@ -123,15 +123,15 @@ bif_impl FResult SetControlDelay(int aDelay)
 
 BIV_DECL_R(BIV_Clipboard)
 {
-	auto length = g_clip.Get();
+	auto length = g_clip->Get();
 	if (TokenSetResult(aResultToken, nullptr, length))
 	{
-		aResultToken.marker_length = g_clip.Get(aResultToken.marker);
+		aResultToken.marker_length = g_clip->Get(aResultToken.marker);
 		if (aResultToken.marker_length == CLIPBOARD_FAILURE)
 			aResultToken.SetExitResult(FAIL);
 		aResultToken.symbol = SYM_STRING;
 	}
-	g_clip.Close();
+	g_clip->Close();
 }
 
 BIV_DECL_W(BIV_Clipboard_Set)
@@ -148,7 +148,7 @@ BIV_DECL_W(BIV_Clipboard_Set)
 	}
 	size_t aLength;
 	LPTSTR aBuf = BivRValueToString(&aLength);
-	if (!g_clip.Set(aBuf, aLength))
+	if (!g_clip->Set(aBuf, aLength))
 		_f_return_FAIL;
 }
 
@@ -505,7 +505,7 @@ BIV_DECL_R(BIV_IsCompiled)
 #ifdef AUTOHOTKEYSC
 	_f_return_b(true);
 #else
-	_f_return_b(g_script.mKind == Script::ScriptKindResource);
+	_f_return_b(g_script->mKind == Script::ScriptKindResource);
 #endif
 }
 
@@ -601,8 +601,8 @@ BIV_DECL_R(BIV_TrayMenu)
 {
 	// Currently ExpandExpression() does not automatically release objects returned
 	// by BIVs since this is the only one, and we're retaining a reference to it.
-	//g_script.mTrayMenu->AddRef();
-	_f_return(g_script.mTrayMenu);
+	//g_script->mTrayMenu->AddRef();
+	_f_return(g_script->mTrayMenu);
 }
 
 
@@ -614,7 +614,7 @@ BIV_DECL_R(BIV_AllowMainWindow)
 
 BIV_DECL_W(BIV_AllowMainWindow_Set)
 {
-	g_script.AllowMainWindow(BivRValueToBOOL());
+	g_script->AllowMainWindow(BivRValueToBOOL());
 }
 
 
@@ -626,7 +626,7 @@ BIV_DECL_R(BIV_IconHidden)
 
 BIV_DECL_W(BIV_IconHidden_Set)
 {
-	g_script.ShowTrayIcon(!BivRValueToBOOL());
+	g_script->ShowTrayIcon(!BivRValueToBOOL());
 }
 
 void Script::ShowTrayIcon(bool aShow)
@@ -657,12 +657,12 @@ void Script::ShowTrayIcon(bool aShow)
 BIV_DECL_R(BIV_IconTip)
 {
 	// Return the custom tip if any, otherwise the default tip.
-	_f_return_p(g_script.mTrayIconTip ? g_script.mTrayIconTip : g_script.mFileName);
+	_f_return_p(g_script->mTrayIconTip ? g_script->mTrayIconTip : g_script->mFileName);
 }
 
 BIV_DECL_W(BIV_IconTip_Set)
 {
-	g_script.SetTrayTip(BivRValueToString());
+	g_script->SetTrayTip(BivRValueToString());
 }
 
 void Script::SetTrayTip(LPTSTR aText)
@@ -671,7 +671,7 @@ void Script::SetTrayTip(LPTSTR aText)
 	// it will override the use of mFileName as the tray tip text.
 	// This allows the script to completely disable the tray tooltip.
 	if (!mTrayIconTip)
-		mTrayIconTip = SimpleHeap::Alloc<TCHAR>(_countof(mNIC.szTip)); // SimpleHeap improves avg. case mem load.
+		mTrayIconTip = g_SimpleHeap->Alloc<TCHAR>(_countof(mNIC.szTip)); // SimpleHeap improves avg. case mem load.
 	if (mTrayIconTip)
 		tcslcpy(mTrayIconTip, aText, _countof(mNIC.szTip));
 	if (mNIC.hWnd) // i.e. only update the tip if the tray icon exists (can't work otherwise).
@@ -683,12 +683,12 @@ void Script::SetTrayTip(LPTSTR aText)
 
 BIV_DECL_R(BIV_IconFile)
 {
-	_f_return_p(g_script.mCustomIconFile ? g_script.mCustomIconFile : _T(""));
+	_f_return_p(g_script->mCustomIconFile ? g_script->mCustomIconFile : _T(""));
 }
 
 BIV_DECL_R(BIV_IconNumber)
 {
-	_f_return_i(g_script.mCustomIconNumber);
+	_f_return_i(g_script->mCustomIconNumber);
 }
 
 
@@ -766,7 +766,7 @@ BIV_DECL_R(BIV_AhkPath)
 	//else leave it blank as documented.
 	_f_return(buf, length);
 #else
-	_f_return_p(g_script.mOurEXE);
+	_f_return_p(g_script->mOurEXE);
 #endif
 }
 
@@ -1013,7 +1013,7 @@ BIV_DECL_R(BIV_ScreenWidth_Height)
 
 BIV_DECL_R(BIV_ScriptName)
 {
-	_f_return_p(g_script.mScriptName ? g_script.mScriptName : g_script.mFileName);
+	_f_return_p(g_script->mScriptName ? g_script->mScriptName : g_script->mFileName);
 }
 
 BIV_DECL_W(BIV_ScriptName_Set)
@@ -1022,18 +1022,18 @@ BIV_DECL_W(BIV_ScriptName_Set)
 	LPTSTR script_name = _tcsdup(BivRValueToString());
 	if (!script_name)
 		_f_throw_oom;
-	free(g_script.mScriptName);
-	g_script.mScriptName = script_name;
+	free(g_script->mScriptName);
+	g_script->mScriptName = script_name;
 }
 
 BIV_DECL_R(BIV_ScriptDir)
 {
-	_f_return_p(g_script.mFileDir);
+	_f_return_p(g_script->mFileDir);
 }
 
 BIV_DECL_R(BIV_ScriptFullPath)
 {
-	_f_return_p(g_script.mFileSpec);
+	_f_return_p(g_script->mFileSpec);
 }
 
 BIV_DECL_R(BIV_ScriptHwnd)
@@ -1049,7 +1049,7 @@ LineNumberType Script::CurrentLine()
 
 BIV_DECL_R(BIV_LineNumber)
 {
-	_f_return_i(g_script.CurrentLine());
+	_f_return_i(g_script->CurrentLine());
 }
 
 
@@ -1060,7 +1060,7 @@ LPTSTR Script::CurrentFile()
 
 BIV_DECL_R(BIV_LineFile)
 {
-	_f_return_p(g_script.CurrentFile());
+	_f_return_p(g_script->CurrentFile());
 }
 
 
@@ -1321,12 +1321,12 @@ BIV_DECL_R(BIV_ThisFunc)
 
 BIV_DECL_R(BIV_ThisHotkey)
 {
-	_f_return_p(g_script.mThisHotkeyName);
+	_f_return_p(g_script->mThisHotkeyName);
 }
 
 BIV_DECL_R(BIV_PriorHotkey)
 {
-	_f_return_p(g_script.mPriorHotkeyName);
+	_f_return_p(g_script->mPriorHotkeyName);
 }
 
 BIV_DECL_R(BIV_TimeSinceThisHotkey)
@@ -1334,30 +1334,30 @@ BIV_DECL_R(BIV_TimeSinceThisHotkey)
 	// It must be the type of hotkey that has a label because we want the TimeSinceThisHotkey
 	// value to be "in sync" with the value of ThisHotkey itself (i.e. use the same method
 	// to determine which hotkey is the "this" hotkey):
-	if (*g_script.mThisHotkeyName)
+	if (*g_script->mThisHotkeyName)
 		// Even if GetTickCount()'s TickCount has wrapped around to zero and the timestamp hasn't,
 		// DWORD subtraction still gives the right answer as long as the number of days between
 		// isn't greater than about 49.  See MyGetTickCount() for explanation of %d vs. %u.
 		// Update: Using 64-bit ints now, so above is obsolete:
-		//sntprintf(str, sizeof(str), "%d", (DWORD)(GetTickCount() - g_script.mThisHotkeyStartTime));
-		_f_return_i((__int64)(GetTickCount() - g_script.mThisHotkeyStartTime));
+		//sntprintf(str, sizeof(str), "%d", (DWORD)(GetTickCount() - g_script->mThisHotkeyStartTime));
+		_f_return_i((__int64)(GetTickCount() - g_script->mThisHotkeyStartTime));
 	else
 		_f_return_empty; // Cause any attempt at math to throw.
 }
 
 BIV_DECL_R(BIV_TimeSincePriorHotkey)
 {
-	if (*g_script.mPriorHotkeyName)
+	if (*g_script->mPriorHotkeyName)
 		// See MyGetTickCount() for explanation for explanation:
-		//sntprintf(str, sizeof(str), "%d", (DWORD)(GetTickCount() - g_script.mPriorHotkeyStartTime));
-		_f_return_i((__int64)(GetTickCount() - g_script.mPriorHotkeyStartTime));
+		//sntprintf(str, sizeof(str), "%d", (DWORD)(GetTickCount() - g_script->mPriorHotkeyStartTime));
+		_f_return_i((__int64)(GetTickCount() - g_script->mPriorHotkeyStartTime));
 	else
 		_f_return_empty; // Cause any attempt at math to throw.
 }
 
 BIV_DECL_R(BIV_EndChar)
 {
-	_f_retval_buf[0] = g_script.mEndChar;
+	_f_retval_buf[0] = g_script->mEndChar;
 	_f_retval_buf[1] = '\0';
 	_f_return_p(_f_retval_buf);
 }
@@ -1410,4 +1410,89 @@ BIF_DECL(BIF_SetBIV)
 	auto biv = sBiv[_f_callee_id];
 	_f_set_retval_p(_T(""), 0);
 	biv(aResultToken, nullptr, *aParam[0]);
+}
+
+
+
+// ahk_h vars
+BIV_DECL_R(BIV_AhkDir)
+{
+	TCHAR buf[MAX_PATH];
+	GetModuleFileName(NULL, buf, MAX_PATH);
+	VarSizeType length = (_tcsrchr(buf, L'\\') - buf);
+	*(buf + length) = L'\0';
+	_f_return(buf, length);
+}
+
+BIV_DECL_R(BIV_DllPath) // HotKeyIt H1 path of loaded dll
+{
+	TCHAR buf[MAX_PATH];
+	auto length = GetModuleFileName(g_hInstance, buf, _countof(buf));
+	if (length == 0)
+		length = GetModuleFileName(NULL, buf, _countof(buf));
+	_f_return(buf, length);
+}
+
+BIV_DECL_R(BIV_DllDir) // HotKeyIt H1 path of loaded dll
+{
+	TCHAR buf[MAX_PATH];
+	auto length = GetModuleFileName(g_hInstance, buf, _countof(buf));
+	if (length == 0)
+		GetModuleFileName(NULL, buf, _countof(buf));
+	length = (DWORD)(_tcsrchr(buf, L'\\') - buf);
+	_f_return(buf, length);
+}
+
+BIV_DECL_R(BIV_IsDll)
+{
+#ifdef _USRDLL
+	_f_return_b(true);
+#else
+	_f_return_b(false);
+#endif
+}
+
+BIV_DECL_R(BIV_ModuleHandle)
+{
+	_f_return((UINT_PTR)g_hInstance);
+}
+
+BIV_DECL_R(BIV_ScriptStruct)
+{
+	_f_return((UINT_PTR)g_script);
+}
+
+BIV_DECL_R(BIV_GlobalStruct)
+{
+	_f_return((UINT_PTR)g);
+}
+
+BIV_DECL_R(BIV_MemoryModule)
+{
+	_f_return((UINT_PTR)g_hMemoryModule);
+}
+
+BIV_DECL_R(BIV_MainThreadID)
+{
+	_f_return_i(g_FirstThreadID);
+}
+
+BIV_DECL_R(BIV_ThreadID)
+{
+	_f_return_i(g_MainThreadID);
+}
+
+BIV_DECL_R(BIV_ZipCompressionLevel)
+{
+	_f_return_i(g->ZipCompressionLevel);
+}
+
+BIV_DECL_W(BIV_ZipCompressionLevel_Set)
+{
+	BYTE aCompressionLevel = (BYTE)BivRValueToBOOL();
+	if (aCompressionLevel > 9)
+		aCompressionLevel = 9;
+	else if (aCompressionLevel < 1)
+		aCompressionLevel = 1;
+	g->ZipCompressionLevel = aCompressionLevel;
 }

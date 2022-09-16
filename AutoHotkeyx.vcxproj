@@ -1,14 +1,24 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
-    <ProjectGuid>{76EFDEE3-81CF-4ADA-94DC-EA5509FF6FFC}</ProjectGuid>
+    <ProjectGuid>{31335317-2533-40F5-ACD8-361075C7C4CC}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
   </PropertyGroup>
   <PropertyGroup>
     <TargetName>AutoHotkey</TargetName>
     <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType Condition="'$(Configuration)'=='ReleaseDll' OR '$(Configuration)'=='DebugDll' OR '$(Configuration)'=='MT_ReleaseDll'">DynamicLibrary</ConfigurationType>
   </PropertyGroup>
+  <!--Project configurations-->
   <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="DebugDll|Win32">
+      <Configuration>DebugDll</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="DebugDll|x64">
+      <Configuration>DebugDll</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
       <Platform>Win32</Platform>
@@ -17,12 +27,28 @@
       <Configuration>Debug</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
-    <ProjectConfiguration Include="Debug(mbcs)|Win32">
-      <Configuration>Debug(mbcs)</Configuration>
+    <ProjectConfiguration Include="MT_ReleaseDll|Win32">
+      <Configuration>MT_ReleaseDll</Configuration>
       <Platform>Win32</Platform>
     </ProjectConfiguration>
-    <ProjectConfiguration Include="Debug(mbcs)|x64">
-      <Configuration>Debug(mbcs)</Configuration>
+    <ProjectConfiguration Include="MT_ReleaseDll|x64">
+      <Configuration>MT_ReleaseDll</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MT_Release|Win32">
+      <Configuration>MT_Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="MT_Release|x64">
+      <Configuration>MT_Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="ReleaseDll|Win32">
+      <Configuration>ReleaseDll</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="ReleaseDll|x64">
+      <Configuration>ReleaseDll</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
     <ProjectConfiguration Include="Release|Win32">
@@ -33,65 +59,17 @@
       <Configuration>Release</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
-    <ProjectConfiguration Include="Release(mbcs)|Win32">
-      <Configuration>Release(mbcs)</Configuration>
-      <Platform>Win32</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release(mbcs)|x64">
-      <Configuration>Release(mbcs)</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release(minimal)|Win32">
-      <Configuration>Release(minimal)</Configuration>
-      <Platform>Win32</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release(minimal)|x64">
-      <Configuration>Release(minimal)</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Self-contained|Win32">
-      <Configuration>Self-contained</Configuration>
-      <Platform>Win32</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Self-contained|x64">
-      <Configuration>Self-contained</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Self-contained(debug)|Win32">
-      <Configuration>Self-contained(debug)</Configuration>
-      <Platform>Win32</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Self-contained(debug)|x64">
-      <Configuration>Self-contained(debug)</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Self-contained(mbcs)|Win32">
-      <Configuration>Self-contained(mbcs)</Configuration>
-      <Platform>Win32</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Self-contained(mbcs)|x64">
-      <Configuration>Self-contained(mbcs)</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Self-contained(minimal)|Win32">
-      <Configuration>Self-contained(minimal)</Configuration>
-      <Platform>Win32</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Self-contained(minimal)|x64">
-      <Configuration>Self-contained(minimal)</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
   </ItemGroup>
   <!-- import common config -->
   <Import Project="Config.vcxproj" />
   <!-- platform: win32 & x64 (common) -->
   <ItemDefinitionGroup Condition="'$(Platform)'=='Win32' OR '$(Platform)'=='x64'">
     <ClCompile>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>ENABLE_TLS_CALLBACK;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>wsock32.lib;winmm.lib;version.lib;comctl32.lib;psapi.lib;wininet.lib;shlwapi.lib;uxtheme.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>wsock32.lib;winmm.lib;version.lib;comctl32.lib;odbc32.lib;odbccp32.lib;shlwapi.lib;crypt32.lib;psapi.lib;wininet.lib;uxtheme.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <StackReserveSize>4194304</StackReserveSize>
       <TerminalServerAware>false</TerminalServerAware>
       <DataExecutionPrevention>false</DataExecutionPrevention>
@@ -121,10 +99,9 @@
     <IntDir>$(ProjectDir)temp\$(Platform)\$(Configuration)\</IntDir>
     <BinDir>$(ProjectDir)bin\$(Platform)</BinDir>
     <BinDir Condition="'$(CharacterSet)'=='Unicode'">$(BinDir)w</BinDir>
-    <BinDir Condition="'$(CharacterSet)'=='MultiByte'">$(BinDir)a</BinDir>
-    <OutDir>$(BinDir)\</OutDir>
     <OutDir Condition="$(ConfigDebug)">$(BinDir)_debug\</OutDir>
-    <OutDir Condition="$(ConfigMinSize)">$(BinDir)_minimal\</OutDir>
+    <OutDir Condition="$(ConfigMinSize)">$(BinDir)\</OutDir>
+    <OutDir Condition="$(ConfigRelease)">$(BinDir)_MT\</OutDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
@@ -139,19 +116,12 @@
     </Manifest>
   </ItemDefinitionGroup>
   <!-- self-contained: required settings -->
-  <PropertyGroup Condition="$(ConfigSC)">
-    <TargetName>AutoHotkeySC</TargetName>
-    <TargetExt>.bin</TargetExt>
+  <PropertyGroup Condition="!$(ConfigDll)">
+    <TargetExt>.exe</TargetExt>
   </PropertyGroup>
-  <ItemDefinitionGroup Condition="$(ConfigSC)">
-    <ClCompile>
-      <PreprocessorDefinitions>AUTOHOTKEYSC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-    <ResourceCompile>
-      <PreprocessorDefinitions>AUTOHOTKEYSC;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <PreprocessorDefinitions Condition="$(ConfigDebug)">_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ResourceCompile>
-  </ItemDefinitionGroup>
+  <PropertyGroup Condition="$(ConfigDll)">
+    <TargetExt>.dll</TargetExt>
+  </PropertyGroup>
   <!-- upx compression: Release -->
   <PropertyGroup>
     <PackerName>upx</PackerName>
@@ -167,39 +137,6 @@
       <Command Condition="exists('$(PackerPath)')">$(PackerPath)$(PackerArgs) "$(TargetPath)" &amp; exit 0</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
-  <!-- Visual C++ 2010 should place any newly created properties in these groups -->
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release(mbcs)|Win32'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release(mbcs)|x64'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release(minimal)|Win32'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release(minimal)|x64'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained|Win32'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained|x64'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(debug)|Win32'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(debug)|x64'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(mbcs)|Win32'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(mbcs)|x64'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(minimal)|Win32'" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(minimal)|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release(mbcs)|Win32'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release(mbcs)|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release(minimal)|Win32'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release(minimal)|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained|Win32'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(debug)|Win32'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(debug)|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(mbcs)|Win32'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(mbcs)|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(minimal)|Win32'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Self-contained(minimal)|x64'" />
   <!-- FILES -->
   <ItemGroup>
     <ClCompile Include="source\ahkversion.cpp" />
@@ -207,6 +144,7 @@
     <ClCompile Include="source\AutoHotkey.cpp" />
     <ClCompile Include="source\MdFunc.cpp" />
     <ClCompile Include="source\clipboard.cpp" />
+    <ClCompile Include="source\exports.cpp" />
     <ClCompile Include="source\Debugger.cpp">
       <Optimization>MinSpace</Optimization>
     </ClCompile>
@@ -271,6 +209,22 @@
     <ClCompile Include="source\var.cpp" />
     <ClCompile Include="source\window.cpp" />
     <ClCompile Include="source\WinGroup.cpp" />
+    <ClCompile Include="source\COMServer.cpp">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="source\COMServer_i.c">
+      <PrecompiledHeader Condition="$(ConfigDll)">NotUsing</PrecompiledHeader>
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="source\dllmain.cpp">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="source\LiteZip.cpp" />
+    <ClCompile Include="source\lowlevelbif.cpp" />
+    <ClCompile Include="source\MemoryModule.cpp" />
+    <ClCompile Include="source\MinHook.cpp" />
+    <ClCompile Include="source\script_h.cpp" />
+    <ClCompile Include="source\script_struct.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\abi.h" />
@@ -308,10 +262,23 @@
     <ClInclude Include="source\var.h" />
     <ClInclude Include="source\window.h" />
     <ClInclude Include="source\WinGroup.h" />
+    <ClInclude Include="source\COMServer.h">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </ClInclude>
+    <ClInclude Include="source\COMServer_h.h">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </ClInclude>
+    <ClInclude Include="source\exports.h" />
+    <ClInclude Include="source\LiteZip.h" />
+    <ClInclude Include="source\MemoryModule.h" />
+    <ClInclude Include="source\MinHook.h" />
   </ItemGroup>
   <PropertyGroup>
     <Masm>ml /safeseh</Masm>
     <Masm Condition="'$(Platform)'=='x64'">ml64</Masm>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(ConfigDebug)">
+    <ExternalIncludePath>D:\Program Files\Visual Leak Detector\include;$(ExternalIncludePath)</ExternalIncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <CustomBuild>
@@ -320,8 +287,12 @@
       </Message>
       <Outputs>$(SolutionDir)temp\$(Platform)\%(Filename).obj</Outputs>
     </CustomBuild>
+    <Link>
+      <ModuleDefinitionFile Condition="$(ConfigDll)">source\resources\COMServer.def</ModuleDefinitionFile>
+    </Link>
     <ClCompile>
       <TreatWarningAsError Condition="!$(ConfigDebug)">true</TreatWarningAsError>
+      <EnableFiberSafeOptimizations Condition="$(ConfigRelease)">true</EnableFiberSafeOptimizations>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -341,11 +312,19 @@
       <Outputs>$(SolutionDir)temp\AutoHotkey.exe.manifest</Outputs>
       <SubType>Designer</SubType>
     </CustomBuild>
+    <None Include="source\resources\AutoHotkey.rgs">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </None>
+    <Midl Include="source\resources\COMServer.idl">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+      <OutputDirectory>source\</OutputDirectory>
+    </Midl>
     <None Include="source\resources\icon_filetype.ico" />
     <None Include="source\resources\icon_main.ico" />
     <None Include="source\resources\icon_pause.ico" />
     <None Include="source\resources\icon_pause_suspend.ico" />
     <None Include="source\resources\icon_suspend.ico" />
+    <None Include="source\resources\WINAPI.zip" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="source\resources\AutoHotkey.rc" />
@@ -353,6 +332,14 @@
   <ItemGroup>
     <ProjectReference Include="source\lib_pcre\lib_pcre.vcxproj">
       <Project>{39037993-9571-4DF2-8E39-CD2909043574}</Project>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+      <CopyLocalSatelliteAssemblies>false</CopyLocalSatelliteAssemblies>
+      <LinkLibraryDependencies>true</LinkLibraryDependencies>
+      <UseLibraryDependencyInputs>false</UseLibraryDependencyInputs>
+    </ProjectReference>
+    <ProjectReference Include="source\lib_double\lib_double.vcxproj">
+      <Project>{6D6F219A-891F-4535-84C2-DFE8C17F78E2}</Project>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <Private>false</Private>
       <CopyLocalSatelliteAssemblies>false</CopyLocalSatelliteAssemblies>

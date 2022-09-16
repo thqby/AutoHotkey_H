@@ -19,7 +19,7 @@ GNU General Public License for more details.
 
 #include "keyboard_mouse.h"
 #include "script.h"  // For which label (and in turn which line) in the script to jump to.
-EXTERN_SCRIPT;  // For g_script.
+EXTERN_SCRIPT;  // For g_script
 
 // Due to control/alt/shift modifiers, quite a lot of hotkey combinations are possible, so support any
 // conceivable use.  This value is used for initial sizing of the shk array, which doubles in size each
@@ -112,11 +112,11 @@ private:
 	// the hotkey ID is used as the array index for performance reasons.  Having an outer class implies
 	// the potential future use of more than one set of hotkeys, which could still be implemented
 	// within static data and methods to retain the indexing/performance method:
-	static HookType sWhichHookNeeded;
-	static HookType sWhichHookAlways;
-	static DWORD sTimePrev;
-	static DWORD sTimeNow;
-	static HotkeyIDType sNextID;
+	thread_local static HookType sWhichHookNeeded;
+	thread_local static HookType sWhichHookAlways;
+	thread_local static DWORD sTimePrev;
+	thread_local static DWORD sTimeNow;
+	thread_local static HotkeyIDType sNextID;
 
 	bool Enable(HotkeyVariant &aVariant) // Returns true if the variant needed to be disabled, in which case caller should generally call ManifestAllHotkeysHotstringsHooks().
 	{
@@ -154,19 +154,23 @@ private:
 	ResultType Register();
 	ResultType Unregister();
 
-	void *operator new(size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
-	void *operator new[](size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
-	void operator delete(void *aPtr) {SimpleHeap::Delete(aPtr);}  // Deletes aPtr if it was the most recently allocated.
-	void operator delete[](void *aPtr) {SimpleHeap::Delete(aPtr);}
+	void *operator new(size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
+	void *operator new[](size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
+	void operator delete(void *aPtr) {g_SimpleHeap->Delete(aPtr);}  // Deletes aPtr if it was the most recently allocated.
+	void operator delete[](void *aPtr) {g_SimpleHeap->Delete(aPtr);}
 
 	// For now, constructor & destructor are private so that only static methods can create new
 	// objects.  This allow proper tracking of which OS hotkey IDs have been used.
 	Hotkey(HotkeyIDType aID, IObject *aCallback, HookActionType aHookAction, LPTSTR aName, UCHAR aNoSuppress);
-	~Hotkey() {if (mIsRegistered) Unregister();}
+	~Hotkey() {
+		for (auto vp = mFirstVariant; vp; vp = vp->mNextVariant)
+			vp->mCallback = nullptr;
+		if (mIsRegistered) Unregister();
+	}
 
 public:
-	static Hotkey **shk;
-	static int shkMax;
+	thread_local static Hotkey **shk;
+	thread_local static int shkMax;
 
 	// 32-bit members:
 	mod_type mModifiers;  // MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, or some additive or bitwise-or combination of these.
@@ -205,11 +209,12 @@ public:
 	HotkeyVariant *mFirstVariant, *mLastVariant; // v1.0.42: Linked list of variant hotkeys created via #HotIf directives.
 
 	// Make sHotkeyCount an alias for sNextID.  Make it const to enforce modifying the value in only one way:
-	static const HotkeyIDType &sHotkeyCount;
-	static bool sJoystickHasHotkeys[MAX_JOYSTICKS];
-	static DWORD sJoyHotkeyCount;
+	thread_local static const HotkeyIDType &sHotkeyCount;
+	thread_local static bool sJoystickHasHotkeys[MAX_JOYSTICKS];
+	thread_local static DWORD sJoyHotkeyCount;
 
-	static void AllDestructAndExit(int exit_code);
+	// static void AllDestructAndExit(int exit_code);
+	static void AllDestruct();
 
 	static ResultType IfExpr(LPTSTR aExpr, IObject *aExprObj, ResultToken &aResultToken);
 	static ResultType Dynamic(LPTSTR aHotkeyName, LPTSTR aOptions
@@ -345,10 +350,10 @@ enum CaseConformModes {CASE_CONFORM_NONE, CASE_CONFORM_ALL_CAPS, CASE_CONFORM_FI
 class Hotstring
 {
 public:
-	static Hotstring **shs;  // An array to be allocated on first use (performs better than linked list).
-	static HotstringIDType sHotstringCount;
-	static HotstringIDType sHotstringCountMax;
-	static UINT sEnabledCount; // v1.1.28.00: For performance, such as avoiding calling ToAsciiEx() in the hook.
+	thread_local static Hotstring **shs;  // An array to be allocated on first use (performs better than linked list).
+	thread_local static HotstringIDType sHotstringCount;
+	thread_local static HotstringIDType sHotstringCountMax;
+	thread_local static UINT sEnabledCount; // v1.1.28.00: For performance, such as avoiding calling ToAsciiEx() in the hook.
 
 	IObjectRef mCallback;
 	LPTSTR mName;
@@ -370,6 +375,7 @@ public:
 		, mDetectWhenInsideWord, mDoReset, mSuspendExempt, mConstructedOK;
 
 	static void SuspendAll(bool aSuspend);
+	static void AllDestruct(); // HotKeyIt H1 destroy all HotStrings
 	ResultType PerformInNewThreadMadeByCaller();
 	void DoReplace(LPARAM alParam);
 	static Hotstring *FindHotstring(LPTSTR aHotstring, bool aCaseSensitive, bool aDetectWhenInsideWord, HotkeyCriterion *aHotCriterion);
@@ -385,10 +391,10 @@ public:
 		, bool aHasContinuationSection, UCHAR aSuspend);
 	~Hotstring() {}  // Note that mReplacement is sometimes malloc'd, sometimes from SimpleHeap, and sometimes the empty string.
 
-	void *operator new(size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
-	void *operator new[](size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
-	void operator delete(void *aPtr) {SimpleHeap::Delete(aPtr);}  // Deletes aPtr if it was the most recently allocated.
-	void operator delete[](void *aPtr) {SimpleHeap::Delete(aPtr);}
+	void *operator new(size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
+	void *operator new[](size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
+	void operator delete(void *aPtr) {g_SimpleHeap->Delete(aPtr);}  // Deletes aPtr if it was the most recently allocated.
+	void operator delete[](void *aPtr) {g_SimpleHeap->Delete(aPtr);}
 };
 
 

@@ -5,21 +5,17 @@
   
     <!-- flags to make things easier -->
     <ConfigRelease>false</ConfigRelease>
-    <ConfigDebug>false</ConfigDebug>
-    <ConfigSC>false</ConfigSC>
     <ConfigMinSize>false</ConfigMinSize>
-    <ConfigRelease Condition="'$(Configuration)'=='Release' OR '$(Configuration)'=='Release(mbcs)' OR '$(Configuration)'=='Release(minimal)'">true</ConfigRelease>
-    <ConfigDebug Condition="'$(Configuration)'=='Debug' OR '$(Configuration)'=='Debug(mbcs)' OR '$(Configuration)'=='Self-contained(debug)'">true</ConfigDebug>
-    <ConfigSC Condition="'$(Configuration)'=='Self-contained' OR '$(Configuration)'=='Self-contained(mbcs)' OR '$(Configuration)'=='Self-contained(minimal)' OR '$(Configuration)'=='Self-contained(debug)'">true</ConfigSC>
-    <ConfigMinSize Condition="'$(Configuration)'=='Release(minimal)' OR '$(Configuration)'=='Self-contained(minimal)'">true</ConfigMinSize>
-    
+    <ConfigDll>false</ConfigDll>
+    <ConfigDebug>false</ConfigDebug>
+    <ConfigRelease Condition="'$(Configuration)'=='Release' OR '$(Configuration)'=='MT_Release' OR '$(Configuration)'=='ReleaseDll' OR '$(Configuration)'=='MT_ReleaseDll'">true</ConfigRelease>
+    <ConfigMinSize Condition="'$(Configuration)'=='Release' OR '$(Configuration)'=='ReleaseDll'">true</ConfigMinSize>
+    <ConfigDll Condition="'$(Configuration)'=='DebugDll' OR '$(Configuration)'=='ReleaseDll' OR '$(Configuration)'=='MT_ReleaseDll'">true</ConfigDll>
+    <ConfigDebug Condition="'$(Configuration)'=='Debug' OR '$(Configuration)'=='DebugDll'">true</ConfigDebug>
+
     <!-- CharacterSet may be set on command-line:
       MSBuild AutoHotkeyx.sln /p:Configuration=Release;CharacterSet=MultiByte -->
     <CharacterSet>Unicode</CharacterSet>
-    <!-- For '(minimal)' configurations, use setting in config.h -->
-    <CharacterSet Condition="$(ConfigMinSize)">NotSet</CharacterSet>
-    <!-- Set default for '(mbcs)' configurations. Can also be overridden on command-line, but that wouldn't make sense. -->
-    <CharacterSet Condition="'$(Configuration)'=='Debug(mbcs)' OR '$(Configuration)'=='Release(mbcs)' OR '$(Configuration)'=='Self-contained(mbcs)'">MultiByte</CharacterSet>
     
     <!-- global setting -->
     <WholeProgramOptimization Condition="!$(ConfigDebug)">true</WholeProgramOptimization>
@@ -28,7 +24,6 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-    
       <!-- pre-processor definition: NDEBUG/_DEBUG -->
       <PreprocessorDefinitions Condition="!$(ConfigDebug)">NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition=" $(ConfigDebug)">_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>

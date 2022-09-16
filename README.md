@@ -1,13 +1,262 @@
-# AutoHotkey_L #
+# AutoHotkey_H v2 #
 
-AutoHotkey is a free, open source macro-creation and automation software utility that allows users to automate repetitive tasks. It is driven by a custom scripting language that is aimed specifically at providing keyboard shortcuts, otherwise known as hotkeys.
+- [Changes](#changes-from-ahkdll)
+- [Classes List](#classes-list)
+- [Functions List](#functions-list)
+- [AutoHotkey Module](#autohotkey.dll-module)
+  - [COM Interfaces](#com-interfaces)
+  - [Export Functions](#export-functions)
+- [Compile](#how-to-compile)
 
-AutoHotkey_L started as a fork of AutoHotkey but has been the main branch for some time.
+[AutoHotkey](https://autohotkey.com/) is a free, open source macro-creation and automation software utility that allows users to automate repetitive tasks. It is driven by a custom scripting language that is aimed specifically at providing keyboard shortcuts, otherwise known as hotkeys.
 
-https://autohotkey.com/
+AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexikos/AutoHotkey_L/tree/alpha), merge branch [HotKeyIt/ahkdll-v2](https://github.com/hotkeyit/ahkdll/tree/alpha).
 
+## Changes from ahkdll
 
-## How to Compile ##
+- The object structure is the same as the AHK_L version
+- remove built-in variable `NULL`
+- remove standard library in autohotkey.exe resource, but libraries can still be loaded from resources.
+- remove `CriticalObject`, it is not a safe way to use objects in multithreading
+- Remove the same hot string that defined in multiple threads firing at the same time
+- `DynaCall` object has `Param[index]` property, used to retrieve and set default parameters, the index is the same as the position of the argument when it is called.
+- `CryptAES` and Zip functions, parameter `Size` is not needed when previous parameter is an `Object` with `Ptr` and `Size` properties.
+- `ahkExec(LPTSTR script, DWORD aThreadID = 0)` Inherits the current scope variable when aThreadID is `0`
+- `Thread("Terminate", all := false)` Terminate one or all threads that except `auto-exec` after the end of the current thread, and the timer is only terminating the current
+- `FileRead` and `FileOpen` will detect `UTF8-RAW` when no code page is specified.
+- Dynamic Library separator is `|` instead `:`, eg. `#include <urldownloadtovar|'http://www.website.com/script.ahk'>`, `urldownloadtovar.ahk` is a library in lib folder.
+- COM interface in dll module rather than in exe module.
+- Added `IAhkApi` export class for developing AHK bindings for third-party libraries, the header file is [ahkapi.h](https://github.com/thqby/AutoHotkey_H/blob/alpha/source/ahkapi.h).
+- Added `__thiscall` calling conventions supported by `DllCall` and `DynaCall`, eg. `DllCall(func, params, 'thiscall')`, `DynaCall(func, 'ret_type=@params_type')`.
+- Added parameter type `struct` supported by `DllCall` and `DynaCall`, eg. Calls a function that needs a 10-byte structure argument and returns a 12-byte structure, `DllCall(func, 'struct10', Buffer(10), '12')`, `DynaCall(func, 'b12=b10')(Buffer(10))`.
+- Added support for custom types of `DllCall` and `ComCall`, `ComCall({index: 5, iid: '{xxxx...}'}, coclassptr, mytype := {ArgPassInfo: {NativeType: 'ptr', ScriptToNative: (v) => nativetype, NativeToScript: (v) => scripttype}}, param)`, the current type object can be obtained from `A_EventInfo` within the conversion function.
+
+## Classes List
+```typescript
+class JSON {
+  // JSON.stringify([JSON.null,JSON.true,JSON.false]) == '[null,true,false]'
+  // !JSON.null == true
+  // !JSON.false == true
+  // JSON.false != false
+  static null => ComValue
+  static true => ComValue
+  static false => ComValue
+
+  static parse(objtext) => Map | Array
+
+  // the object include map,array,object and custom objects with `__enum` metagenics
+  // @param space The number of Spaces or string used for indentation
+  static stringify(obj, space := 0) => String
+}
+
+class Worker {
+  /**
+   * Creates a real AutoHotkey thread or associates an existing AutoHotkey thread in the current process and returns an object that communicates with it.
+   * @param ScriptOrThreadID When ScriptOrThreadID is a script, create an AutoHotkey thread;
+   * When ScriptOrThreadID is a threadid of created thread, it is associated with it;
+   * When ScriptOrThreadID = 0, associate the main thread.
+   */
+  __New(ScriptOrThreadID, Cmd := '', Title := 'AutoHotkey') => Worker
+
+  /**
+   * Gets/sets the thread global variable. Objects of other threads will be converted to thread-safe Com object access and will not be accessible after the thread exits.
+   * @param VarName Global variable name.
+   */
+  __Item[VarName] {
+    get => Any
+    set => void
+  }
+
+  /**
+   * Call thread functions asynchronously. When the return value of another thread is an object, it is converted to a thread-safe Com object.
+   * @param VarName The name of a global variable, or an object when it is associated with the current thread.
+   * @param Params Parameters needed when called. The object type is converted to thread-safe Com object when passed to another thread.
+   */
+  AsyncCall(VarName, Params*) => Worker.Promise
+
+  /**
+   * Terminate the thread asynchronously.
+   */
+  ExitApp() => void
+
+  /**
+   * Thread ready.
+   */
+  Ready => Number
+
+  /**
+   * Reload the thread asynchronously.
+   */
+  Reload() => void
+
+  /**
+   * Returns the thread ID.
+   */
+  ThreadID => Number
+
+  /**
+   * Wait for the thread to exit, return 0 for timeout, or 1 otherwise.
+   * @param Timeout The number of milliseconds, waitting until the thread exits when Timeout is 0.
+   */
+  Wait(Timeout := 0) => Number
+
+  class Promise {
+    /**
+     * Execute the callback after the asynchronous call completes.
+     */
+    Then(Callback) => Worker.Promise
+
+    /**
+     * An asynchronous call throws an exception and executes the callback.
+     */
+    Catch(Callback) => Worker.Promise
+  }
+}
+```
+
+## Functions List
+```typescript
+Alias(VarOrName [, VarOrPointer]) => void
+
+Cast(DataType, Value, NewDataType) => Number
+
+ComObjDll(hModule, CLSID [, IID]) => ComObject
+ 
+CryptAES(AddOrBuf [, Size], password, EncryptOrDecrypt := true, Algorithm := 256)
+
+DynaCall(DllFunc, ParameterDefinition, Params*) => Number | String
+
+GetVar(VarName, ResolveAlias := true) => Number
+
+MemoryCallEntryPoint(hModule [, cmdLine]) => Number
+
+MemoryFindResource(hModule, Name, Type [, Language]) => Number
+
+MemoryFreeLibrary(hModule) => String
+
+MemoryGetProcAddress(hModule, FuncName) => Number
+
+MemoryLoadLibrary(PathToDll) => Number
+
+MemoryLoadResource(hModule, hResource) => Number
+
+MemoryLoadString(hModule, Id [, Language]) => String
+
+MemorySizeOfResource(hModule, hReslnfo) => Number
+
+ObjDump(obj [, compress, password]) => Buffer
+
+ObjLoad(AddOrPath [, password]) => Array | Map | Object
+
+ResourceLoadLibrary(ResName) => Number
+
+Swap(Var1, Var2) => void
+
+sizeof(Definition [, offset]) => Number
+
+Struct(Definition [, StructMemory, InitObject]) => Struct
+
+UArray(Values*) => Array
+
+UMap([Key1, Value1, ...]) => Map
+
+UObject([Key1, Value1, ...]) => Object
+
+UnZip(BufOrAddOrFile [, Size], DestinationFolder [, FileToExtract, DestinationFileName, Password]) => void
+
+UnZipBuffer(AddOrBufOrFile [, Size], FileToExtract [, Password]) => Buffer
+
+UnZipRawMemory(AddOrBuf [, Size, Password]) => Buffer
+
+ZipAddBuffer(ZipHandle, AddOrBuf [, Size], FileName) => Number
+
+ZipAddFile(ZipHandle, FileName [, ZipFileName]) => Number
+
+ZipAddFolder(ZipHandle, ZipFoldName) => Number
+
+ZipCloseBuffer(ZipHandle) => Buffer
+
+ZipCloseFile(ZipHandle) => Number
+
+ZipCreateBuffer(MaxSize [, Password]) => Number
+
+ZipCreateFile(FileName [, Password]) => Number
+
+ZipInfo(AddOrBufOrFile [, Size]) => Array
+
+ZipOptions(ZipHandle, Options) => Number
+
+ZipRawMemory(AddOrBuf [, Size , Password]) => Buffer
+```
+
+## AutoHotkey.dll Module
+### COM Interfaces
+ProgID: `AutoHotkey2.Script`  
+CLSID : `{934B0E6A-9B50-4248-884B-BE5A9BC66B39}`
+```cpp
+  HRESULT NewThread([in, optional]VARIANT script, [in, optional]VARIANT params, [in, optional]VARIANT title, [out, retval]DWORD* ThreadID);
+  
+  HRESULT ahkPause([in] VARIANT aThreadID, [in, optional]VARIANT aChangeTo, [out, retval]VARIANT_BOOL* paused);
+  
+  HRESULT ahkReady([in] VARIANT aThreadID, [out, retval]VARIANT_BOOL* ready);
+  
+  HRESULT ahkFindLabel([in] VARIANT aThreadID, [in] VARIANT aLabelName, [out, retval] UINT_PTR* pLabel);
+  
+  HRESULT ahkGetVar([in] VARIANT aThreadID, [in] VARIANT name, [in, optional] VARIANT getVar, [out, retval] VARIANT* returnVal);
+  
+  HRESULT ahkAssign([in] VARIANT aThreadID, [in] VARIANT name, [in, optional] VARIANT value, [out, retval] VARIANT_BOOL* success);
+  
+  HRESULT ahkExecuteLine([in] VARIANT aThreadID, [in, optional] VARIANT line, [in, optional] VARIANT aMode, [in, optional] VARIANT wait, [out, retval] UINT_PTR* pLine);
+  
+  HRESULT ahkLabel([in] VARIANT aThreadID, [in] VARIANT aLabelName, [in, optional] VARIANT nowait, [out, retval] VARIANT_BOOL* success);
+  
+  HRESULT ahkFindFunc([in] VARIANT aThreadID, [in] VARIANT FuncName, [out, retval] UINT_PTR* pFunc);
+  
+  //Call a function in the script currently executed by the AutoHotkey module. Parameters support all ahk types.
+  HRESULT ahkFunction([in] VARIANT aThreadID, [in] VARIANT FuncName, [in, optional] VARIANT param1, [in, optional] VARIANT param2, [in, optional] VARIANT param3, [in, optional] VARIANT param4, [in, optional] VARIANT param5, [in, optional] VARIANT param6, [in, optional] VARIANT param7, [in, optional] VARIANT param8, [in, optional] VARIANT param9, [in, optional] VARIANT param10, [out, retval] VARIANT* returnVal);
+
+  //Async call a function in the script currently executed by the AutoHotkey module. Parameters support all ahk types except VarRef.
+  HRESULT ahkPostFunction([in] VARIANT aThreadID, [in] VARIANT FuncName, [in, optional] VARIANT param1, [in, optional] VARIANT param2, [in, optional] VARIANT param3, [in, optional] VARIANT param4, [in, optional] VARIANT param5, [in, optional] VARIANT param6, [in, optional] VARIANT param7, [in, optional] VARIANT param8, [in, optional] VARIANT param9, [in, optional] VARIANT param10, [out, retval] VARIANT* returnVal);
+  
+  HRESULT addScript([in] VARIANT aThreadID, [in] VARIANT script, [in, optional] VARIANT waitexecute, [out, retval] UINT_PTR* success);
+  
+  HRESULT ahkExec([in] VARIANT aThreadID, [in] VARIANT script, [out, retval] VARIANT_BOOL* success);
+```
+
+### Export Functions
+```cpp
+PHOOK_ENTRY MinHookEnable(LPVOID pTarget, LPVOID pDetour, LPVOID *ppOriginal);
+
+BOOL MinHookDisable(PHOOK_ENTRY pHook);
+
+DWORD NewThread(LPCTSTR aScript, LPCTSTR aCmdLine = _T(""), LPCTSTR aTitle = _T("AutoHotkey"));
+
+int ahkPause(LPTSTR aChangeTo, DWORD aThreadID = 0);
+
+UINT_PTR ahkFindLabel(LPTSTR aLabelName, DWORD aThreadID = 0);
+
+LPTSTR ahkGetVar(LPTSTR name, int getVar = 0, DWORD aThreadID = 0);
+
+int ahkAssign(LPTSTR name, LPTSTR value, DWORD aThreadID = 0);
+
+UINT_PTR ahkExecuteLine(UINT_PTR line, int aMode, int wait, DWORD aThreadID = 0);
+
+int ahkLabel(LPTSTR aLabelName, int nowait = 0, DWORD aThreadID = 0);
+
+UINT_PTR ahkFindFunc(LPTSTR funcname, DWORD aThreadID = 0);
+
+LPTSTR ahkFunction(LPTSTR func, LPTSTR param1 = NULL, LPTSTR param2 = NULL, LPTSTR param3 = NULL, LPTSTR param4 = NULL,     LPTSTR param5 = NULL, LPTSTR param6 = NULL, LPTSTR param7 = NULL, LPTSTR param8 = NULL, LPTSTR param9 = NULL, LPTSTR param10 = NULL, DWORD aThreadID = 0);
+
+int ahkPostFunction(LPTSTR func, LPTSTR param1 = NULL, LPTSTR param2 = NULL, LPTSTR param3 = NULL, LPTSTR param4 = NULL, LPTSTR param5 = NULL, LPTSTR param6 = NULL, LPTSTR param7 = NULL, LPTSTR param8 = NULL, LPTSTR param9 = NULL, LPTSTR param10 = NULL, DWORD aThreadID = 0);
+
+int ahkReady(DWORD aThreadID = 0);
+
+UINT_PTR addScript(LPTSTR script, int waitexecute = 0, DWORD aThreadID = 0);
+
+int ahkExec(LPTSTR script, DWORD aThreadID = 0);
+```
+
+## How to Compile
 
 AutoHotkey v2 is developed with [Microsoft Visual Studio Community 2019](https://www.visualstudio.com/products/visual-studio-community-vs), which is a free download from Microsoft.
 
@@ -21,20 +270,6 @@ The project is configured in a way that allows building with Visual Studio 2012 
 The project is configured to use a platform toolset with "_xp" suffix, if available.
 
 
-## Build Configurations ##
-
-AutoHotkeyx.vcxproj contains several combinations of build configurations.  The main configurations are:
-
-  - **Debug**: AutoHotkey.exe in debug mode.
-  - **Release**: AutoHotkey.exe for general use.
-  - **Self-contained**: AutoHotkeySC.bin, used for compiled scripts.
-
-Secondary configurations are:
-
-  - **(mbcs)**: ANSI (multi-byte character set). Configurations without this suffix are Unicode.
-  - **(minimal)**: Alternative project settings for producing a smaller binary, possibly with lower performance and added dependencies.
-
-
 ## Platforms ##
 
 AutoHotkeyx.vcxproj includes the following Platforms:
@@ -43,11 +278,3 @@ AutoHotkeyx.vcxproj includes the following Platforms:
   - **x64**: for Windows x64.
 
 AutoHotkey supports Windows XP with or without service packs and Windows 2000 via an asm patch (win2kcompat.asm).  Support may be removed if maintaining it becomes non-trivial.  Older versions are not supported.
-
-## AutoHotkey v2 Beta ##
-
-https://autohotkey.com/v2/
-
-[v2 Branch](https://github.com/Lexikos/AutoHotkey_L/tree/alpha)
-
-

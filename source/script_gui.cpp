@@ -24,9 +24,93 @@ GNU General Public License for more details.
 #include "qmath.h" // for qmathLog()
 #include "script_func_impl.h"
 
+void UpdateScrollbars(GuiType *agui, int client_right, int client_bottom,bool doSkipOver)
+{
+	SCROLLINFO *aHScroll = agui->mHScroll, *aVScroll = agui->mVScroll;
+
+	// Update Scrollbar buttons
+	int xScroll = 0, yScroll = 0;
+
+	// check if Scrollbars are shown
+	bool aHScrollVisible = agui->mStyle & WS_HSCROLL && aHScroll && (int)aHScroll->nPage <= aHScroll->nMax;
+	bool aVScrollVisible = agui->mStyle & WS_VSCROLL && aVScroll && (int)aVScroll->nPage <= aVScroll->nMax;
+
+	// Get new client area and add Scrollbars to it
+	// If Scrollbars do not belong to client area AutoSizePos above would not work
+	// because controls would resize when scrollbar disappears
+	client_right += (aVScrollVisible ? GetSystemMetrics(SM_CYVSCROLL) : 0), client_bottom += (aHScrollVisible ? GetSystemMetrics(SM_CYHSCROLL) : 0);
+
+	// Check if Scrollbars are required
+	bool aHScrollRequired = agui->mStyle & WS_HSCROLL && client_right - (aVScrollVisible ? GetSystemMetrics(SM_CYVSCROLL) : 0) < agui->mMaxExtentRight + agui->mMarginX;
+	bool aVScrollRequired = agui->mStyle & WS_VSCROLL && client_bottom - (aHScrollVisible ? GetSystemMetrics(SM_CYHSCROLL) : 0) < agui->mMaxExtentDown + agui->mMarginY;
+
+	// Scrollbars are shown but are not reqiured because without those client area is big enough
+	if (client_right + 1 > agui->mMaxExtentRight + agui->mMarginX
+		&& client_bottom + 1 > agui->mMaxExtentDown + agui->mMarginY)
+		aHScrollRequired = aVScrollRequired = false;
+
+	// Ignore following code after SetScrollInfo if it will cause new WM_SIZE
+	bool aSkipOver = false;
+	if (aHScroll && agui->mStyle & WS_HSCROLL)
+	{
+		aHScroll->nMax = agui->mMaxExtentRight + agui->mMarginX;
+
+		if (aHScrollVisible && !aHScrollRequired || !aHScrollVisible && aHScrollRequired)
+			aSkipOver = doSkipOver && true; // SetScrollInfo will trigger another WM_SIZE, don't process code below
+
+		// Subtract vertical Scrollbar and add 1 pixel because nPage = nMax triggers Scrollbar
+		aHScroll->nPage = client_right - (aVScrollVisible && aVScrollRequired ? GetSystemMetrics(SM_CYVSCROLL) : 0) + 1;
+		SetScrollInfo(agui->mHwnd, SB_HORZ, aHScroll, true);
+
+		// By this point, both scrollbars have redrawn or disappeared
+		// SCROLLINFO and client_rect are current.
+		// Calculate the amount of pixels to scroll left for ScrollWindow
+		if (!aSkipOver)
+		{
+			if (aHScroll->nPos && aHScroll->nMax - aHScroll->nPos < client_right)
+				if (aHScroll->nPos > client_right - (aHScroll->nMax - aHScroll->nPos))
+					xScroll = client_right - (aHScroll->nMax - aHScroll->nPos);
+				else
+					xScroll = aHScroll->nPos;
+
+			// update position of scroll button
+			aHScroll->nPos -= xScroll;
+		}
+	}
+	if (!aSkipOver && aVScroll && agui->mStyle & WS_VSCROLL)
+	{
+		aVScroll->nMax = agui->mMaxExtentDown + agui->mMarginY;
+
+		if (aVScrollVisible && !aVScrollRequired || !aVScrollVisible && aVScrollRequired)
+			aSkipOver = doSkipOver && true; // SetScrollInfo will trigger another WM_SIZE, don't process code below
+
+		// Subtract horizontal Scrollbar add 1 pixel because nPage = nMax triggers Scrollbar
+		aVScroll->nPage = client_bottom - (aHScrollVisible && aHScrollRequired ? GetSystemMetrics(SM_CYHSCROLL) : 0) + 1;
+		SetScrollInfo(agui->mHwnd, SB_VERT, aVScroll, true);
+
+		// By this point, both scrollbars have redrawn or disappeared
+		// SCROLLINFO and client_rect are current.
+		// Calculate the amount of pixels to scroll left for ScrollWindow
+		if (!aSkipOver)
+		{
+			if (aVScroll->nPos && aVScroll->nMax - aVScroll->nPos < client_bottom)
+				if (aVScroll->nPos > client_bottom - (aVScroll->nMax - aVScroll->nPos))
+					yScroll = client_bottom - (aVScroll->nMax - aVScroll->nPos);
+				else
+					yScroll = aVScroll->nPos;
+
+			// update position of scroll button
+			aVScroll->nPos -= yScroll;
+		}
+	}
+
+	// Scroll window if requiered
+	if (!aSkipOver && (xScroll || yScroll))
+		ScrollWindow(agui->mHwnd, xScroll, yScroll, NULL, NULL);
+}
 
 // Window class atom used by Guis.
-static ATOM sGuiWinClass;
+thread_local static ATOM sGuiWinClass;
 
 
 LPTSTR GuiControlType::sTypeNames[GUI_CONTROL_TYPE_COUNT] = { GUI_CONTROL_TYPE_NAMES };
@@ -38,6 +122,7 @@ GuiControls GuiControlType::ConvertTypeName(LPTSTR aTypeName)
 			return (GuiControls)i;
 	if (!_tcsicmp(aTypeName, _T("DropDownList"))) return GUI_CONTROL_DROPDOWNLIST;
 	if (!_tcsicmp(aTypeName, _T("Picture"))) return GUI_CONTROL_PIC;
+	if (!_tcsicmp(aTypeName, _T("Gui"))) return GUI_CONTROL_GUI;
 	return GUI_CONTROL_INVALID;
 }
 
@@ -91,12 +176,12 @@ UCHAR **ConstructEventSupportArray()
 	// This is mostly static data, but I haven't figured out how to construct it with just
 	// an array initialiser (other than by using a fixed size for the sub-array, which
 	// wastes space due to ListView and TreeView having many more events than other types).
-	static UCHAR *raises[GUI_CONTROL_TYPE_COUNT];
+	thread_local static UCHAR *raises[GUI_CONTROL_TYPE_COUNT];
 	// Not necessary since the array is static and therefore initialised to 0 (NULL):
 	//#define RAISES_NONE(ctrl) \
 	//	raises[ctrl] = NULL;
 	#define RAISES(ctrl, ...) { \
-		static UCHAR events[] = { __VA_ARGS__, 0 }; \
+		thread_local static UCHAR events[] = { __VA_ARGS__, 0 }; \
 		raises[ctrl] = events; \
 	}
 
@@ -132,7 +217,7 @@ UCHAR **ConstructEventSupportArray()
 	return raises;
 }
 
-UCHAR **GuiControlType::sRaisesEvents = ConstructEventSupportArray();
+thread_local UCHAR **GuiControlType::sRaisesEvents = ConstructEventSupportArray();
 
 bool GuiControlType::SupportsEvent(GuiEventType aEvent)
 {
@@ -533,7 +618,7 @@ void GuiType::__New(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 	
 	LPTSTR title;
 	if (ParamIndexIsOmitted(1)) // Completely omitted, not an empty string.
-		title = g_script.DefaultDialogTitle();
+		title = g_script->DefaultDialogTitle();
 	else
 		title = ParamIndexToString(1, _f_number_buf);
 
@@ -669,13 +754,14 @@ ObjectMember GuiControlType::sMembersSB[] =
 #undef FUN1
 #undef FUNn
 
-Object *GuiControlType::sPrototype;
-Object *GuiControlType::sPrototypeList;
-Object *GuiControlType::sPrototypes[GUI_CONTROL_TYPE_COUNT];
+thread_local Object *GuiControlType::sPrototype;
+thread_local Object *GuiControlType::sPrototypeList;
+thread_local Object *GuiControlType::sPrototypes[GUI_CONTROL_TYPE_COUNT];
+thread_local Object *GuiControlType::sClasses[GUI_CONTROL_TYPE_COUNT];
 
 void GuiControlType::DefineControlClasses()
 {
-	auto gui_class = (Object *)g_script.FindGlobalVar(_T("Gui"), 3)->Object();
+	auto gui_class = (Object *)g_script->FindGlobalVar(_T("Gui"), 3)->Object();
 
 	sPrototype = CreatePrototype(_T("Gui.Control"), Object::sPrototype, sMembers, _countof(sMembers));
 	sPrototypeList = CreatePrototype(_T("Gui.List"), sPrototype, sMembersList, _countof(sMembersList));
@@ -685,6 +771,7 @@ void GuiControlType::DefineControlClasses()
 	list_class->SetBase(ctrl_class);
 	gui_class->DefineClass(_T("Control"), ctrl_class);
 	gui_class->DefineClass(_T("List"), list_class);
+	list_class->Release(), ctrl_class->Release();
 
 	for (int i = GUI_CONTROL_INVALID + 1; i < GUI_CONTROL_TYPE_COUNT; ++i)
 	{
@@ -712,7 +799,11 @@ void GuiControlType::DefineControlClasses()
 		auto cls = CreateClass(sPrototypes[i]);
 		cls->SetBase(base_class);
 		gui_class->DefineClass(sTypeNames[i], cls);
+		sClasses[i] = cls;
+		cls->Release();
 	}
+	sClasses[GUI_CONTROL_TAB2] = list_class;
+	sClasses[GUI_CONTROL_TAB3] = ctrl_class;
 }
 
 Object *GuiControlType::GetPrototype(GuiControls aType)
@@ -1053,7 +1144,7 @@ ResultType GuiType::ControlSetName(GuiControlType &aControl, LPTSTR aName)
 			{
 				if (mControl[u] == &aControl) // aControl already has this name, but upper- vs lower-case may differ.
 					break;
-				return g_script.RuntimeError(_T("A control with this name already exists."), aName);
+				return g_script->RuntimeError(_T("A control with this name already exists."), aName);
 			}
 
 		aName = _tcsdup(aName);
@@ -1201,7 +1292,7 @@ ResultType GuiType::ControlMove(GuiControlType &aControl, int xpos, int ypos, in
 		, width == COORD_UNSPECIFIED ? rect.right - rect.left : Scale(width)
 		, height == COORD_UNSPECIFIED ? rect.bottom - rect.top : Scale(height)
 		, TRUE))  // Do repaint.
-		return g_script.Win32Error();
+		return g_script->Win32Error();
 
 	// Note that GUI_CONTROL_UPDOWN has no special handling here.  This is because unlike slider buddies,
 	// whose only purpose is to label the control, an up-down's is also content-linked to it, so the
@@ -1238,6 +1329,35 @@ ResultType GuiType::ControlMove(GuiControlType &aControl, int xpos, int ypos, in
 				RemoveProp(aControl.hwnd, _T("ahk_autosize"));
 		}
 	}
+	aControl.mX = xpos;
+	aControl.mY = ypos;
+	aControl.mHeight = height;
+	aControl.mWidth = width;
+	int aMaxWidth = 0, aMaxHeight = 0;
+
+	for (GuiIndexType i = 0; i < this->mControlCount; i++)
+	{
+		GuiControlType *aControl = this->mControl[i];
+		if (aControl->type == GUI_CONTROL_STATUSBAR)
+			continue;
+		GetWindowRect(aControl->hwnd, &rect);
+		POINT pt = { rect.left, rect.top };
+		ScreenToClient(this->mHwnd, &pt);
+		int aWidth = pt.x + (this->mHScroll ? this->mHScroll->nPos : 0) + (rect.right - rect.left), aHeight = pt.y + (this->mVScroll ? this->mVScroll->nPos : 0) + (rect.bottom - rect.top);
+		if (aWidth > aMaxWidth)
+			aMaxWidth = aWidth;
+		if (aHeight > aMaxHeight)
+			aMaxHeight = aHeight;
+	}
+	if (aMaxWidth != this->mMaxExtentRight)
+		this->mMaxExtentRight = aMaxWidth;
+	if (aMaxHeight != this->mMaxExtentDown)
+		this->mMaxExtentDown = aMaxHeight;
+	if (this->mStyle & WS_HSCROLL || this->mStyle & WS_VSCROLL)
+	{
+		GetClientRect(this->mHwnd, &rect);
+		UpdateScrollbars(this, rect.right, rect.bottom, false);
+	}
 	return OK;
 }
 
@@ -1245,7 +1365,7 @@ ResultType GuiType::ControlMove(GuiControlType &aControl, int xpos, int ypos, in
 ResultType GuiType::ControlSetFont(GuiControlType &aControl, LPTSTR aOptions, LPTSTR aFontName)
 {
 	if (!aControl.UsesFontAndTextColor()) // Control has no use for a font.
-		return g_script.RuntimeError(ERR_GUI_NOT_FOR_THIS_TYPE);
+		return g_script->RuntimeError(ERR_GUI_NOT_FOR_THIS_TYPE);
 	COLORREF color = CLR_INVALID;
 	int font_index;
 	if (*aOptions || *aFontName) // Use specified font.
@@ -1351,7 +1471,7 @@ ResultType GuiType::ControlChoose(GuiControlType &aControl, ExprTokenType &aPara
 		}
 		break;
 	default:  // Not a supported control type.
-		return g_script.RuntimeError(ERR_GUI_NOT_FOR_THIS_TYPE);
+		return g_script->RuntimeError(ERR_GUI_NOT_FOR_THIS_TYPE);
 	} // switch(control.type)
 
 	LPTSTR item_string;
@@ -2122,9 +2242,9 @@ void GuiType::ControlRedraw(GuiControlType &aControl, bool aOnlyWithinTab)
 /////////////////
 // Static members
 /////////////////
-FontType *GuiType::sFont = NULL; // An array of structs, allocated upon first use.
-int GuiType::sFontCount = 0;
-HWND GuiType::sTreeWithEditInProgress = NULL;
+thread_local FontType *GuiType::sFont = NULL; // An array of structs, allocated upon first use.
+thread_local int GuiType::sFontCount = 0;
+thread_local HWND GuiType::sTreeWithEditInProgress = NULL;
 
 
 
@@ -2154,6 +2274,12 @@ void GuiType::Destroy()
 	if (!mHwnd)
 		return; // We have already been destroyed.
 
+	if (mVScroll)
+	{
+		delete mVScroll;
+		delete mHScroll;
+		mVScroll = mHScroll = 0;
+	}
 	// First destroy any windows owned by this window, since they will be auto-destroyed
 	// anyway due to their being owned.  By destroying them explicitly, the Destroy()
 	// function is called recursively which keeps everything relatively neat.
@@ -2230,7 +2356,9 @@ void GuiType::Destroy()
 	// IT IS NOW UNSAFE TO REFER TO ANY NON-STATIC MEMBERS OF THIS OBJECT.
 
 	// If this Gui was the last thing keeping the script running, exit the script:
-	g_script.ExitIfNotPersistent(EXIT_CLOSE);
+	// HotKeyIt: call only if we are not already exiting -> g_hWnd == NULL
+	if (g_hWnd)
+		g_script->ExitIfNotPersistent(EXIT_CLOSE);
 }
 
 
@@ -2267,7 +2395,7 @@ void GuiType::Dispose()
 	if (mEventSink && this != mEventSink)
 		mEventSink->Release();
 
-	if (mIconEligibleForDestruction && mIconEligibleForDestruction != g_script.mCustomIcon) // v1.0.37.07.
+	if (mIconEligibleForDestruction && mIconEligibleForDestruction != g_script->mCustomIcon) // v1.0.37.07.
 		DestroyIconsIfUnused(mIconEligibleForDestruction, mIconEligibleForDestructionSmall);
 
 	// For simplicity and performance, any fonts used *solely* by a destroyed window are destroyed
@@ -2338,13 +2466,17 @@ ResultType GuiType::Create(LPTSTR aTitle)
 	if (mHwnd) // It already exists
 		return FAIL; // Should be impossible since mHwnd is checked by caller.
 
+	WNDCLASSEX awc = { 0 };
+	thread_local static WNDCLASSEX wc = { 0 };
 	// Use a separate class for GUI, which gives it a separate WindowProc and allows it to be more
 	// distinct when used with the ahk_class method of addressing windows.
-	if (!sGuiWinClass)
+	if (!sGuiWinClass || !GetClassInfoEx(g_hInstance, g_WindowClassGUI, &awc))
 	{
-		WNDCLASSEX wc = {0};
-		wc.cbSize = sizeof(wc);
-		wc.lpszClassName = WINDOW_CLASS_GUI;
+		if (wc.cbSize)
+			UnregisterClass(wc.lpszClassName, g_hInstance);
+		else
+			wc.cbSize = sizeof(wc);
+		wc.lpszClassName = g_SimpleHeap->Alloc(g_WindowClassGUI);
 		wc.hInstance = g_hInstance;
 		wc.lpfnWndProc = GuiWindowProc;
 		wc.hIcon = g_IconLarge;
@@ -2354,24 +2486,33 @@ ResultType GuiType::Create(LPTSTR aTitle)
 		wc.hCursor = LoadCursor((HINSTANCE) NULL, IDC_ARROW);
 		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
 		wc.cbWndExtra = DLGWINDOWEXTRA;  // So that it will be the type that uses DefDlgProc() vs. DefWindowProc().
+#ifdef _USRDLL  //Ignore errors since mostly AutoHotkey.exe alredy registered the class
 		sGuiWinClass = RegisterClassEx(&wc);
-		if (!sGuiWinClass)
-			return g_script.Win32Error();
+#else
+		sGuiWinClass = RegisterClassEx(&wc);
+		// HotKeyIt: 
+		//		If above fails, we assume another thread already registered the class and will set it after window has been created.
+		//		Otherwise CreateWindowEx will fail with appropriate error message.
+		//if (!sGuiWinClass)
+			//return g_script->Win32Error();
+#endif
 	}
 
-	if (   !(mHwnd = CreateWindowEx(mExStyle, WINDOW_CLASS_GUI, aTitle
+	if (   !(mHwnd = CreateWindowEx(mExStyle, g_WindowClassGUI, aTitle
 		, mStyle, 0, 0, 0, 0, mOwner, NULL, g_hInstance, NULL))   )
-		return g_script.Win32Error();
+		return g_script->Win32Error();
 
+	if (!sGuiWinClass)
+		sGuiWinClass = (ATOM)GetClassLong(mHwnd, GCW_ATOM);
 	// Set the user pointer in the window to this GuiType object, so that it is possible to retrieve it back from the window handle.
 	SetWindowLongPtr(mHwnd, GWLP_USERDATA, (LONG_PTR)this);
 
 	// L17: Use separate big/small icons for best results.
 	HICON big_icon, small_icon;
-	if (g_script.mCustomIcon)
+	if (g_script->mCustomIcon)
 	{
-		mIconEligibleForDestruction = big_icon = g_script.mCustomIcon;
-		mIconEligibleForDestructionSmall = small_icon = g_script.mCustomIconSmall; // Should always be non-NULL if mCustomIcon is non-NULL.
+		mIconEligibleForDestruction = big_icon = g_script->mCustomIcon;
+		mIconEligibleForDestructionSmall = small_icon = g_script->mCustomIconSmall; // Should always be non-NULL if mCustomIcon is non-NULL.
 	}
 	else
 	{
@@ -2427,9 +2568,9 @@ void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 	MsgMonitorList &handlers = aControl ? aControl->events : mEvents;
 	MsgMonitorStruct *mon;
 	if (aFunc)
-		mon = handlers.Find(aEvent, aFunc, aEventKind);
+		mon = handlers.Find(aEvent, this->mHwnd, aFunc, aEventKind);
 	else
-		mon = handlers.Find(aEvent, aMethodName, aEventKind);
+		mon = handlers.Find(aEvent, this->mHwnd, aMethodName, aEventKind);
 	if (!aMaxThreads)
 	{
 		if (mon)
@@ -2472,10 +2613,10 @@ void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 			if (!ValidateFunctor(aFunc, param_count, aResultToken))
 				return;
 			// Add the callback.
-			mon = handlers.Add(aEvent, aFunc, append);
+			mon = handlers.Add(aEvent, this->mHwnd, aFunc, append);
 		}
 		else
-			mon = handlers.Add(aEvent, aMethodName, append);
+			mon = handlers.Add(aEvent, this->mHwnd, aMethodName, append);
 		if (!mon)
 			_o_throw_oom;
 	}
@@ -2572,7 +2713,7 @@ LPTSTR GuiType::ConvertEvent(GuiEventType evt)
 		return sEventNames[evt];
 
 	// Else it's a character code - convert it to a string
-	static TCHAR sBuf[2] = { 0, 0 };
+	thread_local static TCHAR sBuf[2] = { 0, 0 };
 	sBuf[0] = (TCHAR)(UCHAR)evt;
 	return sBuf;
 }
@@ -2664,7 +2805,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 
 	#define TOO_MANY_CONTROLS _T("Too many controls.") // Short msg since so rare.
 	if (mControlCount >= MAX_CONTROLS_PER_GUI)
-		return g_script.RuntimeError(TOO_MANY_CONTROLS);
+		return g_script->RuntimeError(TOO_MANY_CONTROLS);
 	if (mControlCount >= mControlCapacity) // The section below on the above check already having been done.
 	{
 		// realloc() to keep the array contiguous, which allows better-performing methods to be
@@ -2673,7 +2814,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		GuiControlType **realloc_temp;  // Needed since realloc returns NULL on failure but leaves original block allocated.
 		if (   !(realloc_temp = (GuiControlType **)realloc(mControl  // If passed NULL, realloc() will do a malloc().
 			, (mControlCapacity + GUI_CONTROL_BLOCK_SIZE) * sizeof(GuiControlType*)))   )
-			return g_script.RuntimeError(TOO_MANY_CONTROLS); // A non-specific msg since this error is so rare.
+			return g_script->RuntimeError(TOO_MANY_CONTROLS); // A non-specific msg since this error is so rare.
 		mControl = realloc_temp;
 		mControlCapacity += GUI_CONTROL_BLOCK_SIZE;
 	}
@@ -2692,7 +2833,13 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 	// aOpt.checked is already okay since BST_UNCHECKED == 0
 	// Similarly, the zero-init of "control" higher above set the right values for password_char, new_section, etc.
 
-	if (aControlType == GUI_CONTROL_TAB2) // v1.0.47.05: Replace TAB2 with TAB at an early stage to simplify the code.  The only purpose of TAB2 is to flag this as the new type of tab that avoids redrawing issues but has a new z-order that would break some existing scripts.
+	GuiType *aGui = NULL;
+	
+	if (aControlType == GUI_CONTROL_GUI)
+	{
+		aGui = GuiType::FindGui((HWND)ATOI64(aText));
+	}
+	else if (aControlType == GUI_CONTROL_TAB2) // v1.0.47.05: Replace TAB2 with TAB at an early stage to simplify the code.  The only purpose of TAB2 is to flag this as the new type of tab that avoids redrawing issues but has a new z-order that would break some existing scripts.
 	{
 		aControlType = GUI_CONTROL_TAB;
 		control.attrib |= GUI_CONTROL_ATTRIB_ALTBEHAVIOR; // v1.0.47.05: A means for new scripts to solve redrawing problems in tab controls at the cost of putting the tab control after its controls in the z-order.
@@ -2708,7 +2855,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		if (mTabControlCount == MAX_TAB_CONTROLS)
 		{
 			delete pcontrol;
-			return g_script.RuntimeError(_T("Too many tab controls.")); // Short msg since so rare.
+			return g_script->RuntimeError(_T("Too many tab controls.")); // Short msg since so rare.
 		}
 		// For now, don't allow a tab control to be create inside another tab control because it raises
 		// doubt and probably would create complications.  If it ever is allowed, note that
@@ -2730,7 +2877,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		if (mStatusBarHwnd)
 		{
 			delete pcontrol;
-			return g_script.RuntimeError(_T("Too many status bars.")); // Short msg since so rare.
+			return g_script->RuntimeError(_T("Too many status bars.")); // Short msg since so rare.
 		}
 		control.tab_control_index = MAX_TAB_CONTROLS; // Indicate that bar isn't owned by any tab control.
 		// No need to do the following because constructor did it:
@@ -2893,6 +3040,17 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// Testing indicates that although the MonthCal attached to a DateTime control can be navigated using
 		// the keyboard on Win2k/XP, standalone MonthCal controls don't support it, except on Vista and later.
 		opt.style_add |= WS_TABSTOP;
+		break;
+	case GUI_CONTROL_GUI:
+		if (aGui)
+		{
+			SetParent(aGui->mHwnd, mHwnd);
+			if (aGui->mStyle & WS_POPUP)
+				aGui->mStyle = aGui->mStyle & ~WS_POPUP | WS_CHILD;
+			SetWindowLong(aGui->mHwnd, GWL_STYLE, aGui->mStyle);
+			if (!IsWindowVisible(aGui->mHwnd))
+				aGui->Show(_T(""));
+		}
 		break;
 	// Nothing extra for these currently:
 	//case GUI_CONTROL_RADIO: This one is handled separately above the switch().
@@ -3204,6 +3362,14 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 			break;
 		case GUI_CONTROL_TAB:
 			opt.row_count = 10;
+			break;
+		case GUI_CONTROL_GUI:
+			if (aGui)
+			{
+				RECT rc;
+				GetWindowRect(aGui->mHwnd, &rc);
+				opt.height = rc.bottom - rc.top;
+			}
 			break;
 		// Types not included
 		// ------------------
@@ -3634,6 +3800,14 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 			// to hold two columns of standard-width controls:
 			opt.width = (2 * gui_standard_width) + (3 * mMarginX);  // 3 vs. 2 to allow space in between columns.
 			break;
+		case GUI_CONTROL_GUI:
+			if (aGui)
+			{
+				RECT rc;
+				GetWindowRect(aGui->mHwnd, &rc);
+				opt.width = rc.right - rc.left;
+			}
+			break;
 		// Types not included
 		// ------------------
 		//case GUI_CONTROL_TEXT:      Exact width should already have been calculated based on contents.
@@ -3749,13 +3923,13 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 	case GUI_CONTROL_TEXT:
 		// Seems best to omit SS_NOPREFIX by default so that ampersand can be used to create shortcut keys.
 		control.hwnd = CreateWindowEx(exstyle, _T("static"), aText, style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
 		break;
 
 	case GUI_CONTROL_LINK:
 		// Seems best to omit LWS_NOPREFIX by default so that ampersand can be used to create shortcut keys.
 		control.hwnd = CreateWindowEx(exstyle, _T("SysLink"), aText, style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
 		break;
 
 	case GUI_CONTROL_PIC:
@@ -3766,7 +3940,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// Must set its caption to aText so that documented ability to refer to a picture by its original
 		// filename is possible:
 		if (control.hwnd = CreateWindowEx(exstyle, _T("static"), aText, style
-			, opt.x, opt.y, opt.width, opt.height  // OK if zero, control creation should still succeed.
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height  // OK if zero, control creation should still succeed.
 			, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (!ControlLoadPicture(control, aText, opt.width, opt.height, opt.icon_number))
@@ -3844,7 +4018,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// should be rarely present anyway.  Also, BS_NOTIFY seems to have no effect on GroupBoxes (it
 		// never sends any BN_CLICKED/BN_DBLCLK messages).  This has been verified twice.
 		control.hwnd = CreateWindowEx(exstyle, _T("Button"), aText, style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
 		break;
 
 	case GUI_CONTROL_BUTTON:
@@ -3853,7 +4027,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// In addition, this causes automatic wrapping to occur if the user specified a width
 		// too small to fit the entire line.
 		if (control.hwnd = CreateWindowEx(exstyle, _T("Button"), aText, style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (style & BS_DEFPUSHBUTTON)
 			{
@@ -3911,7 +4085,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 
 	case GUI_CONTROL_RADIO:
 		control.hwnd = CreateWindowEx(exstyle, _T("Button"), aText, style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
 		// opt.checked is handled later below.
 		break;
 
@@ -3928,7 +4102,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// isn't that useful anymore anyway since GuiControl(Get) can access controls directly by
 		// their current output-var names:
 		if (control.hwnd = CreateWindowEx(exstyle, _T("ComboBox"), _T(""), style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			// Set font unconditionally to simplify calculations, which help ensure that at least one item
 			// in the DropDownList/Combo is visible when the list drops down:
@@ -3963,7 +4137,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 	case GUI_CONTROL_LISTBOX:
 		// See GUI_CONTROL_COMBOBOX above for why empty string is passed in as the caption:
 		if (control.hwnd = CreateWindowEx(exstyle, _T("ListBox"), _T(""), style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (opt.tabstop_count)
 				SendMessage(control.hwnd, LB_SETTABSTOPS, opt.tabstop_count, (LPARAM)opt.tabstop);
@@ -4005,7 +4179,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 	case GUI_CONTROL_LISTVIEW:
 		if (opt.listview_view != LV_VIEW_TILE) // It was ensured earlier that listview_view can be set to LV_VIEW_TILE only for XP or later.
 			style = (style & ~LVS_TYPEMASK) | opt.listview_view; // Create control in the correct view mode whenever possible (TILE is the exception because it can't be expressed via style).
-		if (control.hwnd = CreateWindowEx(exstyle, WC_LISTVIEW, _T(""), style, opt.x, opt.y // exstyle does apply to ListViews.
+		if (control.hwnd = CreateWindowEx(exstyle, WC_LISTVIEW, _T(""), style, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0) // exstyle does apply to ListViews.
 			, opt.width, opt.height == COORD_UNSPECIFIED ? 200 : opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (   !(control.union_lv_attrib = (lv_attrib_type *)malloc(sizeof(lv_attrib_type)))   )
@@ -4120,7 +4294,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		break;
 
 	case GUI_CONTROL_TREEVIEW:
-		if (control.hwnd = CreateWindowEx(exstyle, WC_TREEVIEW, _T(""), style, opt.x, opt.y
+		if (control.hwnd = CreateWindowEx(exstyle, WC_TREEVIEW, _T(""), style, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0)
 			, opt.width, opt.height == COORD_UNSPECIFIED ? 200 : opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (opt.checked)
@@ -4177,7 +4351,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// when done (or NULL if it failed to allocate the memory).
 		malloc_buf = (*aText && (style & ES_MULTILINE)) ? TranslateLFtoCRLF(aText) : aText;
 		if (control.hwnd = CreateWindowEx(exstyle, _T("Edit"), malloc_buf ? malloc_buf : aText, style  // malloc_buf is checked again in case mem alloc failed.
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			// As documented in MSDN, setting a password char will have no effect for multi-line edits
 			// since they do not support password/mask char.
@@ -4222,7 +4396,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 			style |= DTS_SHOWNONE;
 		//else it's blank, so retain the default DTS_SHORTDATEFORMAT (0x0000).
 		if (control.hwnd = CreateWindowEx(exstyle, DATETIMEPICK_CLASS, _T(""), style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (use_custom_format)
 				DateTime_SetFormat(control.hwnd, aText);
@@ -4250,14 +4424,14 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 			if (!opt.gdtr)
 			{
 				delete pcontrol;
-				return g_script.RuntimeError(ERR_INVALID_VALUE, aText);
+				return g_script->RuntimeError(ERR_INVALID_VALUE, aText);
 			}
 			if (opt.gdtr == (GDTR_MIN | GDTR_MAX)) // When range is present, multi-select is automatically put into effect.
 				style |= MCS_MULTISELECT;  // Must be applied during control creation since it can't be changed afterward.
 		}
 		// Create the control with arbitrary width/height if no width/height were explicitly specified.
 		// It will be resized after creation by querying the control:
-		if (control.hwnd = CreateWindowEx(exstyle, MONTHCAL_CLASS, _T(""), style, opt.x, opt.y
+		if (control.hwnd = CreateWindowEx(exstyle, MONTHCAL_CLASS, _T(""), style, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0)
 			, opt.width < 0 ? 100 : opt.width  // Negative width has special meaning upon creation (see below).
 			, opt.height == COORD_UNSPECIFIED ? 100 : opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
@@ -4351,7 +4525,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// In this case, not only doesn't the caption appear anywhere, it's not set either (or at least
 		// not retrievable via GetWindowText()):
 		if (control.hwnd = CreateWindowEx(exstyle, HOTKEY_CLASS, _T(""), style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (*aText)
 				SendMessage(control.hwnd, HKM_SETHOTKEY, TextToHotkey(aText), 0);
@@ -4408,7 +4582,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// retrieved and used to figure out how to resize the buddy in cases where its width-set-automatically
 		// -based-on-contents should not be squished as a result of buddying.
 		if (control.hwnd = CreateWindowEx(exstyle, UPDOWN_CLASS, _T(""), style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (provide_buddy_manually) // v1.0.42.02 (see comment where provide_buddy_manually is initialized).
 				SendMessage(control.hwnd, UDM_SETBUDDY, (WPARAM)prev_control->hwnd, 0); // See StatusBar notes above.  Also, mControlCount>0 whenever provide_buddy_manually==true.
@@ -4493,7 +4667,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 
 	case GUI_CONTROL_SLIDER:
 		if (control.hwnd = CreateWindowEx(exstyle, TRACKBAR_CLASS, _T(""), style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			ControlSetSliderOptions(control, opt); // Fix for v1.0.25.08: This must be done prior to the below.
 			// The control automatically deals with out-of-range values by setting slider to min or max.
@@ -4508,7 +4682,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 
 	case GUI_CONTROL_PROGRESS:
 		if (control.hwnd = CreateWindowEx(exstyle, PROGRESS_CLASS, _T(""), style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			ControlSetProgressOptions(control, opt, style); // Fix for v1.0.27.01: This must be done prior to the below.
 			// This has been confirmed though testing, even when the range is dynamically changed
@@ -4524,7 +4698,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 
 	case GUI_CONTROL_TAB:
 		if (control.hwnd = CreateWindowEx(exstyle, WC_TABCONTROL, _T(""), style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			if (opt.tab_control_uses_dialog) // It's a Tab3 control.
 			{
@@ -4552,7 +4726,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		
 	case GUI_CONTROL_ACTIVEX:
 	{
-		static bool sAtlAxInitialized = false;
+		thread_local static bool sAtlAxInitialized = false;
 		if (!sAtlAxInitialized)
 		{
 			typedef BOOL (WINAPI *MyAtlAxWinInit)();
@@ -4567,7 +4741,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 			// If any of the above calls failed, attempt to create the window anyway:
 		}
 		if (control.hwnd = CreateWindowEx(exstyle, _T("AtlAxWin"), aText, style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			// A reference to the object is kept for two reasons:
 			//  1) So Ctrl.Value can return the same wrapper object each time.
@@ -4588,10 +4762,10 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		if (opt.customClassAtom == 0)
 		{
 			delete pcontrol;
-			return g_script.RuntimeError(_T("A window class is required."));
+			return g_script->RuntimeError(_T("A window class is required."));
 		}
 		control.hwnd = CreateWindowEx(exstyle, MAKEINTATOM(opt.customClassAtom), aText, style
-			, opt.x, opt.y, opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
+			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL);
 		break;
 
 	case GUI_CONTROL_STATUSBAR:
@@ -4600,6 +4774,21 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 			mStatusBarHwnd = control.hwnd;
 			if (opt.color_bk != CLR_INVALID) // Explicit color change was requested.
 				SendMessage(mStatusBarHwnd, SB_SETBKCOLOR, 0, opt.color_bk);
+		}
+		break;
+	case GUI_CONTROL_GUI:
+		if (aGui)
+		{
+			control.hwnd = aGui->mHwnd;
+			// set gui size if it has not been set yet
+			if (!aGui->mWidth)
+				aGui->mWidth = opt.width;
+			if (!aGui->mHeight)
+				aGui->mHeight = opt.height;
+			// assign identifier of the gui control
+			// the first control seems to be always 3 so add it to mControlCount
+			SetWindowLong(control.hwnd, GWL_ID, mControlCount + 3);
+			MoveWindow(control.hwnd, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, true);
 		}
 		break;
 	} // switch() for control creation.
@@ -4622,7 +4811,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 	if (!control.hwnd)
 	{
 		delete pcontrol;
-		return g_script.RuntimeError(_T("Can't create control."));
+		return g_script->RuntimeError(_T("Can't create control."));
 	}
 	// Otherwise the above control creation succeeded.
 	++mControlCount;
@@ -4811,6 +5000,36 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 			if (bottom > mMaxExtentDownSection)
 				mMaxExtentDownSection = bottom;
 		}
+
+		// Scroll has been already initialized and needs to be updated
+		if (mStyle & WS_HSCROLL && mHScroll)
+		{
+			mHScroll->nMax = mMaxExtentRight + mMarginX;
+			SetScrollInfo(mHwnd, SB_HORZ, mHScroll, true);
+		}
+		if (mStyle & WS_VSCROLL && mVScroll)
+		{
+			mVScroll->nMax = mMaxExtentDown + mMarginY;
+			SetScrollInfo(mHwnd, SB_VERT, mVScroll, true);
+		}
+
+		// Set AutoSize and AutoPosition values
+		control.mAX = opt.AX;
+		control.mAY = opt.AY;
+		control.mAWidth = opt.AWidth;
+		control.mAHeight = opt.AHeight;
+		control.mAXReset = opt.AXReset;
+		control.mAYReset = opt.AYReset;
+		control.mAXAuto = opt.AXAuto;
+		control.mAYAuto = opt.AYAuto;
+		control.mAWAuto = opt.AWAuto;
+		control.mAHAuto = opt.AHAuto;
+
+		// Save default size of control
+		control.mX = opt.x;
+		control.mY = opt.y;
+		control.mWidth = opt.width;
+		control.mHeight = opt.height;
 	}
 
 	return OK;
@@ -4829,7 +5048,12 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 	{
 		// Since window already exists, its mStyle and mExStyle members might be out-of-date due to
 		// "WinSet Transparent", etc.  So update them:
+		bool aIsHScroll = mStyle & WS_HSCROLL, aIsVScroll = mStyle & WS_VSCROLL;
 		mStyle = GetWindowLong(mHwnd, GWL_STYLE);
+		if (aIsHScroll && !(mStyle & WS_HSCROLL))
+			mStyle |= WS_HSCROLL;
+		if (aIsVScroll && !(mStyle & WS_VSCROLL))
+			mStyle |= WS_VSCROLL;
 		mExStyle = GetWindowLong(mHwnd, GWL_EXSTYLE);
 	}
 	DWORD style_orig = mStyle;
@@ -4897,7 +5121,7 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 					if (!new_owner || new_owner == mHwnd) // Window can't own itself!
 					{
 						*option_end = orig_char; // Must restore caller's string.
-						if (!g_script.RuntimeError(_T("Invalid or nonexistent owner or parent window."), next_option))
+						if (!g_script->RuntimeError(_T("Invalid or nonexistent owner or parent window."), next_option))
 							return FAIL;
 						// Otherwise, user wants to continue.
 					}
@@ -4966,7 +5190,39 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 
 		else if (!_tcsicmp(next_option, _T("Border")))
 			if (adding) mStyle |= WS_BORDER; else mStyle &= ~WS_BORDER;
-
+		else if (!_tcsicmp(next_option, _T("Scroll")))
+		{
+			if (adding)
+				mStyle |= WS_VSCROLL, mStyle |= WS_HSCROLL;
+			else
+			{
+				if (mHScroll)
+					ScrollWindow(mHwnd, mHScroll->nPos - mHScroll->nMin, mVScroll->nPos - mVScroll->nMin, NULL, NULL);
+				mStyle &= ~WS_VSCROLL, mStyle &= ~WS_HSCROLL;
+			}
+		}
+		else if (!_tcsicmp(next_option, _T("HScroll")))
+		{
+			if (adding)
+				mStyle |= WS_HSCROLL;
+			else
+			{
+				mStyle &= ~WS_HSCROLL;
+				if (mHScroll)
+					ScrollWindow(mHwnd, mHScroll->nPos - mHScroll->nMin, 0, NULL, NULL);
+			}
+		}
+		else if (!_tcsicmp(next_option, _T("VScroll")))
+		{
+			if (adding)
+				mStyle |= WS_VSCROLL;
+			else
+			{
+				mStyle &= ~WS_VSCROLL;
+				if (mHScroll)
+					ScrollWindow(mHwnd, 0, mVScroll->nPos - mVScroll->nMin, NULL, NULL);
+			}
+		}
 		else if (!_tcsicmp(next_option, _T("Caption")))
 			if (adding) mStyle |= WS_CAPTION; else mStyle = mStyle & ~WS_CAPTION;
 
@@ -6266,6 +6522,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			int option_int = 0; // Only valid for [XYWHTER].
 			float option_float; // Only valid for R.
 			TCHAR option_char2; // Only valid for [XYWH].
+			TCHAR option_char3; // Only for AutoSizing
 			bool use_margin_offset; // Only valid for [XY].
 
 			if (_tcschr(_T("XYWHTER"), option_char))
@@ -6456,6 +6713,86 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 
 			case 'R': // The number of rows desired in the control (can be fractional).
 				aOpt.row_count = option_float;
+				break;
+			case 'A': // AutoSize and AutoPos options
+				option_char3 = ctoupper(*(option_value + 1));
+				option_char2 = ctoupper(*option_value);
+				if (option_char2 == 'X')
+				{
+					if (option_char3 == 'R')
+						aOpt.AXReset = true;
+					else if (option_char3 == 'A')
+						aOpt.AXAuto = true;
+					else if (option_char3 == 'P')
+						aOpt.AX = (float)0.000000000000000000000000000000000000000000001;
+					else if (option_char3 == '\0')
+						aOpt.AX = 1;
+					else if (_tcschr(next_option + 2, '/') && *_tcschr(next_option + 2, '/') != '\0' && ATOI(_tcschr(next_option + 2, '/') + 1))
+					{
+						if (!(aOpt.AX = (float)ATOI(next_option + 2) / ATOI(_tcschr(next_option + 2, '/') + 1)))
+							aOpt.AX = (float)ATOF(next_option + 2);
+					}
+					else
+					{
+						aOpt.AX = (float)ATOF(next_option + 2);
+					}
+				}
+				else if (option_char2 == 'Y')
+				{
+					if (option_char3 == 'R')
+						aOpt.AYReset = true;
+					else if (option_char3 == 'A')
+						aOpt.AYAuto = true;
+					else if (option_char3 == 'P')
+						aOpt.AY = (float)0.000000000000000000000000000000000000000000001;
+					else if (option_char3 == '\0')
+						aOpt.AY = 1;
+					else if (_tcschr(next_option + 2, '/') && *_tcschr(next_option + 2, '/') != '\0' && ATOI(_tcschr(next_option + 2, '/') + 1))
+					{
+						if (!(aOpt.AY = (float)ATOI(next_option + 2) / ATOI(_tcschr(next_option + 2, '/') + 1)))
+							aOpt.AY = (float)ATOF(next_option + 2);
+					}
+					else
+					{
+						aOpt.AY = (float)ATOF(next_option + 2);
+					}
+				}
+				else if (option_char2 == 'W')
+				{
+					if (option_char3 == 'R')
+						aOpt.AXReset = true;
+					else if (option_char3 == 'A')
+						aOpt.AWAuto = true;
+					else if (option_char3 == '\0')
+						aOpt.AWidth = 1;
+					else if (_tcschr(next_option + 2, '/') && *_tcschr(next_option + 2, '/') != '\0' && ATOI(_tcschr(next_option + 2, '/') + 1))
+					{
+						if (!(aOpt.AWidth = (float)ATOI(next_option + 2) / ATOI(_tcschr(next_option + 2, '/') + 1)))
+							aOpt.AWidth = (float)ATOF(next_option + 2);
+					}
+					else
+					{
+						aOpt.AWidth = (float)ATOF(next_option + 2);
+					}
+				}
+				else if (option_char2 == 'H')
+				{
+					if (option_char3 == 'R')
+						aOpt.AYReset = true;
+					else if (option_char3 == 'A')
+						aOpt.AHAuto = true;
+					else if (option_char3 == '\0')
+						aOpt.AHeight = 1;
+					else if (_tcschr(next_option + 2, '/') && *_tcschr(next_option + 2, '/') != '\0' && ATOI(_tcschr(next_option + 2, '/') + 1))
+					{
+						if (!(aOpt.AHeight = (float)ATOI(next_option + 2) / ATOI(_tcschr(next_option + 2, '/') + 1)))
+							aOpt.AHeight = (float)ATOF(next_option + 2);
+					}
+					else
+					{
+						aOpt.AHeight = (float)ATOF(next_option + 2);
+					}
+				}
 				break;
 
 			case 'E': // Extended style additions or removals.
@@ -6812,7 +7149,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			InvalidateRect(aControl.hwnd, NULL, TRUE); // Assume there's text in the control.
 
 		if (style_needed_changing && !style_change_ok)
-			return g_script.ThrowIfTrue(true);
+			return g_script->ThrowIfTrue(true);
 	} // aControl.hwnd is not NULL
 
 	return OK;
@@ -7297,6 +7634,15 @@ ResultType GuiType::Show(LPTSTR aOptions)
 	bool allow_move_window;
 	RECT rect;
 
+	if (!mVScroll)
+	{
+		mHScroll = new SCROLLINFO;
+		mVScroll = new SCROLLINFO;
+		g_memset(mHScroll, 0, sizeof(SCROLLINFO));
+		g_memset(mVScroll, 0, sizeof(SCROLLINFO));
+		mHScroll->cbSize = mVScroll->cbSize = sizeof(SCROLLINFO);
+		mHScroll->fMask = mVScroll->fMask = SIF_RANGE | SIF_PAGE;
+	}
 	if (allow_move_window = !IsIconic(mHwnd)) // Call IsIconic() again in case above changed the window's state.
 	{
 		if (auto_size) // Check this one first so that it takes precedence over mGuiShowHasNeverBeenDone below.
@@ -7351,10 +7697,10 @@ ResultType GuiType::Show(LPTSTR aOptions)
 			else
 			{
 				GetClientRect(mHwnd, &rect);
-				if (width == COORD_UNSPECIFIED) // Keep the current client width, as documented.
-					width = rect.right - rect.left;
-				if (height == COORD_UNSPECIFIED) // Keep the current client height, as documented.
-					height = rect.bottom - rect.top;
+				if (width == COORD_UNSPECIFIED) // Keep the current client width, as documented, including Scrollbar.
+					width = rect.right - rect.left + (((mStyle & WS_VSCROLL) && (int)mVScroll->nPage <= mVScroll->nMax) ? GetSystemMetrics(SM_CYVSCROLL) : 0);
+				if (height == COORD_UNSPECIFIED) // Keep the current client height, as documented, including Scrollbar.
+					height = rect.bottom - rect.top + (((mStyle & WS_HSCROLL) && (int)mHScroll->nPage <= mHScroll->nMax) ? GetSystemMetrics(SM_CYHSCROLL) : 0);
 			}
 		}
 
@@ -7406,8 +7752,20 @@ ResultType GuiType::Show(LPTSTR aOptions)
 		// account. To account for the scroll bars, call the GetSystemMetrics function with SM_CXVSCROLL
 		// or SM_CYHSCROLL."
 		if (style & WS_HSCROLL)
-			rect.bottom += GetSystemMetrics(SM_CYHSCROLL);
+		{
+			mHScroll->nMax = mMaxExtentRight + mMarginX;
+			mHScroll->nPage = 1 + (height_orig == COORD_UNSPECIFIED ? mHScroll->nMax : height_orig);
+			SetScrollInfo(mHwnd, SB_HORZ, mHScroll, false);
+		}
 		if (style & WS_VSCROLL)
+		{
+			mVScroll->nMax = mMaxExtentDown + mMarginY;
+			mVScroll->nPage = 1 + (width_orig == COORD_UNSPECIFIED ? mVScroll->nMax : width_orig);
+			SetScrollInfo(mHwnd, SB_VERT, mVScroll, false);
+		}
+		if (style & WS_HSCROLL && height_orig != COORD_UNSPECIFIED && height_orig < mMaxExtentDown + mMarginY)
+			rect.bottom += GetSystemMetrics(SM_CYHSCROLL);
+		if (style & WS_VSCROLL && width_orig != COORD_UNSPECIFIED && width_orig < mMaxExtentRight + mMarginX)
 			rect.right += GetSystemMetrics(SM_CXVSCROLL);
 		// Compensate for menu wrapping: https://blogs.msdn.microsoft.com/oldnewthing/20030911-00/?p=42553/
 		if (has_menu)
@@ -7507,10 +7865,22 @@ ResultType GuiType::Show(LPTSTR aOptions)
 			// it might not be valid to reposition a maximized window without unmaximizing it?)
 			if (IsZoomed(mHwnd)) // Call IsZoomed() again in case above changed the state. No need to check IsIconic() because above already set default show-mode to SW_RESTORE for such windows.
 				ShowWindow(mHwnd, SW_RESTORE); // But restore isn't done for something like "Gui, Show, Center" because it's too obscure and might reduce flexibility (debatable).
-			if (is_child_window)
-				ScreenToClient(mOwner, (LPPOINT)&old_rect); // Make the old coords relative to parent.
-			MoveWindow(mHwnd, x == COORD_UNSPECIFIED ? old_rect.left : x, y == COORD_UNSPECIFIED ? old_rect.top : y
-				, width, height, is_visible);  // Do repaint if window is visible.
+
+			GuiType *aParentGui = GuiType::FindGui(GetParent(mHwnd));
+			if (aParentGui && aParentGui->FindControl(mHwnd) && !mGuiShowHasNeverBeenDone)
+			{
+				POINT pt = { 0 };
+				ClientToScreen(aParentGui->mHwnd, &pt);
+				MoveWindow(mHwnd, x == COORD_UNSPECIFIED ? old_rect.left - pt.x : x, y == COORD_UNSPECIFIED ? old_rect.top - pt.y : y
+					, width, height, is_visible);  // Do repaint if window is visible.
+			}
+			else
+			{
+				if (is_child_window)
+					ScreenToClient(mOwner, (LPPOINT)&old_rect); // Make the old coords relative to parent.
+				MoveWindow(mHwnd, x == COORD_UNSPECIFIED ? old_rect.left : x, y == COORD_UNSPECIFIED ? old_rect.top : y
+					, width, height, is_visible);  // Do repaint if window is visible.
+			}
 		}
 	} // if (allow_move_window)
 
@@ -7637,6 +8007,7 @@ ResultType GuiType::Show(LPTSTR aOptions)
 	// otherwise it might get stuck in a true state if the SLEEP results in the launch of a script
 	// subroutine that takes a long time to complete:
 	mShowIsInProgress = false;
+	DWORD aThreadID = CURRENT_THREADID;
 
 	// Update for v1.0.25: The below is now done last to prevent the GuiSize label (if any) from launching
 	// while this function is still incomplete; in other words, don't allow the GuiSize label to launch
@@ -7644,7 +8015,8 @@ ResultType GuiType::Show(LPTSTR aOptions)
 	// If this weren't done, whenever a command that blocks (fully uses) the main thread such as "Drive Eject"
 	// immediately follows "Gui Show", the GUI window might not appear until afterward because our thread
 	// never had a chance to call its WindowProc with all the messages needed to actually show the window:
-	MsgSleep(-1);
+	if (g_MainThreadID == aThreadID)
+		MsgSleep(-1);
 	// UpdateWindow() would probably achieve the same effect as the above, but it feels safer to do
 	// the above because it ensures that our message queue is empty prior to returning to our caller.
 
@@ -7661,7 +8033,9 @@ void GuiType::Cancel()
 		VisibilityChanged(); // This may Release() and indirectly Destroy() the Gui.
 	}
 	// If this Gui was the last thing keeping the script running, exit the script:
-	g_script.ExitIfNotPersistent(EXIT_CLOSE);
+	// HotKeyIt: call only if we are not already exiting -> g_hWnd == NULL
+	if (g_hWnd)
+		g_script->ExitIfNotPersistent(EXIT_CLOSE);
 }
 
 
@@ -8015,7 +8389,7 @@ int GuiType::FindOrCreateFont(LPTSTR aOptions, LPTSTR aFontName, FontType *aFoun
 				// The allocation is small enough that failure would indicate it's unlikely the
 				// program could continue for long, so it doesn't seem worth the added complication
 				// to support recovering from this error:
-				g_script.CriticalError(ERR_OUTOFMEM);
+				g_script->CriticalError(ERR_OUTOFMEM);
 			// For simplifying other code sections, create an entry in the array for the default font
 			// (GUI constructor relies on at least one font existing in the array).
 			// Doesn't seem likely that DEFAULT_GUI_FONT face/size will change while a script is running,
@@ -8140,7 +8514,7 @@ int GuiType::FindOrCreateFont(LPTSTR aOptions, LPTSTR aFontName, FontType *aFoun
 	// Since above didn't return, create the font if there's room.
 	if (sFontCount >= MAX_GUI_FONTS)
 	{
-		g_script.ScriptError(_T("Too many fonts."));  // Short msg since so rare.
+		g_script->ScriptError(_T("Too many fonts."));  // Short msg since so rare.
 		return -1;
 	}
 	
@@ -8155,7 +8529,7 @@ int GuiType::FindOrCreateFont(LPTSTR aOptions, LPTSTR aFontName, FontType *aFoun
 	
 	if (  !(font.hfont = CreateFontIndirect(&font))  )
 	{
-		g_script.ScriptError(_T("Can't create font."));  // Short msg since so rare.
+		g_script->ScriptError(_T("Can't create font."));  // Short msg since so rare.
 		return -1;
 	}
 
@@ -8209,7 +8583,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	// CalledByIsDialogMessageOrDispatch for any threads beneath it.  Although this may technically be
 	// unnecessary, it adds maintainability.
 	LRESULT msg_reply;
-	if (g_MsgMonitor.Count() // Count is checked here to avoid function-call overhead.
+	if (g_MsgMonitor && g_MsgMonitor->Count() // Count is checked here to avoid function-call overhead.
 		&& (!g->CalledByIsDialogMessageOrDispatch || g->CalledByIsDialogMessageOrDispatchMsg != iMsg) // v1.0.44.11: If called by IsDialog or Dispatch but they changed the message number, check if the script is monitoring that new number.
 		&& MsgMonitor(hWnd, iMsg, wParam, lParam, NULL, msg_reply))
 		return msg_reply; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
@@ -8233,6 +8607,62 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	switch (iMsg)
 	{
 	// case WM_CREATE: --> Do nothing extra because DefDlgProc() appears to be sufficient.
+	case WM_MOUSEWHEEL:
+		if (!(pgui = GuiType::FindGui(hWnd)))
+			break; // Let default proc handle it.
+		if (pgui->mStyle & WS_VSCROLL)
+		{
+			thread_local static SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
+
+			GetScrollInfo(pgui->mHwnd, true, &aScrollInfo);
+			short scrolllines = ((short)HIWORD(wParam)) / 120 * -1 * SCROLL_STEP;
+			int new_pos = aScrollInfo.nPos + scrolllines;
+			if ((int)pgui->mVScroll->nPage > pgui->mVScroll->nMax)
+				break;
+			// Constrain scrollbar position to valid values
+			if (new_pos + (int)aScrollInfo.nPage > aScrollInfo.nMax)
+				new_pos = aScrollInfo.nMax - aScrollInfo.nPage;
+			else if (new_pos < aScrollInfo.nMin)
+				new_pos = aScrollInfo.nMin;
+
+			ScrollWindow(pgui->mHwnd, 0, aScrollInfo.nPos - new_pos, 0, 0);
+			// Update ScrollInfo structure
+			pgui->mVScroll->nPos = new_pos;
+
+			aScrollInfo.nPos = new_pos;
+			SetScrollInfo(pgui->mHwnd, true, &aScrollInfo, true);
+			return 0;
+		}
+		break;
+	case WM_MOUSEHWHEEL:
+		if (!(pgui = GuiType::FindGui(hWnd)))
+			break; // Let default proc handle it.
+		if (pgui->mStyle & WS_HSCROLL)
+		{
+			thread_local static SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
+
+			GetScrollInfo(pgui->mHwnd, false, &aScrollInfo);
+			short scrolllines = ((short)HIWORD(wParam)) / 120 * SCROLL_STEP;
+			int new_pos = aScrollInfo.nPos + scrolllines;
+
+			if ((int)pgui->mHScroll->nPage > pgui->mHScroll->nMax)
+				break;
+
+			// Constrain scrollbar position to valid values
+			if (new_pos + (int)aScrollInfo.nPage > aScrollInfo.nMax)
+				new_pos = aScrollInfo.nMax - aScrollInfo.nPage;
+			else if (new_pos < aScrollInfo.nMin)
+				new_pos = aScrollInfo.nMin;
+
+			ScrollWindow(pgui->mHwnd, aScrollInfo.nPos - new_pos, 0, 0, 0);
+			// Update ScrollInfo structure
+			pgui->mHScroll->nPos = new_pos;
+
+			aScrollInfo.nPos = new_pos;
+			SetScrollInfo(pgui->mHwnd, false, &aScrollInfo, true);
+			return 0;
+		}
+		break;
 
 	case WM_SIZE: // Listed first for performance.
 		if (   !(pgui = GuiType::FindGui(hWnd))   )
@@ -8260,6 +8690,151 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 			POST_AHK_GUI_ACTION(hWnd, NO_CONTROL_INDEX, MAKEWORD(GUI_EVENT_RESIZE, wParam), lParam);
 			// MsgSleep() is not done because "case AHK_GUI_ACTION" in GuiWindowProc() takes care of it.
 			// See its comments for why.
+		
+		if (pgui->mWidth != COORD_UNSPECIFIED) // also avoids compile error for variable initialization
+		{   // AutoSizePos
+			// calculate size difference of new client area
+			int addWidth = LOWORD(lParam) - pgui->mWidth, addHeight = HIWORD(lParam) - pgui->mHeight;
+			
+			// Required to update pgui->mMaxExtentRight and ...Down
+			bool aResizeWasDone = false;
+
+			// Calculate moved controls and add addWidth/Height to correctly position following controls
+			int addedHeight = 0, addedWidth = 0, autoX = 0, autoY = 0;
+			float autoW = 0, autoH = 0;
+			
+			// Add Scrollbars to client area if they exist because we keep client area behind scrollbars
+			if (pgui->mStyle & WS_VSCROLL && (int)pgui->mVScroll->nPage <= pgui->mVScroll->nMax)
+				addWidth += GetSystemMetrics(SM_CYVSCROLL);
+			if (pgui->mStyle & WS_HSCROLL && (int)pgui->mHScroll->nPage <= pgui->mHScroll->nMax)
+				addHeight += GetSystemMetrics(SM_CYHSCROLL);
+			
+			// use original size of window if new size is smaller so controls will newer be smaller than original size.
+			if (addHeight < 0)
+				addHeight = 0;
+			if (addWidth < 0)
+				addWidth = 0;
+			// Update Controls position and size
+			for (GuiIndexType i = 0; i < pgui->mControlCount; i++)
+			{
+				GuiControlType *aControl = pgui->mControl[i];
+				
+				if (aControl->type == GUI_CONTROL_STATUSBAR)
+					continue;
+
+				// Reset moved controls
+				if (aControl->mAYReset)
+				{
+					addedHeight = 0;
+					autoY = 0;
+				}
+				if (aControl->mAXReset)
+				{
+					addedWidth = 0;
+					autoX = 0;
+				}
+
+				// Check for autosize and autoposition options
+				if (!(aControl->mAX || aControl->mAY || aControl->mAWidth || aControl->mAHeight || aControl->mAXAuto || aControl->mAYAuto || aControl->mAWAuto || aControl->mAHAuto))
+					continue;
+				
+				// Calculate new size and position for controls
+				RECT rect;
+				GetWindowRect(aControl->hwnd, &rect);
+				POINT pt = { rect.left, rect.top };
+				ScreenToClient(pgui->mHwnd, &pt);
+				int x = pt.x, y = pt.y, width = rect.right - rect.left, height = rect.bottom - rect.top;
+				
+				// calculate new x position
+				if (aControl->mAX)
+				{
+					x = aControl->mX + addedWidth + (int)(aControl->mAX * addWidth) - (pgui->mStyle & WS_HSCROLL ? pgui->mHScroll->nPos : 0);
+					addedWidth += (int)(aControl->mAX * addWidth);
+				}
+				else if (aControl->mAXAuto)
+				{
+					x = aControl->mX + addedWidth + autoX - (pgui->mStyle & WS_HSCROLL ? pgui->mHScroll->nPos : 0);
+					addedWidth += autoX;
+				}
+				// calculate new y position
+				if (aControl->mAY) {
+					y = aControl->mY + addedHeight + (int)(aControl->mAY * addHeight) - (pgui->mStyle & WS_VSCROLL ? pgui->mVScroll->nPos : 0);
+					addedHeight += (int)(aControl->mAY * addHeight);
+				}
+				else if (aControl->mAYAuto)
+				{
+					y = aControl->mY + addedHeight + autoY - (pgui->mStyle & WS_VSCROLL ? pgui->mVScroll->nPos : 0);
+					addedHeight += autoY;
+				}
+				// calculate new width
+				if (aControl->mAWidth)
+				{
+					width = aControl->mWidth + (int)(aControl->mAWidth * addWidth);
+					autoW = aControl->mAWidth;
+				}
+				else if (aControl->mAWAuto)
+				{
+					width = aControl->mWidth + (int)(autoW * addWidth);
+				}
+				// calculate new height
+				if (aControl->mAHeight)
+				{
+					height = aControl->mHeight + (int)(aControl->mAHeight * addHeight);
+					autoH = aControl->mAHeight;
+				}
+				else if (aControl->mAHAuto)
+				{
+					height = aControl->mHeight + (int)(autoH * addHeight);
+				}
+				
+				// Apply values used for axa and aya options in following controls
+				//int autoXnew = (aControl->mAX ? (int)(aControl->mAX * addWidth) : 0) + (aControl->mAWidth ? (int)(aControl->mAWidth * addWidth) : 0);
+				//int autoYnew = (aControl->mAY ? (int)(aControl->mAY * addHeight) : 0) + (aControl->mAHeight ? (int)(aControl->mAHeight * addHeight) : 0);
+				//if (autoX < autoXnew)
+				if (!aControl->mAWAuto)
+					autoX = (aControl->mAX ? (int)(aControl->mAX * addWidth) : 0) + (aControl->mAWidth ? (int)(aControl->mAWidth * addWidth) : 0);
+				//if (autoY < autoYnew)
+				if (!aControl->mAHAuto)
+					autoY = (aControl->mAY ? (int)(aControl->mAY * addHeight) : 0) + (aControl->mAHeight ? (int)(aControl->mAHeight * addHeight) : 0);
+				
+				// Continue if size of control was not changed
+				if (x == pt.x && y == pt.y && width == rect.right - rect.left && height == rect.bottom - rect.top)
+					continue;
+				// Resize and move control
+				MoveWindow(aControl->hwnd, x, y, width, height, false);
+				aResizeWasDone = true;
+			}
+			
+			// Update client area for gui if controls were moved
+			if (aResizeWasDone)
+			{
+				int aMaxWidth = 0, aMaxHeight = 0;
+				for (GuiIndexType i = 0; i < pgui->mControlCount; i++)
+				{
+					RECT rect;
+					GuiControlType *aControl = pgui->mControl[i];
+					if (aControl->type == GUI_CONTROL_STATUSBAR)
+						continue;
+					GetWindowRect(aControl->hwnd, &rect);
+					POINT pt = { rect.left, rect.top };
+					ScreenToClient(pgui->mHwnd, &pt);
+					int aWidth = pt.x + pgui->mHScroll->nPos + (rect.right - rect.left), aHeight = pt.y + pgui->mVScroll->nPos + (rect.bottom - rect.top);
+					if (aWidth > aMaxWidth)
+						aMaxWidth = aWidth;
+					if (aHeight > aMaxHeight)
+						aMaxHeight = aHeight;
+				}
+				if (aMaxWidth != pgui->mMaxExtentRight)
+					pgui->mMaxExtentRight = aMaxWidth;
+				if (aMaxHeight != pgui->mMaxExtentDown)
+					pgui->mMaxExtentDown = aMaxHeight;
+				RedrawWindow(pgui->mHwnd, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_NOFRAME | RDW_ERASE | RDW_NOERASE | RDW_UPDATENOW | RDW_ERASENOW | RDW_NOINTERNALPAINT);
+			}
+		}
+
+		// Update Scrollbars
+		if (pgui->mStyle & WS_HSCROLL || pgui->mStyle & WS_VSCROLL)
+			UpdateScrollbars(pgui, LOWORD(lParam), HIWORD(lParam), true);
 		return 0; // "If an application processes this message, it should return zero."
 		// Testing shows that the window still resizes correctly (controls are revealed as the window
 		// is expanded) even if the event isn't passed on to the default proc.
@@ -8722,7 +9297,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 				// attempt to execute the link's HREF attribute:
 				if (*item.szUrl && !control.events.IsMonitoring(GUI_EVENT_CLICK))
 				{
-					g_script.ActionExec(item.szUrl, NULL, NULL, false);
+					g_script->ActionExec(item.szUrl, NULL, NULL, false);
 					return 0;
 				}
 				gui_event = GUI_EVENT_CLICK;
@@ -8768,8 +9343,64 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 
 	case WM_VSCROLL: // These two should only be received for sliders and up-downs.
 	case WM_HSCROLL:
+		GuiIndexType aControlIndex;
 		if (   !(pgui = GuiType::FindGui(hWnd))   )
 			break; // Let default proc handle it.
+		aControlIndex = GUI_HWND_TO_INDEX((HWND)lParam);
+		if (aControlIndex >= pgui->mControlCount 
+			|| (pgui->mControl[aControlIndex]->type != GUI_CONTROL_UPDOWN 
+				&& pgui->mControl[aControlIndex]->type != GUI_CONTROL_SLIDER))
+		{
+			thread_local static SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
+			bool bar = iMsg == WM_VSCROLL;
+
+			GetScrollInfo(pgui->mHwnd, bar, &aScrollInfo);
+			int new_pos = aScrollInfo.nPos;
+			switch (wParam & 0xFFFF)
+			{
+			case SB_THUMBTRACK:
+			case SB_THUMBPOSITION:
+				new_pos = HIWORD(wParam);
+				break;
+			case SB_LINEUP:
+				new_pos -= SCROLL_STEP;
+				break;
+			case SB_LINEDOWN:
+				new_pos += SCROLL_STEP;
+				break;
+			case SB_PAGEUP:
+				new_pos -= aScrollInfo.nPage - SCROLL_STEP;
+				break;
+			case SB_PAGEDOWN:
+				new_pos += aScrollInfo.nPage - SCROLL_STEP;
+				break;
+			case SB_TOP:
+				new_pos = aScrollInfo.nMin;
+				break;
+			case SB_BOTTOM:
+				new_pos = aScrollInfo.nMax - aScrollInfo.nPage;
+				break;
+			default:
+				return 0;
+			}
+
+			// Constrain scrollbar position to valid values
+			if (new_pos + (int)aScrollInfo.nPage > aScrollInfo.nMax)
+				new_pos = aScrollInfo.nMax - aScrollInfo.nPage;
+			else if (new_pos < aScrollInfo.nMin)
+				new_pos = aScrollInfo.nMin;
+
+			ScrollWindow(pgui->mHwnd, bar ? 0 : aScrollInfo.nPos - new_pos, bar ? aScrollInfo.nPos - new_pos : 0, 0, 0);
+			// Update ScrollInfo structure
+			if (bar)
+				pgui->mVScroll->nPos = new_pos;
+			else
+				pgui->mHScroll->nPos = new_pos;
+
+			aScrollInfo.nPos = new_pos;
+			SetScrollInfo(pgui->mHwnd, bar, &aScrollInfo, true);
+			return 0;
+		}
 		pgui->Event(GUI_HWND_TO_INDEX((HWND)lParam), LOWORD(wParam), GUI_EVENT_NONE, HIWORD(wParam));
 		return 0; // "If an application processes this message, it should return zero."
 	
@@ -9495,7 +10126,7 @@ bool GuiType::ControlWmNotify(GuiControlType &aControl, LPNMHDR aNmHdr, INT_PTR 
 		return false;
 
 	InitNewThread(0, false, true);
-	g_script.mLastPeekTime = GetTickCount();
+	g_script->mLastPeekTime = GetTickCount();
 	AddRef();
 	
 	ExprTokenType param[] = { &aControl, (__int64)(DWORD_PTR)aNmHdr };

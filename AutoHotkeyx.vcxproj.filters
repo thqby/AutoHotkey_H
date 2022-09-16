@@ -27,6 +27,12 @@
     <Filter Include="Built-in library\Gui">
       <UniqueIdentifier>{d89b1451-308b-4d71-b654-bd52e7e74493}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Generated Files">
+      <UniqueIdentifier>{db7511a5-c72a-44ef-b579-8ce51449f6f4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="H">
+      <UniqueIdentifier>{bf30415b-9b32-49f2-b900-42445e0ac5c0}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\script2.cpp">
@@ -182,6 +188,36 @@
     <ClCompile Include="source\MdFunc.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="source\COMServer_i.c">
+      <Filter>Generated Files</Filter>
+    </ClCompile>
+    <ClCompile Include="source\COMServer.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\dllmain.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\exports.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\LiteZip.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\lowlevelbif.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\MemoryModule.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\MinHook.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\script_struct.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\script_h.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\ahkversion.h">
@@ -289,6 +325,24 @@
     <ClInclude Include="source\abi.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="source\COMServer_h.h">
+      <Filter>Generated Files</Filter>
+    </ClInclude>
+    <ClInclude Include="source\COMServer.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\exports.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\LiteZip.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\MemoryModule.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\MinHook.h">
+      <Filter>H</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="source\resources\icon_filetype.ico">
@@ -304,6 +358,12 @@
       <Filter>Resource Files</Filter>
     </None>
     <None Include="source\resources\icon_suspend.ico">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="source\resources\AutoHotkey.rgs">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="source\resources\WINAPI.zip">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>
@@ -325,6 +385,11 @@
     <CustomBuild Include="source\x86call.asm">
       <Filter>Utility</Filter>
     </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Midl Include="source\resources\COMServer.idl">
+      <Filter>Resource Files</Filter>
+    </Midl>
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="debug.natvis">

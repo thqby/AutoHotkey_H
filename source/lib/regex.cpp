@@ -237,7 +237,7 @@ void *pcret_resolve_user_callout(LPCTSTR aCalloutParam, int aCalloutParamLength)
 	// If no Func is found, pcre will handle the case where aCalloutParam is a pure integer.
 	// In that case, the callout param becomes an integer between 0 and 255. No valid pointer
 	// could be in this range, but we must take care to check (ptr>255) rather than (ptr!=NULL).
-	auto callout_var = g_script.FindVar(aCalloutParam, aCalloutParamLength);
+	auto callout_var = g_script->FindVar(aCalloutParam, aCalloutParamLength);
 	return callout_var ? callout_var->ToObject() : nullptr;
 }
 
@@ -276,7 +276,7 @@ int RegExCallout(pcret_callout_block *cb)
 	auto callout_func = (IObject *)cb->user_callout;
 	if (!callout_func)
 	{
-		Var *pcre_callout_var = g_script.FindVar(_T("pcre_callout"), 12, FINDVAR_FOR_READ); // This may be a local of the UDF which called RegExMatch/Replace().
+		Var *pcre_callout_var = g_script->FindVar(_T("pcre_callout"), 12, FINDVAR_FOR_READ); // This may be a local of the UDF which called RegExMatch/Replace().
 		if (!pcre_callout_var)
 			return 0; // Seems best to ignore the callout rather than aborting the match.
 		callout_func = pcre_callout_var->ToObject();
@@ -364,6 +364,51 @@ int RegExCallout(pcret_callout_block *cb)
 	return (int)number_to_return;
 }
 
+
+// SET UP THE CACHE.
+// This is a very crude cache for linear search. Of course, hashing would be better in the sense that it
+// would allow the cache to get much larger while still being fast (I believe PHP caches up to 4096 items).
+// Binary search might not be such a good idea in this case due to the time required to find the right spot
+// to insert a new cache item (however, items aren't inserted often, so it might perform quite well until
+// the cache contained thousands of RegEx's, which is unlikely to ever happen in most scripts).
+struct pcre_cache_entry
+{
+	// For simplicity (and thus performance), the entire RegEx pattern including its options is cached
+	// is stored in re_raw and that entire string becomes the RegEx's unique identifier for the purpose
+	// of finding an entry in the cache.  Technically, this isn't optimal because some options like Study
+	// and aGetPositionsNotSubstrings don't alter the nature of the compiled RegEx.  However, the CPU time
+	// required to strip off some options prior to doing a cache search seems likely to offset much of the
+	// cache's benefit.  So for this reason, as well as rarity and code size issues, this policy seems best.
+	LPTSTR re_raw;      // The RegEx's literal string pattern such as "abc.*123".
+	pcret* re_compiled; // The RegEx in compiled form.
+	pcret_extra* extra; // NULL unless a study() was done (and NULL even then if study() didn't find anything).
+	// int pcre_options; // Not currently needed in the cache since options are implicitly inside re_compiled.
+	int options_length; // Lexikos: See aOptionsLength comment at beginning of this function.
+};
+#define PCRE_CACHE_SIZE 100 // Going too high would be counterproductive due to the slowness of linear search (and also the memory utilization of so many compiled RegEx's).
+thread_local static pcre_cache_entry sCache[PCRE_CACHE_SIZE] = { {0} };
+thread_local static int sLastInsert, sLastFound = -1; // -1 indicates "cache empty".
+
+void free_compiled_regex()
+{
+	for (int i = 0; i < PCRE_CACHE_SIZE; i++)
+	{
+		pcre_cache_entry& this_entry = sCache[i]; // For performance and convenience.
+		if (this_entry.re_compiled) // An existing cache item is being overwritten, so free it's attributes.
+		{
+			// Free the old cache entry's attributes
+			free(this_entry.re_raw);           // Free the uncompiled pattern.
+			pcret_free(this_entry.re_compiled); // Free the compiled pattern.
+			if (this_entry.extra)
+				pcret_free_study(this_entry.extra);
+			this_entry.re_compiled = NULL;
+			this_entry.re_raw = NULL;
+			this_entry.options_length = 0;
+		}
+	}
+	sLastFound = -1;
+}
+
 pcret *get_compiled_regex(LPTSTR aRegEx, pcret_extra *&aExtra, int *aOptionsLength, ResultToken *aResultToken)
 // Returns the compiled RegEx, or NULL on failure.
 // This function is called by things other than built-in functions so it should be kept general-purpose.
@@ -391,30 +436,6 @@ pcret *get_compiled_regex(LPTSTR aRegEx, pcret_extra *&aExtra, int *aOptionsLeng
 	// so like performance, that's not a concern either.
 	EnterCriticalSection(&g_CriticalRegExCache); // Request ownership of the critical section. If another thread already owns it, this thread will block until the other thread finishes.
 
-	// SET UP THE CACHE.
-	// This is a very crude cache for linear search. Of course, hashing would be better in the sense that it
-	// would allow the cache to get much larger while still being fast (I believe PHP caches up to 4096 items).
-	// Binary search might not be such a good idea in this case due to the time required to find the right spot
-	// to insert a new cache item (however, items aren't inserted often, so it might perform quite well until
-	// the cache contained thousands of RegEx's, which is unlikely to ever happen in most scripts).
-	struct pcre_cache_entry
-	{
-		// For simplicity (and thus performance), the entire RegEx pattern including its options is cached
-		// is stored in re_raw and that entire string becomes the RegEx's unique identifier for the purpose
-		// of finding an entry in the cache.  Technically, this isn't optimal because some options like Study
-		// and aGetPositionsNotSubstrings don't alter the nature of the compiled RegEx.  However, the CPU time
-		// required to strip off some options prior to doing a cache search seems likely to offset much of the
-		// cache's benefit.  So for this reason, as well as rarity and code size issues, this policy seems best.
-		LPTSTR re_raw;      // The RegEx's literal string pattern such as "abc.*123".
-		pcret *re_compiled; // The RegEx in compiled form.
-		pcret_extra *extra; // NULL unless a study() was done (and NULL even then if study() didn't find anything).
-		// int pcre_options; // Not currently needed in the cache since options are implicitly inside re_compiled.
-		int options_length; // Lexikos: See aOptionsLength comment at beginning of this function.
-	};
-
-	#define PCRE_CACHE_SIZE 100 // Going too high would be counterproductive due to the slowness of linear search (and also the memory utilization of so many compiled RegEx's).
-	static pcre_cache_entry sCache[PCRE_CACHE_SIZE] = {{0}};
-	static int sLastInsert, sLastFound = -1; // -1 indicates "cache empty".
 	int insert_pos; // v1.0.45.03: This is used to avoid updating sLastInsert until an insert actually occurs (it might not occur if a compile error occurs in the regex, or something else stops it early).
 
 	// CHECK IF THIS REGEX IS ALREADY IN THE CACHE.
@@ -710,6 +731,17 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 	// Get the replacement text (if any) from the incoming parameters.  If it was omitted, treat it as "".
 	TCHAR repl_buf[MAX_NUMBER_SIZE];
 	LPTSTR replacement = ParamIndexToOptionalString(2, repl_buf);
+	size_t replacement_length;
+	IObject* obj = NULL;
+	ExprTokenType param, obj_token;
+	ExprTokenType* params = &param;
+	ResultToken result_token;
+	if (aParamCount > 2 && (obj = ParamIndexToObject(2))) {
+		if (!ValidateFunctor(obj, 1, aResultToken))
+			return;
+		result_token.InitResult(repl_buf);
+		obj_token.SetValue(obj);
+	}
 
 	// In PCRE, lengths and such are confined to ints, so there's little reason for using unsigned for anything.
 	int captured_pattern_count, empty_string_is_not_a_match, match_length, ref_num
@@ -891,6 +923,26 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 			}
 			else // i.e. it's the first iteration, so begin calculating the size required.
 				new_result_length = (int)result_length + haystack_portion_length; // Init length to the part of haystack before the match (it must be copied over as literal text).
+
+			if (obj) {
+				if (second_iteration) {
+					tmemcpy(dest, replacement, replacement_length);
+					result_length += replacement_length;
+				}
+				else {
+					IObject* match_object;
+					if (!RegExCreateMatchArray(aHaystack, aRE, aExtra, aOffset, ((RegExCalloutData*)aExtra->callout_data)->pattern_count, captured_pattern_count, match_object)) {
+						aResultToken.MemoryError();
+						return;
+					}
+					param.SetValue(match_object);
+					result_token.SetValue(_T(""));
+					obj->Invoke(result_token, IT_CALL, nullptr, obj_token, &params, 1);
+					replacement = TokenToString(result_token, repl_buf, &replacement_length);
+					new_result_length += (int)replacement_length;
+				}
+				continue;
+			}
 
 			// DOLLAR SIGN ($) is the only method supported because it simplifies the code, improves performance,
 			// and avoids the need to escape anything other than $ (which simplifies the syntax).

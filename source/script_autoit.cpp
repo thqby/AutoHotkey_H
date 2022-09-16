@@ -93,9 +93,9 @@ bif_impl void RunAs(LPCTSTR aUser, LPCTSTR aPass, LPCTSTR aDomain)
 	if (!aUser) aUser = _T("");
 	if (!aPass) aPass = _T("");
 	if (!aDomain) aDomain = _T("");
-	StringTCharToWChar(aUser, g_script.mRunAsUser);
-	StringTCharToWChar(aPass, g_script.mRunAsPass);
-	StringTCharToWChar(aDomain, g_script.mRunAsDomain);
+	StringTCharToWChar(aUser, g_script->mRunAsUser);
+	StringTCharToWChar(aPass, g_script->mRunAsPass);
+	StringTCharToWChar(aDomain, g_script->mRunAsDomain);
 }
 
 
@@ -392,6 +392,7 @@ BIF_DECL(BIF_Control)
 	UINT msg, x_msg, y_msg;
 	RECT rect;
 	LPARAM lparam;
+	DWORD aThreadID = CURRENT_THREADID;
 
 	switch(control_cmd)
 	{
@@ -963,7 +964,7 @@ bif_impl FResult Download(LPCTSTR aURL, LPCTSTR aFilespec)
 	// requests that lack a user-agent.  Furthermore, it's more professional to have one, in which case it
 	// should probably be kept as simple and unchanging as possible.  Using something like the script's name
 	// as the user agent (even if documented) seems like a bad idea because it might contain personal/sensitive info.
-	HINTERNET hInet = InternetOpen(_T("AutoHotkey"), INTERNET_OPEN_TYPE_PRECONFIG_WITH_NO_AUTOPROXY, NULL, NULL, 0);
+	HINTERNET hInet = InternetOpen(g_WindowClassMain, INTERNET_OPEN_TYPE_PRECONFIG_WITH_NO_AUTOPROXY, NULL, NULL, 0);
 	if (!hInet)
 		return FR_E_WIN32;
 
@@ -998,6 +999,7 @@ bif_impl FResult Download(LPCTSTR aURL, LPCTSTR aFilespec)
 	// having it return the moment there is any data in the buffer, the program is made more
 	// responsive, especially when the download is very slow and/or one of the hooks is installed:
 	BOOL result;
+	DWORD aThreadID = CURRENT_THREADID;
 	if (*aURL == 'h' || *aURL == 'H')
 	{
 		while (result = InternetReadFileExA(hFile, &buffers, IRF_NO_WAIT, NULL)) // Assign
@@ -1127,7 +1129,7 @@ bif_impl FResult DirSelect(LPCTSTR aRootDir, int *aOptions, LPCTSTR aGreeting, S
 	if (aGreeting && *aGreeting)
 		tcslcpy(greeting, aGreeting, _countof(greeting));
 	else
-		sntprintf(greeting, _countof(greeting), _T("Select Folder - %s"), g_script.DefaultDialogTitle());
+		sntprintf(greeting, _countof(greeting), _T("Select Folder - %s"), g_script->DefaultDialogTitle());
 	bi.lpszTitle = greeting;
 
 	// Bitwise flags:
@@ -1576,6 +1578,7 @@ int Line::Util_CopyFile(LPCTSTR szInputSource, LPCTSTR szInputDest, bool bOverwr
 
 	int failure_count = 0;
 	LONG_OPERATION_INIT
+	DWORD aThreadID = CURRENT_THREADID;
 
 	do
 	{
@@ -1816,20 +1819,20 @@ flags can be a combination of:
 	TOKEN_PRIVILEGES	tkp; 
 
 	// Get a token for this process.
- 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) 
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) 
 		return FR_E_WIN32;
- 
+
 	// Get the LUID for the shutdown privilege.
- 	LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid); 
- 
+	LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid); 
+
 	tkp.PrivilegeCount = 1;  /* one privilege to set */
 	tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED; 
- 
+
 	// Get the shutdown privilege for this process.
- 	AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0); 
- 
+	AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0); 
+
 	// Cannot test the return value of AdjustTokenPrivileges.
- 	if (GetLastError() != ERROR_SUCCESS) 
+	if (GetLastError() != ERROR_SUCCESS)
 		return FR_E_WIN32;
 
 	// ExitWindows

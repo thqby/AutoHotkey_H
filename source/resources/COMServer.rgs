@@ -1,0 +1,22 @@
+HKCR
+{
+	AutoHotkey2.Script = s 'AutoHotkey v2'
+	{
+		CLSID = s '{934b0e6a-9b50-4248-884b-be5a9bc66b39}'
+	}
+
+	NoRemove CLSID
+	{
+		ForceRemove {934b0e6a-9b50-4248-884b-be5a9bc66b39} = s 'AutoHotkey v2'
+		{
+			ForceRemove Programmable
+			ProgID = s 'AutoHotkey2.Script'
+			InprocServer32 = s '%MODULE%'
+			{
+				val ThreadingModel = s 'Apartment'
+			}
+			TypeLib = s '{d346977b-cc9d-4428-9cd2-1b41652586fc}'
+			Version = s '1.0'
+		}
+	}
+}

@@ -76,6 +76,9 @@ void input_type::ParseOptions(LPTSTR aOptions)
 	{
 		switch(ctoupper(*cp))
 		{
+		case 'A':
+			AppendText = true;
+			break;
 		case 'B':
 			BackspaceIsUndo = false;
 			break;
@@ -528,7 +531,7 @@ input_type *InputRelease(input_type *aInput)
 		// InputStart().  ScriptObject != NULL indicates this input_type is actually embedded in
 		// the InputObject and as such the link should never be broken until both are deleted.
 		//aInput->ScriptObject = NULL;
-		g_script.ExitIfNotPersistent(EXIT_EXIT); // In case this InputHook was the only thing keeping the script running.
+		g_script->ExitIfNotPersistent(EXIT_EXIT); // In case this InputHook was the only thing keeping the script running.
 	}
 	return NULL;
 }

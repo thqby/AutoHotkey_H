@@ -449,7 +449,7 @@ public:
 	virtual ~CKuStringT()
 	{
 		if (m_pData)
-			m_pData->Release();
+			m_pData->Release(), m_pData = NULL;
 	}
 
 	SIZET GetLength() const

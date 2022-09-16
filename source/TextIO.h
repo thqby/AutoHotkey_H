@@ -43,6 +43,7 @@ public:
 		// write byte order mark when open for write
 		, BOM_UTF8 = 0x00000010
 		, BOM_UTF16 = 0x00000020
+		, DETECT_UTF8 = 0x00000040
 
 		// shared accesses
 		, SHARE_READ = 0x00000100

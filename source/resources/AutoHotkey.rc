@@ -34,6 +34,27 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST  "..\\..\\temp\\AutoHotkey.exe.manifest"
 //#endif
 
+
+#ifdef _USRDLL
+/////////////////////////////////////////////////////////////////////////////
+//
+// REGISTRY
+//
+
+IDR_AUTOHOTKEY          REGISTRY                "AutoHotkey.rgs"
+
+IDR_COMSERVER           REGISTRY                "COMServer.rgs"
+
+// TYPELIB
+// ReleaseDll must be build before DebugDll to update .tlb file
+#ifdef _WIN64
+1            TYPELIB                 "temp\\x64\\MT_ReleaseDll\\AutoHotkey.tlb"
+#else
+1            TYPELIB                 "temp\\Win32\\MT_ReleaseDll\\AutoHotkey.tlb"
+#endif
+#endif
+
+
 #ifdef APSTUDIO_INVOKED
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -208,9 +229,9 @@ BEGIN
             VALUE "ProductName", ""
             VALUE "ProductVersion", AHK_VERSION
 #else
-            VALUE "FileDescription", "AutoHotkey " AHK_BIT
+            VALUE "FileDescription", "AutoHotkey_H " AHK_BIT
             VALUE "FileVersion", AHK_VERSION
-            VALUE "ProductName", "AutoHotkey"
+            VALUE "ProductName", "AutoHotkey_H"
             VALUE "ProductVersion", AHK_VERSION
 #endif
         END
@@ -235,7 +256,7 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED
-
+WINAPI	RCDATA	"WINAPI.zip"
 
 
 #ifdef _DEBUG

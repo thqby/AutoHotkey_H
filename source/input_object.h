@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 class InputObject : public Object
 {
@@ -33,7 +33,7 @@ class InputObject : public Object
 public:
 	IObject *onEnd = nullptr, *onKeyDown = nullptr, *onChar = nullptr, *onKeyUp = nullptr;
 
-	static Object *sPrototype;
+	thread_local static Object *sPrototype;
 	static ObjectMember sMembers[];
 	static int sMemberCount;
 

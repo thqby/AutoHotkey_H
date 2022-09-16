@@ -567,6 +567,9 @@ bif_impl FResult SoundPlay(LPCTSTR aFilespec, LPCTSTR aWait)
 	// Otherwise, the sound is now playing.
 	if (  !(aWait && (aWait[0] == '1' && !aWait[1] || !_tcsicmp(aWait, _T("Wait"))))  )
 		return OK;
+
+	DWORD aThreadID = CURRENT_THREADID;
+
 	// Otherwise, caller wants us to wait until the file is done playing.  To allow our app to remain
 	// responsive during this time, use a loop that checks our message queue:
 	// Older method: "mciSendString("play " SOUNDPLAY_ALIAS " wait", NULL, 0, NULL)"
@@ -575,14 +578,17 @@ bif_impl FResult SoundPlay(LPCTSTR aFilespec, LPCTSTR aWait)
 		mciSendString(_T("status ") SOUNDPLAY_ALIAS _T(" mode"), buf, _countof(buf), NULL);
 		if (!*buf) // Probably can't happen given the state we're in.
 			break;
-		if (!_tcscmp(buf, _T("stopped"))) // The sound is done playing.
+		if (!_tcscmp(buf, _T("stopped")) || (char)g->IsPaused == -1) // The sound is done playing.
 		{
 			mciSendString(_T("close ") SOUNDPLAY_ALIAS, NULL, 0, NULL);
 			break;
 		}
 		// Sleep a little longer than normal because I'm not sure how much overhead
 		// and CPU utilization the above incurs:
-		MsgSleep(20);
+		if (g_MainThreadID == aThreadID)
+			MsgSleep(20);
+		else
+			Sleep(20);
 	}
 	return OK;
 }

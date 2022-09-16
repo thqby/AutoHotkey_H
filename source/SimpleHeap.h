@@ -43,40 +43,42 @@ private:
 	char *mBlock; // This object's memory block.  Although private, its contents are public.
 	char *mFreeMarker;  // Address inside the above block of the first unused byte.
 	size_t mSpaceAvailable;
-	static UINT sBlockCount;
-	static SimpleHeap *sFirst, *sLast;  // The first and last objects in the linked list.
-	static char *sMostRecentlyAllocated; // For use with Delete().
-	SimpleHeap *mNextBlock;  // The object after this one in the linked list; NULL if none.
+	UINT sBlockCount;
+	SimpleHeap *sFirst, *sLast;  // The first and last objects in the linked list.
+	char *sMostRecentlyAllocated; // For use with Delete().
+	SimpleHeap *mNextBlock, *mPrevBlock;  // The object after this one and previous in the linked list; NULL if none.
 
-	static SimpleHeap *CreateBlock();
-	SimpleHeap();  // Private constructor, since we want only the static methods to be able to create new objects.
-	~SimpleHeap();
+	SimpleHeap *CreateBlock(size_t aSize);
 
-	static LPTSTR strDup(LPCTSTR aBuf, size_t aLength = -1); // Return a block of memory to the caller and copy aBuf into it.
+	LPTSTR strDup(LPCTSTR aBuf, size_t aLength = -1); // Return a block of memory to the caller and copy aBuf into it.
 
 public:
 	// Return a block of memory to the caller with aBuf copied into it.  Returns nullptr on failure.
-	static LPTSTR Malloc(LPCTSTR aBuf, size_t aLength = -1);
+	LPTSTR Malloc(LPCTSTR aBuf, size_t aLength = -1);
 	
 	// Return a block of memory to the caller with aBuf copied into it.  Terminates app on failure.
-	static LPTSTR Alloc(LPCTSTR aBuf, size_t aLength = -1);
+	LPTSTR Alloc(LPCTSTR aBuf, size_t aLength = -1);
 	
 	// Return a block of memory to the caller, or nullptr on failure.
-	static void* Malloc(size_t aSize);
+	void* Malloc(size_t aSize);
 	
 	// Return a block of memory to the caller, or terminate app on failure.
-	static void* Alloc(size_t aSize);
+	void* Alloc(size_t aSize);
 
-	static void Delete(void *aPtr);
+	void Delete(void *aPtr);
 	//static void DeleteAll();
 
-	static void CriticalFail();
+	void CriticalFail();
 
 	template<typename T>
-	static T* Alloc(size_t aCount = 1)
+	T* Alloc(size_t aCount = 1)
 	{
 		return (T *)Alloc(sizeof(T) * aCount);
 	}
+	
+	void Merge(SimpleHeap* aHeap);
+	SimpleHeap();
+	~SimpleHeap();
 };
 
 #endif

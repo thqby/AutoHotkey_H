@@ -38,7 +38,7 @@ ObjectMember InputObject::sMembers[] =
 };
 int InputObject::sMemberCount = _countof(sMembers);
 
-Object *InputObject::sPrototype;
+thread_local Object *InputObject::sPrototype = nullptr;
 
 InputObject::InputObject()
 {
@@ -79,7 +79,8 @@ void InputObject::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTok
 	case M_Start:
 		if (!input.InProgress())
 		{
-			input.Buffer[input.BufferLength = 0] = '\0';
+			if (!input.AppendText)
+				input.Buffer[input.BufferLength = 0] = '\0';
 			InputStart(input);
 		}
 		_o_return_empty;
@@ -100,6 +101,14 @@ void InputObject::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTok
 		_o_return_empty;
 
 	case P_Input:
+		if (IS_INVOKE_SET)
+		{
+			if (_tcslen(ParamIndexToString(1)) > (size_t)input.BufferLengthMax)
+				_o_throw(ERR_OUTOFMEM);
+			_tcscpy(input.Buffer, ParamIndexToString(1));
+			aResultToken.symbol = SYM_STRING;
+			_o_return(TokenSetResult(aResultToken, input.Buffer, input.BufferLength = (int)_tcslen(input.Buffer)));
+		}
 		_o_return(input.Buffer, input.BufferLength);
 
 	case P_InProgress:

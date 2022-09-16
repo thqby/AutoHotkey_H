@@ -19,7 +19,8 @@ GNU General Public License for more details.
 #include <gdiplus.h> // Used by LoadPicture().
 #include "util.h"
 #include "globaldata.h"
-
+#include "Shlwapi.h"
+#include "LiteZip.h"
 
 int GetYDay(int aMon, int aDay, bool aIsLeapYear)
 // Returns a number between 1 and 366.
@@ -695,8 +696,8 @@ LPTSTR tcscasestr(LPCTSTR phaystack, LPCTSTR pneedle)
 	// Faster looping by precalculating bl, bu, cl, cu before looping.
 	// 2004 Apr 08	Jose Da Silva, digital@joescat@com
 {
-	register const TBYTE *haystack, *needle;
-	register unsigned bl, bu, cl, cu;
+	const TBYTE *haystack, *needle;
+	unsigned bl, bu, cl, cu;
 	
 	haystack = (const TBYTE *) phaystack;
 	needle = (const TBYTE *) pneedle;
@@ -727,8 +728,8 @@ LPTSTR tcscasestr(LPCTSTR phaystack, LPCTSTR pneedle)
 		
 		for (;;)
 		{
-			register unsigned a;
-			register const TBYTE *rhaystack, *rneedle;
+			unsigned a;
+			const TBYTE *rhaystack, *rneedle;
 			do
 			{
 				a = *++haystack;
@@ -810,8 +811,8 @@ LPTSTR lstrcasestr(LPCTSTR phaystack, LPCTSTR pneedle)
 // Copyright (C) 1994,1996,1997,1998,1999,2000 Free Software Foundation, Inc.
 // See strcasestr() for more comments.
 {
-	register const TBYTE *haystack, *needle;
-	register unsigned bl, bu, cl, cu;
+	const TBYTE *haystack, *needle;
+	unsigned bl, bu, cl, cu;
 	
 	haystack = (const TBYTE *) phaystack;
 	needle = (const TBYTE *) pneedle;
@@ -840,8 +841,8 @@ LPTSTR lstrcasestr(LPCTSTR phaystack, LPCTSTR pneedle)
 		
 		for (;;)
 		{
-			register unsigned a;
-			register const TBYTE *rhaystack, *rneedle;
+			unsigned a;
+			const TBYTE *rhaystack, *rneedle;
 			do
 			{
 				a = *++haystack;
@@ -2549,7 +2550,7 @@ BOOL CALLBACK ResourceIndexToIdEnumProc(HMODULE hModule, LPCTSTR lpszType, LPTST
 	return TRUE; // Continue
 }
 
-static TCHAR RESOURCE_ID_NOT_FOUND[] = {0};
+thread_local static TCHAR RESOURCE_ID_NOT_FOUND[] = {0};
 
 // L17: Find ID of resource from one-based index. i.e. IconNumber -> resource ID.
 // v1.1.22.05: Return LPTSTR since some (very few) icons have a string ID.
@@ -3134,27 +3135,22 @@ LPTSTR InStrAny(LPTSTR aStr, LPTSTR aNeedle[], int aNeedleCount, size_t &aFoundL
 
 
 int FTOA(double aValue, LPTSTR aBuf, int aBufSize)
-// Converts aValue to a string while trying to ensure that conversion back to double will
-// produce the same value.  Trailing 0s after the decimal point are stripped for brevity, when not printed in scientific notation.
-// Numbers printed in scientific notation may not contain a decimal point.
-// Caller must ensure there is sufficient buffer size to avoid truncating the output.
 {
-	int result = sntprintf(aBuf, aBufSize, _T("%.17g"), aValue);
-	
-	// the 'g' specifier might cause the result to lack a decimal point. 
-	// If the number is not written in scientific notation, and lacks a decimal point,
-	// add ".0" to make the string look like a float.
-	size_t search_result = _tcscspn(aBuf, _T(".e")); 
-	if (search_result == result			// if true, no decimal point, '.', or 'e' was found, add ".0",
-		&& result + 3 <= aBufSize		// but only if the buffer has room for two more characters and the null terminator,
-		&& isdigit(aBuf[result - 1]))	// and the number isn't some variation of inf or NaN.
-	{
-		aBuf[result] = '.';				// overwrites the current null terminator.
-		aBuf[result+1] = '0';
-		aBuf[result+2] = '\0';
-		result += 2;					// the result is the number of characters written, excluding the terminator.
-	}
-	return result;
+	static double_conversion::DoubleToStringConverter converter(7, "Infinity", "NaN", 'e', -6, 17, 6, 0);
+#ifdef UNICODE
+	char buf[MAX_NUMBER_LENGTH];
+	int len = -1;
+	double_conversion::StringBuilder sb(buf, MAX_NUMBER_LENGTH);
+	converter.ToShortest(aValue, &sb);
+	sb.Finalize();
+	for (auto c : buf) if (!(aBuf[++len] = c)) break;
+	return len;
+#else
+	double_conversion::StringBuilder sb(aBuf, aBufSize);
+	converter.ToShortest(aValue, &sb);
+	sb.Finalize();
+	return strlen(aBuf);
+#endif // UNICODE
 }
 
 
@@ -3233,3 +3229,221 @@ void OutputDebugStringFormat(LPCTSTR fmt, ...)
 	OutputDebugString(sMsg);
 }
 #endif
+
+
+
+bool isUTF8(BYTE* mBuffer, DWORD mLength) {
+	DWORD i = 0, l = 0, n = 0;
+	BYTE c;
+	while (i < mLength) {
+		c = mBuffer[i];
+		if (c < 0x80) { i++; continue; }
+		else if (c >= 0xc0 && c < 0xff) {
+			l = c < 0xe0 ? 1 : c < 0xf0 ? 2 : c < 0xf8 ? 3 : c < 0xfc ? 4 : c < 0xfe ? 5 : 6;
+			if (i + l >= mLength) break;
+			for (++i; l; --l)
+				if ((mBuffer[i++] & 0xc0) != 0x80)
+					return false;
+			++n;
+		}
+		else
+			return false;
+	}
+	return n > 0;
+}
+
+
+
+short IsDefaultType(LPTSTR aTypeDef){
+	static LPTSTR sTypeDef[8] = {_T(" CHAR UCHAR BOOLEAN BYTE INT8 ")
+#ifndef _WIN64
+			,_T(" ATOM INT16 LANGID WCHAR WORD USAGE SHORT USHORT BYTE TCHAR HALF_PTR UHALF_PTR ")
+#else
+			,_T(" ATOM INT16 LANGID WCHAR WORD USAGE SHORT USHORT BYTE TCHAR ")
+#endif
+			,_T("")
+#ifdef _WIN64
+			,_T(" SIGNED UNSIGNED INT ACCESS_MASK UINT FLOAT INT32 LONG LONG32 HFILE HRESULT BOOL COLORREF DWORD DWORD32 LCID LCTYPE LGRPID LRESULT UINT32 ULONG ULONG32 HALF_PTR UHALF_PTR ")
+#else
+			,_T(" SIGNED UNSIGNED INT ACCESS_MASK UINT FLOAT INT32 LONG LONG32 HFILE HRESULT BOOL COLORREF DWORD DWORD32 LCID LCTYPE LGRPID LRESULT UINT32 ULONG ULONG32 PTR UPTR PINT8 PINT16 PINT32 INT_PTR LONG_PTR POINTER_64 POINTER_SIGNED SSIZE_T WPARAM PBOOL PBOOLEAN PBYTE PCHAR PCSTR PCTSTR PCWSTR PDWORD PDWORDLONG PDWORD_PTR PDWORD32 PDWORD64 PFLOAT PHALF_PTR DWORD_PTR HACCEL HANDLE HBITMAP HBRUSH HCOLORSPACE HCONV HCONVLIST HCURSOR HDC HDDEDATA HDESK HDROP HDWP HENHMETAFILE HFONT HGDIOBJ HGLOBAL HHOOK HICON HINSTANCE HKEY HKL HLOCAL HMENU HMETAFILE HMODULE HMONITOR HPALETTE HPEN HRGN HRSRC HSZ HWINSTA HWND LPARAM LPBOOL LPBYTE LPCOLORREF LPCSTR LPCTSTR LPCVOID LPCWSTR LPDWORD LPHANDLE LPINT LPLONG LPSTR LPTSTR LPVOID LPWORD LPWSTR PHANDLE PHKEY PINT PINT_PTR PINT32 PINT64 PLCID PLONG PLONGLONG PLONG_PTR PLONG32 PLONG64 POINTER_32 POINTER_UNSIGNED PSHORT PSIZE_T PSSIZE_T PSTR PTBYTE PTCHAR PTSTR PUCHAR PUHALF_PTR PUINT PUINT_PTR PUINT32 PUINT64 PULONG PULONGLONG PULONG_PTR PULONG32 PULONG64 PUSHORT PVOID PWCHAR PWORD PWSTR SC_HANDLE SC_LOCK SERVICE_STATUS_HANDLE SIZE_T UINT_PTR ULONG_PTR VOID ")
+#endif
+			,_T(""),_T(""),_T("")
+#ifdef _WIN64
+			,_T(" INT64 UINT64 DOUBLE __int64 LONGLONG LONG64 USN DWORDLONG DWORD64 ULONGLONG ULONG64 PTR UPTR PINT8 PINT16 PINT32 INT_PTR LONG_PTR POINTER_64 POINTER_SIGNED SSIZE_T WPARAM PBOOL PBOOLEAN PBYTE PCHAR PCSTR PCTSTR PCWSTR PDWORD PDWORDLONG PDWORD_PTR PDWORD32 PDWORD64 PFLOAT PHALF_PTR DWORD_PTR HACCEL HANDLE HBITMAP HBRUSH HCOLORSPACE HCONV HCONVLIST HCURSOR HDC HDDEDATA HDESK HDROP HDWP HENHMETAFILE HFONT HGDIOBJ HGLOBAL HHOOK HICON HINSTANCE HKEY HKL HLOCAL HMENU HMETAFILE HMODULE HMONITOR HPALETTE HPEN HRGN HRSRC HSZ HWINSTA HWND LPARAM LPBOOL LPBYTE LPCOLORREF LPCSTR LPCTSTR LPCVOID LPCWSTR LPDWORD LPHANDLE LPINT LPLONG LPSTR LPTSTR LPVOID LPWORD LPWSTR PHANDLE PHKEY PINT PINT_PTR PINT32 PINT64 PLCID PLONG PLONGLONG PLONG_PTR PLONG32 PLONG64 POINTER_32 POINTER_UNSIGNED PSHORT PSIZE_T PSSIZE_T PSTR PTBYTE PTCHAR PTSTR PUCHAR PUHALF_PTR PUINT PUINT_PTR PUINT32 PUINT64 PULONG PULONGLONG PULONG_PTR PULONG32 PULONG64 PUSHORT PVOID PWCHAR PWORD PWSTR SC_HANDLE SC_LOCK SERVICE_STATUS_HANDLE SIZE_T UINT_PTR ULONG_PTR VOID ")
+#else
+			,_T(" INT64 UINT64 DOUBLE __int64 LONGLONG LONG64 USN DWORDLONG DWORD64 ULONGLONG ULONG64 ")
+#endif
+			};
+	for (int i=0;i<8;i++)
+	{
+		if (tcscasestr(sTypeDef[i],aTypeDef))
+			return i + 1;
+	}
+	// type was not found
+	return NULL;
+}
+
+
+
+DWORD CryptAES(LPVOID lp, DWORD sz, LPTSTR pwd, bool aEncrypt, DWORD aSID) {
+	HCRYPTPROV phProv;
+	HCRYPTHASH phHash;
+	HCRYPTKEY phKey;
+
+	if (!CryptAcquireContext(&phProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+		return 0;
+	if (!CryptCreateHash(phProv, CALG_SHA1, 0, 0, &phHash)) {
+		CryptReleaseContext(phProv, 0);
+		return 0;
+	}
+
+	if (pwd == g_default_pwd) {
+		if (g_crypt_code[0] != *(PULONGLONG)CryptHashData || g_crypt_code[1] != *(PULONGLONG)CryptDeriveKey ||
+			g_crypt_code[2] != *(PULONGLONG)CryptDestroyHash || g_crypt_code[3] != *(PULONGLONG)CryptEncrypt ||
+			g_crypt_code[4] != *(PULONGLONG)CryptDecrypt || g_crypt_code[5] != *(PULONGLONG)CryptDestroyKey)
+			pwd = NULL;
+		else pwd = (LPTSTR)_c(g_DEFAULT_PWD);
+	}
+	else if (!pwd)
+		pwd = _T("");
+	if (!pwd || !CryptHashData(phHash, (BYTE*)pwd, (DWORD)_tcslen(pwd) * sizeof(TCHAR), 0) || !CryptDeriveKey(phProv, aSID == 128 ? CALG_AES_128 : aSID == 192 ? CALG_AES_192 : CALG_AES_256, phHash, aSID << 16, &phKey)) {
+		CryptDestroyHash(phHash), CryptReleaseContext(phProv, 0);
+		return 0;
+	}
+	if (aEncrypt)
+		CryptEncrypt(phKey, 0, 1, 0, (BYTE*)lp, &sz, sz + 16);
+	else
+		CryptDecrypt(phKey, 0, 1, 0, (BYTE*)lp, &sz);
+	CryptDestroyKey(phKey), CryptDestroyHash(phHash), CryptReleaseContext(phProv, 0);
+	return sz;
+}
+
+
+
+DWORD CompressBuffer(BYTE *aBuffer, LPVOID &aDataBuf, DWORD sz, LPTSTR pwd) // LiteZip Raw compression
+{
+	unsigned int hdrsz = 20;
+	HZIP	hz;
+	ZipCreateBuffer(&hz, 0, sz + 10240, 0);
+	ZipAddBufferRaw(hz, aBuffer, sz);
+	ULONGLONG aSize;
+	HANDLE aBase;
+	DWORD aSizeEncoded;
+	BYTE *aBufferMem;
+	ZipGetMemory(hz, (void**)&aBufferMem, &aSize, &aBase);
+	if (aSize >= sz)
+	{
+		aSize = sz;
+		UnmapViewOfFile(aBufferMem);
+		CloseHandle(aBase);
+		aBufferMem = aBuffer;
+	}
+	CryptBinaryToStringA(aBufferMem, (DWORD)aSize, 0x1, NULL, &aSizeEncoded);
+	LPTSTR aDataCompressed = (LPTSTR)malloc(aSizeEncoded + 17);
+	CryptBinaryToStringA(aBufferMem, (DWORD)aSize, CRYPT_STRING_BASE64, (LPSTR)aDataCompressed, &aSizeEncoded);
+	LPVOID aBufferPtr;
+	if (pwd)
+	{
+		aSizeEncoded = CryptAES((LPVOID)aDataCompressed, aSizeEncoded + 1, pwd);
+		if (!aSizeEncoded)
+		{
+			free(aDataCompressed);
+			return 0;
+		}
+		aBufferPtr = aDataCompressed;
+	}
+	else
+	{
+		aBufferPtr = aBufferMem;
+		aSizeEncoded = 0;
+	}
+	UINT hdr[5] = { 0x4034b50, 0, (DWORD)aSize, sz, aSizeEncoded };
+	DWORD size;
+	if (!aBufferPtr)
+		return 0;
+	HashData((LPBYTE)aBufferPtr, size = aSizeEncoded ? aSizeEncoded : (DWORD)aSize, (LPBYTE)&hdr[1], 4);
+	aDataBuf = (LPTSTR)malloc(size + sizeof(hdr));
+	memcpy(aDataBuf, hdr, sizeof(hdr));
+	memcpy((char*)aDataBuf + sizeof(hdr), aBufferPtr, size);
+	free(aDataCompressed);
+	if (aBufferMem != aBuffer)
+	{
+		UnmapViewOfFile(aBufferMem);
+		CloseHandle(aBase);
+	}
+	return sizeof(hdr) + size;
+}
+
+
+
+DWORD DecompressBuffer(void *aBuffer,LPVOID &aDataBuf,DWORD sz, LPTSTR pwd) // LiteZip Raw decompression
+{
+	unsigned int hdrsz = 20;
+	ULONG aSizeCompressed = *(ULONG*)((UINT_PTR)aBuffer + 8);
+	DWORD aSizeEncrypted = *(DWORD*)((UINT_PTR)aBuffer + 16);
+	if (sz < aSizeCompressed || sz < aSizeEncrypted)
+		return 0; // data is a normal zip file
+	DWORD hash;
+	BYTE *aDataEncrypted = NULL;
+	HashData((LPBYTE)aBuffer + hdrsz, aSizeEncrypted ? aSizeEncrypted : aSizeCompressed, (LPBYTE)&hash, 4);
+	if (0x04034b50 == *(ULONG*)(UINT_PTR)aBuffer && hash == *(ULONG*)((UINT_PTR)aBuffer + 4))
+	{
+		HUNZIP		huz;
+		ZIPENTRY	ze;
+		DWORD		result;
+		ULONG aSizeDeCompressed = *(ULONG*)((UINT_PTR)aBuffer + 12);
+		aDataBuf = malloc(aSizeDeCompressed);
+		if (aDataBuf)
+		{
+			if (aSizeEncrypted)
+			{
+				DWORD aSizeDataEncrypted = aSizeEncrypted;
+				LPSTR aDataEncryptedString = (LPSTR)malloc(aSizeEncrypted);
+				memcpy(aDataEncryptedString, (LPBYTE)aBuffer + hdrsz, aSizeEncrypted);
+				CryptAES(aDataEncryptedString, aSizeEncrypted, pwd, false);
+				aDataEncrypted = (BYTE*)malloc(aSizeDataEncrypted);
+				CryptStringToBinaryA(aDataEncryptedString, NULL, CRYPT_STRING_BASE64, aDataEncrypted, &aSizeEncrypted, NULL, NULL);
+				free(aDataEncryptedString);
+				if (aSizeDeCompressed == aSizeCompressed)
+				{
+					memcpy(aDataBuf, aDataEncrypted, aSizeDeCompressed);
+					free(aDataEncrypted);
+					return aSizeDeCompressed;
+				}
+				if (UnzipOpenBufferRaw(&huz, (LPBYTE)aDataEncrypted, aSizeCompressed, 0))
+				{   // failed to open archive
+					UnzipClose(huz);
+					free(aDataBuf);
+					free(aDataEncrypted);
+					return 0;
+				}
+			}
+			else if (aSizeDeCompressed == aSizeCompressed)
+			{
+				memcpy(aDataBuf, (LPBYTE)aBuffer + hdrsz, aSizeDeCompressed);
+				return aSizeDeCompressed;
+			}
+			else if (UnzipOpenBufferRaw(&huz, (LPBYTE)aBuffer + hdrsz, aSizeCompressed, 0))
+			{   // failed to open archive
+				UnzipClose(huz);
+				free(aDataBuf);
+				return 0;
+			}
+			ze.CompressedSize = aSizeDeCompressed;
+			ze.UncompressedSize = aSizeDeCompressed;
+			if ((result = UnzipItemToBuffer(huz, aDataBuf, aSizeDeCompressed, &ze)))
+				free(aDataBuf);
+			else
+			{
+				UnzipClose(huz);
+				if (aDataEncrypted)
+					free(aDataEncrypted);
+				return aSizeDeCompressed;
+			}
+			UnzipClose(huz);
+			if (aDataEncrypted)
+				free(aDataEncrypted);
+		}
+	}
+	return 0;
+}

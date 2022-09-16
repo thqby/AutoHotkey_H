@@ -61,7 +61,7 @@ IObject *Line::CreateRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo, Ob
 	ExprTokenType* aParam[3] { aParams + 0, aParams + 1, aParams + 2 };
 	aParams[0].SetValue(const_cast<LPTSTR>(aErrorText));
 #ifdef CONFIG_DEBUGGER
-	aParams[1].SetValue(const_cast<LPTSTR>(g_Debugger.WhatThrew()));
+	aParams[1].SetValue(const_cast<LPTSTR>(g_Debugger->WhatThrew()));
 #else
 	// Without the debugger stack, there's no good way to determine what's throwing. It could be:
 	//g_act[mActionType].Name; // A command implemented as an Action (g_act).
@@ -79,7 +79,7 @@ IObject *Line::CreateRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo, Ob
 		aPrototype = ErrorPrototype::Error;
 	obj->SetBase(aPrototype);
 	FuncResult rt;
-	g_script.mCurrLine = this;
+	g_script->mCurrLine = this;
 	if (!obj->Construct(rt, aParam, aParamCount))
 		return nullptr;
 	return obj;
@@ -88,7 +88,7 @@ IObject *Line::CreateRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo, Ob
 
 ResultType Line::ThrowRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo)
 {
-	return g_script.ThrowRuntimeException(aErrorText, aExtraInfo, this, FAIL);
+	return g_script->ThrowRuntimeException(aErrorText, aExtraInfo, this, FAIL);
 }
 
 ResultType Script::ThrowRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo
@@ -163,7 +163,7 @@ ResultType Line::ThrowIntIfNonzero(int aErrorValue)
 }
 
 // Logic from the above functions is duplicated in the below functions rather than calling
-// g_script.mCurrLine->Throw() to squeeze out a little extra performance for
+// g_script->mCurrLine->Throw() to squeeze out a little extra performance for
 // "success" cases.
 
 ResultType Script::ThrowIfTrue(bool aError)
@@ -183,7 +183,7 @@ ResultType Script::ThrowIntIfNonzero(int aErrorValue)
 ResultType Line::SetLastErrorMaybeThrow(bool aError, DWORD aLastError)
 {
 	g->LastError = aLastError; // Set this unconditionally.
-	return aError ? g_script.Win32Error(aLastError) : OK;
+	return aError ? g_script->Win32Error(aLastError) : OK;
 }
 
 void ResultToken::SetLastErrorMaybeThrow(bool aError, DWORD aLastError)
@@ -217,7 +217,7 @@ void Script::SetErrorStdOut(LPTSTR aParam)
 void Script::PrintErrorStdOut(LPCTSTR aErrorText, int aLength, LPCTSTR aFile)
 {
 #ifdef CONFIG_DEBUGGER
-	if (g_Debugger.OutputStdOut(aErrorText))
+	if (g_Debugger->OutputStdOut(aErrorText))
 		return;
 #endif
 	TextFile tf;
@@ -250,12 +250,12 @@ ResultType Line::LineError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aE
 	if (!aExtraInfo)
 		aExtraInfo = _T("");
 
-	if (g_script.mIsReadyToExecute)
+	if (g_script->mIsReadyToExecute)
 	{
-		return g_script.RuntimeError(aErrorText, aExtraInfo, aErrorType, this);
+		return g_script->RuntimeError(aErrorText, aExtraInfo, aErrorType, this);
 	}
 
-	if (g_script.mErrorStdOut && aErrorType != WARN)
+	if (g_script->mErrorStdOut && aErrorType != WARN)
 	{
 		// JdeB said:
 		// Just tested it in Textpad, Crimson and Scite. they all recognise the output and jump
@@ -268,11 +268,11 @@ ResultType Line::LineError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aE
 		// v1.0.47: Added a space before the colon as originally intended.  Toralf said, "With this minor
 		// change the error lexer of Scite recognizes this line as a Microsoft error message and it can be
 		// used to jump to that line."
-		g_script.PrintErrorStdOut(aErrorText, aExtraInfo, mFileIndex, mLineNumber);
+		g_script->PrintErrorStdOut(aErrorText, aExtraInfo, mFileIndex, mLineNumber);
 		return FAIL;
 	}
 
-	return g_script.ShowError(aErrorText, aErrorType, aExtraInfo, this);
+	return g_script->ShowError(aErrorText, aErrorType, aExtraInfo, this);
 }
 
 ResultType Script::RuntimeError(LPCTSTR aErrorText, LPCTSTR aExtraInfo, ResultType aErrorType, Line *aLine, Object *aPrototype)
@@ -289,7 +289,7 @@ ResultType Script::RuntimeError(LPCTSTR aErrorText, LPCTSTR aExtraInfo, ResultTy
 
 FResult FError(LPCTSTR aErrorText, LPCTSTR aExtraInfo, Object *aPrototype)
 {
-	return g_script.RuntimeError(aErrorText, aExtraInfo, FAIL_OR_OK, nullptr, aPrototype) ? FR_ABORTED : FR_FAIL;
+	return g_script->RuntimeError(aErrorText, aExtraInfo, FAIL_OR_OK, nullptr, aPrototype) ? FR_ABORTED : FR_FAIL;
 }
 
 
@@ -380,7 +380,7 @@ void InitErrorBox(HWND hwnd, ErrorBoxParam &error)
 {
 	TCHAR buf[1024];
 
-	SetWindowText(hwnd, g_script.DefaultDialogTitle());
+	SetWindowText(hwnd, g_script->DefaultDialogTitle());
 
 	SetWindowLongPtr(hwnd, DWLP_USER, (LONG_PTR)&error);
 
@@ -481,12 +481,12 @@ void InitErrorBox(HWND hwnd, ErrorBoxParam &error)
 	}
 	else
 	{
-		sntprintf(buf, _countof(buf), _T("Line:\t%d\nFile:\t"), g_script.CurrentLine());
+		sntprintf(buf, _countof(buf), _T("Line:\t%d\nFile:\t"), g_script->CurrentLine());
 		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)buf);
 		cf.dwMask = CFM_LINK;
 		cf.dwEffects = CFE_LINK; // Mark it as a link.
 		SendMessage(re, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
-		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)g_script.CurrentFile());
+		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)g_script->CurrentFile());
 		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)_T("\n\n"));
 	}
 
@@ -497,8 +497,8 @@ void InitErrorBox(HWND hwnd, ErrorBoxParam &error)
 	case FAIL_OR_OK: footer = nullptr; break;
 	case CRITICAL_ERROR: footer = UNSTABLE_WILL_EXIT; break;
 	default: footer = (g->ExcptMode & EXCPTMODE_DELETE) ? ERR_ABORT_DELETE
-		: g_script.mIsReadyToExecute ? ERR_ABORT_NO_SPACES
-		: g_script.mIsRestart ? OLD_STILL_IN_EFFECT
+		: g_script->mIsReadyToExecute ? ERR_ABORT_NO_SPACES
+		: g_script->mIsRestart ? OLD_STILL_IN_EFFECT
 		: WILL_EXIT;
 	}
 	if (footer)
@@ -537,7 +537,7 @@ void InitErrorBox(HWND hwnd, ErrorBoxParam &error)
 
 #ifndef AUTOHOTKEYSC
 	if (error.line && error.line->mFileIndex ? *Line::sSourceFile[error.line->mFileIndex] == '*'
-		: g_script.mKind != Script::ScriptKindFile)
+		: g_script->mKind != Script::ScriptKindFile)
 		// Source "file" is an embedded resource or stdin, so can't be edited.
 		EnableWindow(GetDlgItem(hwnd, ID_FILE_EDITSCRIPT), FALSE);
 #endif
@@ -579,7 +579,7 @@ INT_PTR CALLBACK ErrorBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			auto &error = *(ErrorBoxParam*)GetWindowLongPtr(hwnd, DWLP_USER);
 			if (error.line)
 			{
-				g_script.Edit(Line::sSourceFile[error.line->mFileIndex]);
+				g_script->Edit(Line::sSourceFile[error.line->mFileIndex]);
 				return TRUE;
 			}
 		}
@@ -645,7 +645,7 @@ INT_PTR CALLBACK ErrorBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 						return TRUE;
 					}
 #endif
-					g_script.Edit(tr.lpstrText);
+					g_script->Edit(tr.lpstrText);
 					return TRUE;
 				}
 				break;
@@ -670,14 +670,14 @@ ResultType Script::ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR 
 		aLine = mCurrLine;
 
 #ifdef CONFIG_DEBUGGER
-	if (g_Debugger.HasStdErrHook())
+	if (g_Debugger->HasStdErrHook())
 	{
 		TCHAR buf[LINE_SIZE * 2];
 		FormatStdErr(buf, _countof(buf), aErrorText, aExtraInfo
 			, aLine ? aLine->mFileIndex : mCurrFileIndex
 			, aLine ? aLine->mLineNumber : mCombinedLineNumber
 			, aErrorType == WARN);
-		g_Debugger.OutputStdErr(buf);
+		g_Debugger->OutputStdErr(buf);
 	}
 #endif
 
@@ -690,7 +690,7 @@ ResultType Script::ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR 
 	error.line = aLine;
 	error.obj = aException;
 #ifdef CONFIG_DEBUGGER
-	error.stack_top = (aException || !g_script.mIsReadyToExecute) ? nullptr : g_Debugger.mStack.mTop - 1;
+	error.stack_top = (aException || !g_script->mIsReadyToExecute) ? nullptr : g_Debugger->mStack.mTop - 1;
 #endif
 	INT_PTR result = DialogBoxParam(NULL, MAKEINTRESOURCE(IDD_ERRORBOX), NULL, ErrorBoxProc, (LPARAM)&error);
 	if (result == IDCONTINUE && aErrorType == FAIL_OR_OK)
@@ -729,7 +729,7 @@ ResultType Script::ScriptError(LPCTSTR aErrorText, LPCTSTR aExtraInfo) //, Resul
 	if (!aExtraInfo) // In case the caller explicitly called it with NULL.
 		aExtraInfo = _T("");
 
-	if (g_script.mErrorStdOut && !g_script.mIsReadyToExecute) // i.e. runtime errors are always displayed via dialog.
+	if (g_script->mErrorStdOut && !g_script->mIsReadyToExecute) // i.e. runtime errors are always displayed via dialog.
 	{
 		// See LineError() for details.
 		PrintErrorStdOut(aErrorText, aExtraInfo, mCurrFileIndex, mCombinedLineNumber);
@@ -785,8 +785,8 @@ ResultType Script::VarIsReadOnlyError(Var *aVar, int aErrorType)
 
 ResultType Line::VarIsReadOnlyError(Var *aVar, int aErrorType)
 {
-	g_script.mCurrLine = this;
-	return g_script.VarIsReadOnlyError(aVar, aErrorType);
+	g_script->mCurrLine = this;
+	return g_script->VarIsReadOnlyError(aVar, aErrorType);
 }
 
 
@@ -841,7 +841,7 @@ ResultType ResultToken::Error(LPCTSTR aErrorText, LPCTSTR aExtraInfo, Object *aP
 	// isn't expecting a value, or they might be freed twice (if the callee already freed it).
 	//ASSERT(!mem_to_free); // At least one caller frees it after calling this function.
 	ASSERT(symbol != SYM_OBJECT);
-	if (g_script.RuntimeError(aErrorText, aExtraInfo, FAIL_OR_OK, nullptr, aPrototype) == FAIL)
+	if (g_script->RuntimeError(aErrorText, aExtraInfo, FAIL_OR_OK, nullptr, aPrototype) == FAIL)
 		return SetExitResult(FAIL);
 	SetValue(_T(""), 0);
 	// Caller may rely on FAIL to unwind stack, but this->result is still OK.
@@ -856,12 +856,12 @@ ResultType ResultToken::MemoryError()
 
 ResultType MemoryError()
 {
-	return g_script.RuntimeError(ERR_OUTOFMEM, nullptr, FAIL, nullptr, ErrorPrototype::Memory);
+	return g_script->RuntimeError(ERR_OUTOFMEM, nullptr, FAIL, nullptr, ErrorPrototype::Memory);
 }
 
 void SimpleHeap::CriticalFail()
 {
-	g_script.CriticalError(ERR_OUTOFMEM);
+	g_script->CriticalError(ERR_OUTOFMEM);
 }
 
 __declspec(noinline)
@@ -879,9 +879,9 @@ ResultType ResultToken::ValueError(LPCTSTR aErrorText, LPCTSTR aExtraInfo)
 __declspec(noinline)
 ResultType ValueError(LPCTSTR aErrorText, LPCTSTR aExtraInfo, ResultType aErrorType)
 {
-	if (!g_script.mIsReadyToExecute)
-		return g_script.ScriptError(aErrorText, aExtraInfo);
-	return g_script.RuntimeError(aErrorText, aExtraInfo, aErrorType, nullptr, ErrorPrototype::Value);
+	if (!g_script->mIsReadyToExecute)
+		return g_script->ScriptError(aErrorText, aExtraInfo);
+	return g_script->RuntimeError(aErrorText, aExtraInfo, aErrorType, nullptr, ErrorPrototype::Value);
 }
 
 __declspec(noinline)
@@ -904,7 +904,7 @@ ResultType ResultToken::UnknownMemberError(ExprTokenType &aObject, int aFlags, L
 __declspec(noinline)
 ResultType ResultToken::Win32Error(DWORD aError)
 {
-	if (g_script.Win32Error(aError) == FAIL)
+	if (g_script->Win32Error(aError) == FAIL)
 		return SetExitResult(FAIL);
 	SetValue(_T(""), 0);
 	return FAIL;
@@ -963,7 +963,7 @@ ResultType ResultToken::ParamError(int aIndex, ExprTokenType *aParam, LPCTSTR aE
 	LPTSTR actual_type, value_as_string;
 #ifdef CONFIG_DEBUGGER
 	if (!aFunction)
-		aFunction = g_Debugger.WhatThrew();
+		aFunction = g_Debugger->WhatThrew();
 #endif
 	if (!aParam || aParam->symbol == SYM_MISSING)
 	{
@@ -984,7 +984,7 @@ ResultType ResultToken::ParamError(int aIndex, ExprTokenType *aParam, LPCTSTR aE
 		sntprintf(msg, _countof(msg), _T("Parameter #%i of %s requires a%s %s, but received a%s %s.")
 			, aIndex + 1, aFunction, an(aExpectedType), aExpectedType, an(actual_type), actual_type);
 	else
-		sntprintf(msg, _countof(msg), _T("Parameter #%i of %s is invalid."), aIndex + 1, g_Debugger.WhatThrew());
+		sntprintf(msg, _countof(msg), _T("Parameter #%i of %s is invalid."), aIndex + 1, g_Debugger->WhatThrew());
 #else
 	if (aExpectedType)
 		sntprintf(msg, _countof(msg), _T("Parameter #%i requires a%s %s, but received a%s %s.")
@@ -1183,14 +1183,14 @@ void Script::ScriptWarning(WarnMode warnMode, LPCTSTR aWarningText, LPCTSTR aExt
 		PrintErrorStdOut(buf, n);
 	else
 #ifdef CONFIG_DEBUGGER
-	if (!g_Debugger.OutputStdErr(buf))
+	if (!g_Debugger->OutputStdErr(buf))
 #endif
 		OutputDebugString(buf);
 
 	// In MsgBox mode, MsgBox is in addition to OutputDebug
 	if (warnMode == WARNMODE_MSGBOX)
 	{
-		g_script.ShowError(aWarningText, WARN, aExtraInfo, line);
+		g_script->ShowError(aWarningText, WARN, aExtraInfo, line);
 	}
 }
 

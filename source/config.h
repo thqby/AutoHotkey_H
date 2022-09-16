@@ -36,3 +36,7 @@
 //#ifndef _WIN64
 //#define CONFIG_WIN2K
 //#endif
+
+#ifdef _WINDLL
+#define _USRDLL
+#endif // _WINDLL

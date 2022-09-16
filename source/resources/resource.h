@@ -1,10 +1,12 @@
-﻿//{{NO_DEPENDENCIES}}
+//{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
 // Used by AutoHotkey.rc
 //
 #define VS_VERSION_INFO                 1
 #define IDS_PROJNAME                    100
 #define IDR_WMDMLOGGER                  101
+#define IDR_AUTOHOTKEY                  102
+#define IDR_COMSERVER                   103
 #define IDI_MAIN                        159
 #define IDI_FILETYPE                    160
 #define IDS_LOG_SEV_INFO                201

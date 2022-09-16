@@ -71,10 +71,10 @@ freely, without restriction.
 
 class Debugger;
 
-extern Debugger g_Debugger;
+thread_local extern Debugger *g_Debugger;
 // jackieku: modified to hold the buffer.
-extern CStringA g_DebuggerHost;
-extern CStringA g_DebuggerPort;
+thread_local extern CStringA g_DebuggerHost;
+thread_local extern CStringA g_DebuggerPort;
 
 
 enum BreakpointTypeType {BT_Line, BT_Call, BT_Return, BT_Exception, BT_Conditional, BT_Watch};
@@ -87,7 +87,7 @@ public:
 	char type;
 	char state;
 	bool temporary;
-	
+
 	// Not yet supported: function, hit_count, hit_value, hit_condition, exception
 
 	Breakpoint() : id(++sMaxId), type(BT_Line), state(BS_Enabled), temporary(false)
@@ -136,6 +136,7 @@ struct DbgStack
 		mTop = mBottom - 1; // ++mTop will be the first entry.
 		mTopBound = mTop + mSize; // Topmost valid position.
 	}
+	~DbgStack() { free(mBottom); }
 
 	int Depth()
 	{
@@ -171,8 +172,8 @@ struct DbgStack
 	void GetLocalVars(int aDepth, VarList *&aVars, VarList *&aStaticVars, VarBkp *&aBkp, VarBkp *&aBkpEnd);
 };
 
-#define DEBUGGER_STACK_PUSH(aWhat)	g_Debugger.mStack.Push(aWhat);
-#define DEBUGGER_STACK_POP()		g_Debugger.mStack.Pop();
+#define DEBUGGER_STACK_PUSH(aWhat)	g_Debugger->mStack.Push(aWhat);
+#define DEBUGGER_STACK_POP()		g_Debugger->mStack.Pop();
 
 
 enum PropertyContextType {PC_Local=0, PC_Global};
@@ -214,11 +215,11 @@ public:
 
 	// Code flow notification functions:
 	int PreExecLine(Line *aLine); // Called before executing each line.
-	
+
 	// Receive and process commands. Returns when a continuation command is received.
 	int ProcessCommands(bool aBreakFirst = false);
 	int Break();
-	
+
 	bool HasPendingCommand();
 
 	// Streams
@@ -227,7 +228,7 @@ public:
 	bool OutputStdOut(LPCTSTR aText);
 
 	#define DEBUGGER_COMMAND(cmd)	int cmd(char **aArgV, int aArgCount, char *aTransactionId)
-	
+
 	//
 	// Debugger commands.
 	//
@@ -235,7 +236,7 @@ public:
 
 	DEBUGGER_COMMAND(feature_get);
 	DEBUGGER_COMMAND(feature_set);
-	
+
 	DEBUGGER_COMMAND(run);
 	DEBUGGER_COMMAND(step_into);
 	DEBUGGER_COMMAND(step_over);
@@ -243,13 +244,13 @@ public:
 	DEBUGGER_COMMAND(_break);
 	DEBUGGER_COMMAND(stop);
 	DEBUGGER_COMMAND(detach);
-	
+
 	DEBUGGER_COMMAND(breakpoint_set);
 	DEBUGGER_COMMAND(breakpoint_get);
 	DEBUGGER_COMMAND(breakpoint_update);
 	DEBUGGER_COMMAND(breakpoint_remove);
 	DEBUGGER_COMMAND(breakpoint_list);
-	
+
 	DEBUGGER_COMMAND(stack_depth);
 	DEBUGGER_COMMAND(stack_get);
 	DEBUGGER_COMMAND(context_names);
@@ -259,7 +260,7 @@ public:
 	DEBUGGER_COMMAND(property_get);
 	DEBUGGER_COMMAND(property_set);
 	DEBUGGER_COMMAND(property_value);
-	
+
 	DEBUGGER_COMMAND(source);
 
 	DEBUGGER_COMMAND(redirect_stdout);
@@ -272,14 +273,14 @@ public:
 	{
 	}
 
-	
+
 	// Stack - keeps track of threads and function calls.
 	DbgStack mStack;
 	friend struct DbgStack;
 
 private:
 	SOCKET mSocket;
-	Line *mCurrLine; // Similar to g_script.mCurrLine, but may be different when breaking post-function-call, before continuing expression evaluation.
+	Line *mCurrLine; // Similar to g_script->mCurrLine, but may be different when breaking post-function-call, before continuing expression evaluation.
 
 	class Buffer
 	{
@@ -294,7 +295,7 @@ private:
 		void Clear();
 
 		Buffer() : mData(NULL), mDataSize(0), mDataUsed(0), mFailed(FALSE) {}
-	
+
 		char *mData;
 		size_t mDataSize;
 		size_t mDataUsed;
@@ -373,7 +374,7 @@ private:
 			: PropertySource(aResultBuf), fullname(aNameBuf) {}
 	};
 
-	
+
 	struct PropertyWriter : public IDebugProperties
 	{
 		Debugger &mDbg;
@@ -426,7 +427,7 @@ private:
 
 	int GetPropertyInfo(Var &aVar, PropertyInfo &aProp);
 	int GetPropertyInfo(VarBkp &aBkp, PropertyInfo &aProp);
-	
+
 	int GetPropertyValue(Var &aVar, PropertySource &aProp);
 
 	int WritePropertyXml(PropertyInfo &aProp);
@@ -446,7 +447,7 @@ private:
 
 	// Decode a file URI in-place.
 	void DecodeURI(char *aUri);
-	
+
 	static const char *sBase64Chars;
 	static size_t Base64Encode(char *aBuf, const char *aInput, size_t aInputSize = -1);
 	static size_t Base64Decode(char *aBuf, const char *aInput, size_t aInputSize = -1);
@@ -454,7 +455,7 @@ private:
 
 	//typedef int (Debugger::*CommandFunc)(char **aArgV, int aArgCount, char *aTransactionId);
 	typedef DEBUGGER_COMMAND((Debugger::*CommandFunc));
-	
+
 	struct CommandDef
 	{
 		const char *mName;
@@ -462,7 +463,7 @@ private:
 	};
 
 	static CommandDef sCommands[];
-	
+
 
 	// Debugger::ParseArgs
 	//
@@ -474,7 +475,7 @@ private:
 	// would be recognized as the beginning of the next arg.
 	//
 	int ParseArgs(char *aArgs, char **aArgV, int &aArgCount, char *&aTransactionId);
-	
+
 	// Caller must verify that aArg is within bounds:
 	inline char *ArgValue(char **aArgV, int aArg) { return aArgV[aArg] + 1; }
 	inline char  ArgChar(char **aArgV, int aArg) { return *aArgV[aArg]; }
