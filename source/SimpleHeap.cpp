@@ -191,15 +191,14 @@ SimpleHeap::~SimpleHeap()
 // allocated by the constructor and any other methods that call "new" will be reclaimed
 // by the OS.  UPDATE: This is now called by static method DeleteAll().
 {
-	SimpleHeap* next, * curr;
-	for (curr = sFirst; curr != NULL;)
+	SimpleHeap *next, *curr;
+	for (curr = sFirst; curr;)
 	{
 		next = curr->mNextBlock;  // Save this member's value prior to deleting the object.
 		delete curr;
 		curr = next;
 	}
-	if (mBlock) // v1.0.40.04
-		free(mBlock);
+	free(mBlock);
 	return;
 }
 
@@ -212,13 +211,14 @@ void SimpleHeap::Merge(SimpleHeap* aHeap)
 			sLast->mNextBlock = aHeap->sFirst->mNextBlock;
 			aHeap->sFirst->mNextBlock->mPrevBlock = sLast;
 			sBlockCount += aHeap->sBlockCount - 1;
-			delete aHeap->sFirst;
+			aHeap->sFirst->mNextBlock = nullptr;
 		}
 		else {
 			mBlock = aHeap->mBlock;
 			sBlockCount = aHeap->sBlockCount;
 			sFirst = aHeap->sFirst;
 			mNextBlock = aHeap->mNextBlock, mPrevBlock = aHeap->mPrevBlock;
+			aHeap->sFirst = nullptr;
 		}
 		sLast = aHeap->sLast;
 		mFreeMarker = aHeap->mFreeMarker;
