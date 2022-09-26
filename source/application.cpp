@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -391,7 +391,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				if (messages_received == 0 && allow_early_return)
 				{
 					// Fix for v1.1.05.04: Since Peek() didn't find a message, avoid maxing the CPU.
-					// This specific section is needed for BIF_Wait() when an underlying thread
+					// This specific section is needed for Wait() when an underlying thread
 					// is displaying a dialog, and perhaps in other cases.
 					// Fix for v1.1.07.00: Avoid Sleep() if caller specified a duration of zero;
 					// otherwise SendEvent with a key delay of 0 will be slower than expected.
@@ -471,7 +471,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 
 		// For max. flexibility, it seems best to allow the message filter to have the first
 		// crack at looking at the message, before even TRANSLATE_AHK_MSG:
-		if (g_MsgMonitor && g_MsgMonitor->Count() && MsgMonitor(msg.hwnd, msg.message, msg.wParam, msg.lParam, &msg, msg_reply))  // Count is checked here to avoid function-call overhead.
+		if (g_MsgMonitor->Count() && MsgMonitor(msg.hwnd, msg.message, msg.wParam, msg.lParam, &msg, msg_reply))  // Count is checked here to avoid function-call overhead.
 		{
 			continue; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
 			// NOTE: Above does "continue" and ignores msg_reply.  This is because testing shows that
@@ -1800,7 +1800,7 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 	// Linear search vs. binary search should perform better on average because the vast majority
 	// of message monitoring scripts are expected to monitor only a few message numbers.
 	for (inst.index = 0; inst.index < inst.count; ++inst.index)
-		if ((*g_MsgMonitor)[inst.index].msg == aMsg && (*g_MsgMonitor)[inst.index].hwnd == aWnd)
+		if ((*g_MsgMonitor)[inst.index].msg == aMsg)
 		{
 			if (MsgMonitor(inst, aWnd, aMsg, awParam, alParam, apMsg, aMsgReply))
 			{
@@ -1808,16 +1808,6 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 				break;
 			}
 		}
-	if (!result)
-		for (inst.index = 0; inst.index < inst.count; ++inst.index)
-			if ((*g_MsgMonitor)[inst.index].msg == aMsg && (*g_MsgMonitor)[inst.index].hwnd == 0)
-			{
-				if (MsgMonitor(inst, aWnd, aMsg, awParam, alParam, apMsg, aMsgReply))
-				{
-					result = true;
-					break;
-				}
-			}
 
 	return result;
 }

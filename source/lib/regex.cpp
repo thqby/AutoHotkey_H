@@ -409,7 +409,7 @@ void free_compiled_regex()
 	sLastFound = -1;
 }
 
-pcret *get_compiled_regex(LPTSTR aRegEx, pcret_extra *&aExtra, int *aOptionsLength, ResultToken *aResultToken)
+pcret *get_compiled_regex(LPCTSTR aRegEx, pcret_extra *&aExtra, int *aOptionsLength, ResultToken *aResultToken)
 // Returns the compiled RegEx, or NULL on failure.
 // This function is called by things other than built-in functions so it should be kept general-purpose.
 // Upon failure, if aResultToken!=NULL:
@@ -689,7 +689,7 @@ error: // Since NULL is returned here, caller should ignore the contents of the 
 
 
 
-LPTSTR RegExMatch(LPTSTR aHaystack, LPTSTR aNeedleRegEx)
+LPCTSTR RegExMatch(LPCTSTR aHaystack, LPCTSTR aNeedleRegEx)
 // Returns NULL if no match.  Otherwise, returns the address where the pattern was found in aHaystack.
 {
 	pcret_extra *extra;
@@ -1166,7 +1166,7 @@ BIF_DECL(BIF_RegEx)
 	else
 	{
 		starting_offset = ParamIndexToInt(param_index);
-		if (starting_offset < 0) // Same convention as SubStr(): Treat negative StartingPos as a position relative to the end of the string.
+		if (starting_offset <= 0) // Same convention as SubStr(): Treat negative StartingPos as a position relative to the end of the string.
 		{
 			starting_offset += haystack_length;
 			if (starting_offset < 0)

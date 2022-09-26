@@ -45,7 +45,7 @@ typedef LONG(NTAPI *MyNtSetInformationThread)(HANDLE ThreadHandle, ULONG ThreadI
 // The TLS callback is called before the process entry point executes, and is executed before the debugger breaks
 // This allows you to perform anti-debugging checks before the debugger can do anything
 // Therefore, TLS callback is a very powerful anti-debugging technique
-#define DISABLE_ANTI_DEBUG
+//#define DISABLE_ANTI_DEBUG
 void WINAPI TlsCallback(PVOID Module, DWORD Reason, PVOID Context)
 {
 	int i = 0;
@@ -441,11 +441,11 @@ int MainExecuteScript()
 
 unsigned __stdcall ThreadMain(LPTSTR *data)
 {
-	Script::LineBuffer buf;
 	size_t len = (size_t)data[0];
-	if (buf.Realloc(len + MAX_INTEGER_LENGTH) == FAIL)
+	TextMem::Buffer buf(malloc((len + MAX_INTEGER_LENGTH + 1) * sizeof(TCHAR)));
+	if (!buf.mBuffer)
 		return CRITICAL_ERROR;
-	LPTSTR lpScript = buf.p + MAX_INTEGER_LENGTH, lpTitle = _T("AutoHotkey");
+	LPTSTR lpScript = (LPTSTR)buf.mBuffer + MAX_INTEGER_LENGTH, lpTitle = _T("AutoHotkey");
 	int argc = 0;
 	LPTSTR* argv = NULL;
 	TCHAR filepath[MAX_PATH];
@@ -456,13 +456,13 @@ unsigned __stdcall ThreadMain(LPTSTR *data)
 	if (data[2])
 		argv = CommandLineToArgvW(data[2], &argc);
 	if (data[1])
-		_tcscpy(lpScript, data[1]), len -= lpScript - buf.p - MAX_INTEGER_LENGTH;
+		_tcscpy(lpScript, data[1]), len -= lpScript - (LPTSTR)buf.mBuffer - MAX_INTEGER_LENGTH;
 	else
 		lpScript = _T("Persistent"), len = 11;
 
 	auto lps = lpScript + crypt::linear_congruent_generator((int)(ULONG_PTR)lpScript & 8);
 	_stprintf(filepath, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, encrypt ? lps : lpScript, encrypt ? 0 : len * sizeof(TCHAR));
-	sntprintf(buf.p, MAX_INTEGER_LENGTH, _T("ahk%d"), GetCurrentThreadId());
+	sntprintf((LPTSTR)buf.mBuffer, MAX_INTEGER_LENGTH, _T("ahk%d"), GetCurrentThreadId());
 	HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, true, buf);
 
 	InitializeCriticalSection(&g_CriticalRegExCache); // v1.0.45.04: Must be done early so that it's unconditional, so that DeleteCriticalSection() in the script destructor can also be unconditional (deleting when never initialized can crash, at least on Win 9x).

@@ -177,9 +177,7 @@ EXPORT UINT_PTR ahkFindFunc(LPTSTR aFuncName, DWORD aThreadID) {
 EXPORT UINT_PTR ahkFindLabel(LPTSTR aLabelName, DWORD aThreadID) {
 	AutoTLS atls;
 	if (atls.Enter(aThreadID))
-		for (Label* label = g_script->mFirstLabel; label; label = label->mNextLabel)
-			if (!_tcsicmp(label->mName, aLabelName))
-				return (UINT_PTR)label;
+		return (UINT_PTR)g_script->FindLabel(aLabelName);
 	return 0;
 }
 
@@ -261,12 +259,9 @@ EXPORT UINT_PTR ahkExecuteLine(UINT_PTR line, int aMode, int wait, DWORD aThread
 EXPORT int ahkLabel(LPTSTR aLabelName, int nowait, DWORD aThreadID) // 0 = wait = default
 {
 	AutoTLS atls;
-	Label* label;
 	if (atls.Enter(aThreadID)) {
 		HWND hwnd = g_hWnd;
-		for (label = g_script->mFirstLabel; label; label = label->mNextLabel)
-			if (!_tcsicmp(label->mName, aLabelName))
-				break;
+		auto label = g_script->FindLabel(aLabelName);
 		atls.~AutoTLS();
 		if (label) {
 			if (nowait)

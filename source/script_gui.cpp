@@ -636,36 +636,18 @@ void GuiType::__New(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 }
 
 
-BIF_DECL(BIF_GuiFromHwnd)
+bif_impl void GuiFromHwnd(UINT_PTR aHwnd, optl<BOOL> aRecurse, IObject *&aGui)
 {
-	HWND hwnd = (HWND)ParamIndexToIntPtr(0);
-	BOOL recurse_parent = ParamIndexToOptionalBOOL(1, FALSE);
-	
-	GuiType* gui = recurse_parent ? GuiType::FindGuiParent(hwnd) : GuiType::FindGui(hwnd);
-	if (gui)
-	{
-		gui->AddRef();
-		_f_return(gui);
-	}
-	_f_return_empty;
+	if (aGui = aRecurse.value_or(FALSE) ? GuiType::FindGuiParent((HWND)aHwnd) : GuiType::FindGui((HWND)aHwnd))
+		aGui->AddRef();
 }
 
 
-BIF_DECL(BIF_GuiCtrlFromHwnd)
+bif_impl void GuiCtrlFromHwnd(UINT_PTR aHwnd, IObject *&aGuiCtrl)
 {
-	HWND hwnd = (HWND)ParamIndexToIntPtr(0);
-
-	GuiType* gui = GuiType::FindGuiParent(hwnd);
-	if (gui)
-	{
-		GuiControlType* ctrl = gui->FindControl(hwnd);
-		if (ctrl)
-		{
-			ctrl->AddRef();
-			_f_return(ctrl);
-		}
-	}
-	_f_return_empty;
+	if (GuiType* gui = GuiType::FindGuiParent((HWND)aHwnd))
+		if (aGuiCtrl = gui->FindControl((HWND)aHwnd))
+			aGuiCtrl->AddRef();
 }
 
 
@@ -720,7 +702,7 @@ ObjectMember GuiControlType::sMembersLV[] =
 	FUN1(GetText, 1, 2, LV_GetText),
 	FUNn(Add, 0, MAXP_VARIADIC, LV_AddInsertModify, LV),
 	FUNn(Insert, 1, MAXP_VARIADIC, LV_AddInsertModify, LV),
-	FUNn(Modify, 2, MAXP_VARIADIC, LV_AddInsertModify, LV),
+	FUNn(Modify, 1, MAXP_VARIADIC, LV_AddInsertModify, LV),
 	FUN1(Delete, 0, 1, LV_Delete),
 	FUNn(InsertCol, 1, 3, LV_InsertModifyDeleteCol, LV),
 	FUNn(ModifyCol, 0, 3, LV_InsertModifyDeleteCol, LV),
@@ -2568,9 +2550,9 @@ void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 	MsgMonitorList &handlers = aControl ? aControl->events : mEvents;
 	MsgMonitorStruct *mon;
 	if (aFunc)
-		mon = handlers.Find(aEvent, this->mHwnd, aFunc, aEventKind);
+		mon = handlers.Find(aEvent, aFunc, aEventKind);
 	else
-		mon = handlers.Find(aEvent, this->mHwnd, aMethodName, aEventKind);
+		mon = handlers.Find(aEvent, aMethodName, aEventKind);
 	if (!aMaxThreads)
 	{
 		if (mon)
@@ -2613,10 +2595,10 @@ void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 			if (!ValidateFunctor(aFunc, param_count, aResultToken))
 				return;
 			// Add the callback.
-			mon = handlers.Add(aEvent, this->mHwnd, aFunc, append);
+			mon = handlers.Add(aEvent, aFunc, append);
 		}
 		else
-			mon = handlers.Add(aEvent, this->mHwnd, aMethodName, append);
+			mon = handlers.Add(aEvent, aMethodName, append);
 		if (!mon)
 			_o_throw_oom;
 	}
@@ -6550,7 +6532,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 					option_float = float(option_int = ATOI(option_value)); // 'E' depends on this supporting the full range of DWORD.
 					break;
 				case PURE_FLOAT:
-					option_int = int(option_float = (float)ATOF(option_value));
+					option_int = int(option_float = (float)_tstof(option_value)); // _tstof() vs. ATOF() because PURE_FLOAT is never hexadecimal.
 					break;
 				default:
 					if (*option_value || !option_char2) // i.e. allow blank option_value if option_char2 was recognized above.
