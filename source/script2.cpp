@@ -1005,7 +1005,7 @@ UserFunc* Script::CreateHotFunc()
 	g->CurrentFunc = func; // Must do this before calling AddVar
 
 	// Add one parameter to hold the name of the hotkey/hotstring when triggered:
-	func->mParam = g_SimpleHeap->Alloc<FuncParam>();
+	func->mParam = SimpleHeap::Alloc<FuncParam>();
 	if ( !(func->mParam[0].var = AddVar(_T("ThisHotkey"), 10, &func->mVars, 0, VAR_DECLARE_LOCAL | VAR_LOCAL_FUNCPARAM)) )
 		return nullptr;
 

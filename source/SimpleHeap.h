@@ -43,42 +43,74 @@ private:
 	char *mBlock; // This object's memory block.  Although private, its contents are public.
 	char *mFreeMarker;  // Address inside the above block of the first unused byte.
 	size_t mSpaceAvailable;
-	UINT sBlockCount;
-	SimpleHeap *sFirst, *sLast;  // The first and last objects in the linked list.
-	char *sMostRecentlyAllocated; // For use with Delete().
-	SimpleHeap *mNextBlock, *mPrevBlock;  // The object after this one and previous in the linked list; NULL if none.
+	thread_local static UINT sBlockCount;
+	thread_local static SimpleHeap *sFirst, *sLast;  // The first and last objects in the linked list.
+	thread_local static SimpleHeap *sLastPrev;
+	thread_local static char *sMostRecentlyAllocated; // For use with Delete().
+	SimpleHeap *mNextBlock;  // The object after this one in the linked list; NULL if none.
 
-	SimpleHeap *CreateBlock(size_t aSize);
+	static SimpleHeap *CreateBlock();
+	SimpleHeap();  // Private constructor, since we want only the static methods to be able to create new objects.
+	~SimpleHeap();
 
-	LPTSTR strDup(LPCTSTR aBuf, size_t aLength = -1); // Return a block of memory to the caller and copy aBuf into it.
+	static LPTSTR strDup(LPCTSTR aBuf, size_t aLength = -1); // Return a block of memory to the caller and copy aBuf into it.
 
 public:
 	// Return a block of memory to the caller with aBuf copied into it.  Returns nullptr on failure.
-	LPTSTR Malloc(LPCTSTR aBuf, size_t aLength = -1);
-	
+	static LPTSTR Malloc(LPCTSTR aBuf, size_t aLength = -1);
+
 	// Return a block of memory to the caller with aBuf copied into it.  Terminates app on failure.
-	LPTSTR Alloc(LPCTSTR aBuf, size_t aLength = -1);
-	
+	static LPTSTR Alloc(LPCTSTR aBuf, size_t aLength = -1);
+
 	// Return a block of memory to the caller, or nullptr on failure.
-	void* Malloc(size_t aSize);
-	
+	static void *Malloc(size_t aSize);
+
 	// Return a block of memory to the caller, or terminate app on failure.
-	void* Alloc(size_t aSize);
+	static void *Alloc(size_t aSize);
 
-	void Delete(void *aPtr);
-	//static void DeleteAll();
+	static void Delete(void *aPtr);
+	static void DeleteAll();
 
-	void CriticalFail();
+	static void CriticalFail();
 
 	template<typename T>
-	T* Alloc(size_t aCount = 1)
+	static T *Alloc(size_t aCount = 1)
 	{
 		return (T *)Alloc(sizeof(T) * aCount);
 	}
-	
-	void Merge(SimpleHeap* aHeap);
-	SimpleHeap();
-	~SimpleHeap();
+
+	struct HeapBackUp {
+		SimpleHeap *mLast;
+		SimpleHeap *mLastPrev;
+		char *mMostRecentlyAllocated, *mFreeMarker;
+		size_t mSpaceAvailable;
+		UINT mBlockCount;
+		
+		HeapBackUp() :mLast(sLast), mLastPrev(sLastPrev), mBlockCount(sBlockCount)
+			, mMostRecentlyAllocated(sMostRecentlyAllocated)
+		{
+			if (sLast)
+				mFreeMarker = sLast->mFreeMarker, mSpaceAvailable = sLast->mSpaceAvailable;
+		}
+
+		void Restore()
+		{
+			if (sLast = mLast)
+			{
+				SimpleHeap *next, *curr = mLast->mNextBlock;
+				while (curr)
+				{
+					next = curr->mNextBlock;
+					delete curr;
+					curr = next;
+				}
+				sLast->mNextBlock = NULL, sLast->mFreeMarker = mFreeMarker, sLast->mSpaceAvailable = mSpaceAvailable;
+			}
+			sLastPrev = mLastPrev;
+			sMostRecentlyAllocated = mMostRecentlyAllocated;
+			sBlockCount = mBlockCount;
+		}
+	};
 };
 
 #endif

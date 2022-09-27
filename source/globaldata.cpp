@@ -474,7 +474,6 @@ thread_local DISPID* g_DispIdSortByName = NULL;
 thread_local BuiltInFunc* g_sIsSetFunc = NULL;		// stored IsSet, free it when thread terminates.
 LPSTR g_hWinAPI = NULL, g_hWinAPIlowercase = NULL;  // loads WinAPI functions definitions from resource
 HRSRC g_hResource = NULL;							// Set by WinMain()	// for compiled AutoHotkey.exe
-thread_local SimpleHeap *g_SimpleHeap = NULL;
 thread_local int g_ExitCode = 0;
 thread_local bool g_Reloading = false;
 EXPORT FARPROC g_ThreadExitApp = (FARPROC)&ThreadExitApp;

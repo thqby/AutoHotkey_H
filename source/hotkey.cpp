@@ -97,19 +97,19 @@ HotkeyCriterion *FindHotkeyCriterion(HotCriterionType aType, LPTSTR aWinTitle, L
 HotkeyCriterion *AddHotkeyCriterion(HotCriterionType aType, LPTSTR aWinTitle, LPTSTR aWinText)
 {
 	HotkeyCriterion *cp;
-	cp = g_SimpleHeap->Alloc<HotkeyCriterion>();
+	cp = SimpleHeap::Alloc<HotkeyCriterion>();
 	cp->Type = aType;
 	cp->OriginalExpr = nullptr;
 	if (*aWinTitle)
 	{
-		if (   !(cp->WinTitle = g_SimpleHeap->Malloc(aWinTitle))   )
+		if (   !(cp->WinTitle = SimpleHeap::Malloc(aWinTitle))   )
 			return NULL;
 	}
 	else
 		cp->WinTitle = _T("");
 	if (*aWinText)
 	{
-		if (   !(cp->WinText = g_SimpleHeap->Malloc(aWinText))   )
+		if (   !(cp->WinText = SimpleHeap::Malloc(aWinText))   )
 			return NULL;
 	}
 	else
@@ -135,7 +135,7 @@ HotkeyCriterion *AddHotkeyCriterion(HotkeyCriterion *cp)
 
 HotkeyCriterion *AddHotkeyIfExpr()
 {
-	HotkeyCriterion* cp = g_SimpleHeap->Alloc<HotkeyCriterion>();
+	HotkeyCriterion* cp = SimpleHeap::Alloc<HotkeyCriterion>();
 	cp->NextExpr = NULL;
 	cp->OriginalExpr = nullptr;
 	if (g_LastHotExpr)
@@ -1454,7 +1454,7 @@ Hotkey::Hotkey(HotkeyIDType aID, IObject *aCallback, HookActionType aHookAction,
 	// If mKeybdHookMandatory==true, ManifestAllHotkeysHotstringsHooks() will set mType to HK_KEYBD_HOOK for us.
 
 	// To avoid memory leak, this is done only when it is certain the hotkey will be created:
-	if (   !(mName = g_SimpleHeap->Malloc(aName))
+	if (   !(mName = SimpleHeap::Malloc(aName))
 		|| !(AddVariant(aCallback, aNoSuppress))   ) // Too rare to worry about freeing the other if only one fails.
 	{
 		MemoryError();
@@ -1488,7 +1488,7 @@ HotkeyVariant *Hotkey::AddVariant(IObject *aCallback, UCHAR aNoSuppress)
 // Returns NULL upon out-of-memory; otherwise, the address of the new variant.
 // The caller is responsible for calling ManifestAllHotkeysHotstringsHooks(), if appropriate.
 {
-	HotkeyVariant *vp = g_SimpleHeap->Alloc<HotkeyVariant>();
+	HotkeyVariant *vp = SimpleHeap::Alloc<HotkeyVariant>();
 	ZeroMemory(vp, sizeof(HotkeyVariant));
 	// The following members are left at 0/NULL by the above:
 	// mNextVariant
@@ -2436,7 +2436,7 @@ Hotstring::Hotstring(LPCTSTR aName, IObjectPtr aCallback, LPCTSTR aOptions, LPCT
 		, mOmitEndChar, mSendRaw, mEndCharRequired, mDetectWhenInsideWord, mDoReset, unused_x, mSuspendExempt);
 	
 	// To avoid memory leak, this is done only when it is certain the hotstring will be created:
-	if (   !(mName = g_SimpleHeap->Malloc(aName))   )
+	if (   !(mName = SimpleHeap::Malloc(aName))   )
 		return; // ScriptError() was already called by Malloc().
 	mString = mName + (aHotstring - aName);
 	mStringLength = (UCHAR)_tcslen(mString);

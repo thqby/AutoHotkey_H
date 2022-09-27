@@ -154,10 +154,10 @@ private:
 	ResultType Register();
 	ResultType Unregister();
 
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
-	void operator delete(void *aPtr) {g_SimpleHeap->Delete(aPtr);}  // Deletes aPtr if it was the most recently allocated.
-	void operator delete[](void *aPtr) {g_SimpleHeap->Delete(aPtr);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
+	void operator delete(void *aPtr) {SimpleHeap::Delete(aPtr);}  // Deletes aPtr if it was the most recently allocated.
+	void operator delete[](void *aPtr) {SimpleHeap::Delete(aPtr);}
 
 	// For now, constructor & destructor are private so that only static methods can create new
 	// objects.  This allow proper tracking of which OS hotkey IDs have been used.
@@ -391,10 +391,10 @@ public:
 		, bool aHasContinuationSection, UCHAR aSuspend);
 	~Hotstring() {}  // Note that mReplacement is sometimes malloc'd, sometimes from SimpleHeap, and sometimes the empty string.
 
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
-	void operator delete(void *aPtr) {g_SimpleHeap->Delete(aPtr);}  // Deletes aPtr if it was the most recently allocated.
-	void operator delete[](void *aPtr) {g_SimpleHeap->Delete(aPtr);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
+	void operator delete(void *aPtr) {SimpleHeap::Delete(aPtr);}  // Deletes aPtr if it was the most recently allocated.
+	void operator delete[](void *aPtr) {SimpleHeap::Delete(aPtr);}
 };
 
 

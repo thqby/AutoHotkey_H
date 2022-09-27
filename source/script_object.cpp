@@ -1156,7 +1156,7 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 		_tcscpy(name, member.name);
 		if (member.invokeType == IT_CALL)
 		{
-			auto func = new BuiltInMethod(g_SimpleHeap->Alloc(full_name));
+			auto func = new BuiltInMethod(SimpleHeap::Alloc(full_name));
 			func->mBIM = member.method;
 			func->mMID = member.id;
 			func->mMIT = IT_CALL;
@@ -1176,7 +1176,7 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 			auto op_name = _tcschr(name, '\0');
 
 			_tcscpy(op_name, _T(".Get"));
-			auto func = new BuiltInMethod(g_SimpleHeap->Alloc(full_name));
+			auto func = new BuiltInMethod(SimpleHeap::Alloc(full_name));
 			func->mBIM = member.method;
 			func->mMID = member.id;
 			func->mMIT = IT_GET;
@@ -1190,7 +1190,7 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 			if (member.invokeType == IT_SET)
 			{
 				_tcscpy(op_name, _T(".Set"));
-				func = new BuiltInMethod(g_SimpleHeap->Alloc(full_name));
+				func = new BuiltInMethod(SimpleHeap::Alloc(full_name));
 				func->mBIM = member.method;
 				func->mMID = member.id;
 				func->mMIT = IT_SET;
@@ -1217,7 +1217,7 @@ Object *Object::CreateClass(LPTSTR aClassName, Object *aBase, Object *aPrototype
 	{
 		TCHAR full_name[MAX_VAR_NAME_LENGTH + 1];
 		_stprintf(full_name, _T("%s.Call"), aClassName);
-		auto ctor = new BuiltInFunc(g_SimpleHeap->Alloc(full_name));
+		auto ctor = new BuiltInFunc(SimpleHeap::Alloc(full_name));
 		ctor->mBIF = aFactory.call;
 		ctor->mFID = FID_Object_New;
 		ctor->mMinParams = aFactory.min_params; // Usually 1, the class object.
@@ -3440,7 +3440,7 @@ void Object::DefineClass(name_t aName, Object *aClass)
 
 	ExprTokenType values[] { aClass, aName }, *param[] { values, values + 1 };
 
-	auto info = g_SimpleHeap->Alloc<NestedClassInfo>();
+	auto info = SimpleHeap::Alloc<NestedClassInfo>();
 	info->class_object = aClass;
 	info->constructed = false;
 	aClass->AddRef();

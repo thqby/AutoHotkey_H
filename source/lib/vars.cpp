@@ -671,7 +671,7 @@ void Script::SetTrayTip(LPTSTR aText)
 	// it will override the use of mFileName as the tray tip text.
 	// This allows the script to completely disable the tray tooltip.
 	if (!mTrayIconTip)
-		mTrayIconTip = g_SimpleHeap->Alloc<TCHAR>(_countof(mNIC.szTip)); // SimpleHeap improves avg. case mem load.
+		mTrayIconTip = SimpleHeap::Alloc<TCHAR>(_countof(mNIC.szTip)); // SimpleHeap improves avg. case mem load.
 	if (mTrayIconTip)
 		tcslcpy(mTrayIconTip, aText, _countof(mNIC.szTip));
 	if (mNIC.hWnd) // i.e. only update the tip if the tray icon exists (can't work otherwise).

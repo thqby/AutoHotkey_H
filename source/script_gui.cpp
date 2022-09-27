@@ -2458,7 +2458,7 @@ ResultType GuiType::Create(LPTSTR aTitle)
 			UnregisterClass(wc.lpszClassName, g_hInstance);
 		else
 			wc.cbSize = sizeof(wc);
-		wc.lpszClassName = g_SimpleHeap->Alloc(g_WindowClassGUI);
+		wc.lpszClassName = SimpleHeap::Alloc(g_WindowClassGUI);
 		wc.hInstance = g_hInstance;
 		wc.lpfnWndProc = GuiWindowProc;
 		wc.hIcon = g_IconLarge;

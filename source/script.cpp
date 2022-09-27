@@ -860,10 +860,10 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 		// path awareness enabled.
 		if (buf_length == _countof(buf)) // It was truncated.
 			return FAIL; // Seems the safest option for this unlikely case.
-		mOurEXE = g_SimpleHeap->Alloc(buf, buf_length);
+		mOurEXE = SimpleHeap::Alloc(buf, buf_length);
 		LPTSTR last_backslash = _tcsrchr(buf, '\\');
 		if (last_backslash) // Probably always true due to the nature of GetModuleFileName().
-			mOurEXEDir = g_SimpleHeap->Alloc(buf, last_backslash - buf);
+			mOurEXEDir = SimpleHeap::Alloc(buf, last_backslash - buf);
 	}
 
 #ifdef AUTOHOTKEYSC
@@ -1010,11 +1010,11 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 			ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // This might change the length, e.g. due to expansion of 8.3 filename.
 		}
 	}
-	mFileSpec = g_SimpleHeap->Alloc(buf);  // The full spec is stored for convenience.
+	mFileSpec = SimpleHeap::Alloc(buf);  // The full spec is stored for convenience.
 	LPTSTR filename_marker;
 	if (filename_marker = _tcsrchr(buf, '\\'))
 	{
-		mFileDir = g_SimpleHeap->Alloc(buf, filename_marker - buf);
+		mFileDir = SimpleHeap::Alloc(buf, filename_marker - buf);
 		++filename_marker;
 	}
 	else
@@ -1026,7 +1026,7 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 		mFileDir = g_WorkingDirOrig;
 		filename_marker = buf;
 	}
-	mFileName = g_SimpleHeap->Alloc(filename_marker);
+	mFileName = SimpleHeap::Alloc(filename_marker);
 #ifdef AUTOHOTKEYSC
 	// Omit AutoHotkey from the window title, like AutoIt3 does for its compiled scripts.
 	// One reason for this is to reduce backlash if evil-doers create viruses and such
@@ -1035,7 +1035,7 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 	if (_tcscmp(aScriptFilename, SCRIPT_RESOURCE_SPEC))
 		sntprintfcat(buf, _countof(buf), _T(" - %s"), mKind != ScriptKindResource ? T_AHK_NAME_VERSION : aScriptFilename);
 #endif
-	mMainWindowTitle = g_SimpleHeap->Alloc(buf);
+	mMainWindowTitle = SimpleHeap::Alloc(buf);
 
 
 	return OK;
@@ -1975,9 +1975,8 @@ void Script::TerminateApp(ExitReasons aExitReason, int aExitCode)
 	delete g_clip;
 	delete g_MsgMonitor;
 	delete g_Debugger;
-	// HotKeyIt: now all cleanup tasks are finished and we can clear g_SimpleHeap
-	delete g_SimpleHeap;
-	g_SimpleHeap = NULL, g_script = NULL, g_clip = NULL, g_MsgMonitor = NULL, g_Debugger = NULL;
+	SimpleHeap::DeleteAll();
+	g_script = NULL, g_clip = NULL, g_MsgMonitor = NULL, g_Debugger = NULL;
 	free(g_array), g_array = NULL, g = &g_startup;
 	free(g_KeyHistory), g_KeyHistory = NULL;
 	
@@ -2250,7 +2249,7 @@ ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAl
 		else
 		{
 			if (*aPathToShow)
-				Line::sSourceFile[source_file_index] = g_SimpleHeap->Alloc(aPathToShow);
+				Line::sSourceFile[source_file_index] = SimpleHeap::Alloc(aPathToShow);
 			else
 				Line::sSourceFile[source_file_index] = g_script->mOurEXE;
 		}
@@ -2369,7 +2368,7 @@ ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAl
 
 		// This is done only after the file has been successfully opened in case aIgnoreLoadFailure==true:
 		if (!Line::sSourceFile[source_file_index])
-			Line::sSourceFile[source_file_index] = g_SimpleHeap->Alloc(full_path);
+			Line::sSourceFile[source_file_index] = SimpleHeap::Alloc(full_path);
 		//else the first file was already taken care of by another means.
 		++Line::sSourceFileCount;
 
@@ -4299,7 +4298,7 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 			}
 			else return ScriptError(_T("Create thread fail."), aBuf);
 			if (script) {
-				_stprintf(buf, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, mEncrypt ? nullptr : g_SimpleHeap->Alloc(script), _tcslen(script) * sizeof(TCHAR));
+				_stprintf(buf, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, mEncrypt ? nullptr : SimpleHeap::Alloc(script), _tcslen(script) * sizeof(TCHAR));
 				return LoadIncludedText(script, buf) == OK ? CONDITION_TRUE : FAIL;
 			}
 			else return ignore_load_failure ? CONDITION_TRUE : FAIL;
@@ -4529,7 +4528,7 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		if (!Hotkey::IfExpr(NULL, mLastHotFunc, result_token))		// Set the new criterion.
 			return FAIL;
 
-		g->HotCriterion->OriginalExpr = g_SimpleHeap->Alloc(parameter);
+		g->HotCriterion->OriginalExpr = SimpleHeap::Alloc(parameter);
 		
 		auto func = mLastHotFunc; // AddLine will set mLastHotFunc to nullptr below
 		
@@ -4673,7 +4672,7 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 	{
 		if (parameter)
 		{
-			g_WindowClassMain = (LPWSTR)g_SimpleHeap->Malloc(2 + (parameter ? _tcslen(parameter) * 2 : 0));
+			g_WindowClassMain = (LPWSTR)SimpleHeap::Malloc(2 + (parameter ? _tcslen(parameter) * 2 : 0));
 			_tcscpy(g_WindowClassMain, parameter);
 		}
 		return CONDITION_TRUE;
@@ -4683,7 +4682,7 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 	{
 		if (parameter)
 		{
-			g_WindowClassGUI = (LPWSTR)g_SimpleHeap->Malloc(2 + (parameter ? _tcslen(parameter) * 2 : 0));
+			g_WindowClassGUI = (LPWSTR)SimpleHeap::Malloc(2 + (parameter ? _tcslen(parameter) * 2 : 0));
 			_tcscpy(g_WindowClassGUI, parameter);
 		}
 		return CONDITION_TRUE;
@@ -4794,7 +4793,7 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 	if (!_tcsnicmp(directive_name, _T("#DefineDefault"), 14)) {
 		if (!_tcsicmp(directive_name + 14, _T("ObjectValue"))) {
 			if (parameter)
-				g_DefaultObjectValue = g_SimpleHeap->Malloc(parameter);
+				g_DefaultObjectValue = SimpleHeap::Malloc(parameter);
 			else g_DefaultObjectValue = _T("");
 			return CONDITION_TRUE;
 		}
@@ -4998,7 +4997,7 @@ ResultType Script::AddLabel(LPTSTR aLabelName, bool aAllowDupe)
 		// return
 		return ScriptError(_T("Duplicate label."), aLabelName);
 	}
-	LPTSTR new_name = g_SimpleHeap->Alloc(aLabelName);
+	LPTSTR new_name = SimpleHeap::Alloc(aLabelName);
 	Label *the_new_label = new Label(new_name); // Pass it the dynamic memory area we created.
 	the_new_label->mPrevLabel = last_label;  // Whether NULL or not.
 	if (first_label == NULL)
@@ -5894,7 +5893,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 		new_arg = NULL;  // Just need an empty array in this case.
 	else
 	{
-		new_arg = g_SimpleHeap->Alloc<ArgStruct>(aArgc);
+		new_arg = SimpleHeap::Alloc<ArgStruct>(aArgc);
 
 		int i;
 
@@ -5925,7 +5924,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 			this_new_arg.length = (ArgLengthType)_tcslen(this_aArg);
 			
 			// Create a copy of arg text in persistent memory.
-			this_new_arg.text = g_SimpleHeap->Alloc(this_aArg, this_new_arg.length);
+			this_new_arg.text = SimpleHeap::Alloc(this_aArg, this_new_arg.length);
 
 			///////////////////////////////////////////
 			// Build the list of operands for this arg.
@@ -5953,7 +5952,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 			//////////////////////////////////////////////////////////////
 			if (deref.count)
 			{
-				this_new_arg.deref = g_SimpleHeap->Alloc<DerefType>(deref.count + 1); // +1 for the "NULL-item" terminator.
+				this_new_arg.deref = SimpleHeap::Alloc<DerefType>(deref.count + 1); // +1 for the "NULL-item" terminator.
 				memcpy(this_new_arg.deref, deref.items, deref.count * sizeof(DerefType));
 				// Terminate the list of derefs with a deref that has a NULL marker:
 				this_new_arg.deref[deref.count].marker = NULL;
@@ -6773,7 +6772,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 						tcslcpy(buf, param_start + 1, param_end - param_start); // +1 skips the opening quote and also accounts for the terminator for tcslcpy.
 						ConvertEscapeSequences(buf, NULL); // Raw escape sequences like `n haven't been converted yet, so do it now.
 						this_param.default_type = PARAM_DEFAULT_STR;
-						this_param.default_str = g_SimpleHeap->Alloc(buf);
+						this_param.default_str = SimpleHeap::Alloc(buf);
 						++param_end; // Move beyond the close-quote, for below.
 					}
 				}
@@ -6868,7 +6867,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 	if (param_count)
 	{
 		// Allocate memory only for the actual number of parameters actually present.
-		func.mParam = g_SimpleHeap->Alloc<FuncParam>(param_count);
+		func.mParam = SimpleHeap::Alloc<FuncParam>(param_count);
 		func.mParamCount = param_count - func.mIsVariadic; // i.e. don't count the final "param*" of a variadic function.
 		memcpy(func.mParam, param, param_count * sizeof(FuncParam));
 	}
@@ -7507,7 +7506,7 @@ void Script::InitFuncLibrary(FuncLibrary &aLib, LPTSTR aPathBase, LPTSTR aPathSu
 	// MAX_PATH on ANSI builds since no path longer than that would work, but doing it this
 	// way simplifies length checks later (and Unicode builds support much longer paths).
 	size_t buf_size = length + MAX_VAR_NAME_LENGTH + FUNC_LIB_EXT_LENGTH + 1;
-	aLib.path = g_SimpleHeap->Alloc<TCHAR>(buf_size);
+	aLib.path = SimpleHeap::Alloc<TCHAR>(buf_size);
 	tmemcpy(aLib.path, buf, length + 1);
 	aLib.length = length;
 }
@@ -7882,7 +7881,7 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 	// ValidateName requires that the name be null-terminated, but it isn't in this case.
 	// Doing this first saves doing tcslcpy() into a temporary buffer, and won't leak memory
 	// since the script currently always exits if an error occurs anywhere below:
-	LPTSTR new_name = g_SimpleHeap->Alloc(aFuncName, aFuncNameLength);
+	LPTSTR new_name = SimpleHeap::Alloc(aFuncName, aFuncNameLength);
 
 	if (!aClassObject && *new_name && !Var::ValidateName(new_name, DISPLAY_FUNC_ERROR))  // Variable and function names are both validated the same way.
 		return nullptr; // Above already displayed the error for us.
@@ -8348,7 +8347,7 @@ Var *Script::AddVar(LPCTSTR aVarName, size_t aVarNameLength, VarList *aList, int
 		WarnLocalSameAsGlobal(var_name);
 
 	// Allocate some dynamic memory to pass to the constructor:
-	LPTSTR new_name = g_SimpleHeap->Malloc(var_name, aVarNameLength);
+	LPTSTR new_name = SimpleHeap::Malloc(var_name, aVarNameLength);
 	if (!new_name)
 		// It already displayed the error for us.
 		return NULL;
@@ -8383,7 +8382,7 @@ Var *Script::FindOrAddBuiltInVar(LPCTSTR aVarName, VarEntry *aVarEntry)
 	int insert_pos;
 	if (Var *found = mVars.Find(aVarName, &insert_pos))
 		return found;
-	LPTSTR name = g_SimpleHeap->Malloc(aVarName);
+	LPTSTR name = SimpleHeap::Malloc(aVarName);
 	if (!name)
 		return nullptr;
 	Var *the_new_var = new Var(name, aVarEntry, VAR_DECLARE_GLOBAL);
@@ -8465,7 +8464,7 @@ ResultType Script::AddGroup(LPCTSTR aGroupName)
 	if (!Var::ValidateName(aGroupName, DISPLAY_GROUP_ERROR)) // Seems best to use same validation as var names.
 		return FAIL;
 
-	LPTSTR new_name = g_SimpleHeap->Malloc(aGroupName, aGroupName_length);
+	LPTSTR new_name = SimpleHeap::Malloc(aGroupName, aGroupName_length);
 	if (!new_name)
 		return FAIL;  // It already displayed the error for us.
 
@@ -8747,7 +8746,7 @@ ResultType Script::PreparseCatchVar(Line *aLine)
 {
 	if (!aLine->mArgc)
 		return OK;
-	auto args = g_SimpleHeap->Alloc<CatchStatementArgs>();
+	auto args = SimpleHeap::Alloc<CatchStatementArgs>();
 	args->output_var = nullptr;
 	args->prototype = nullptr;
 	args->prototype_count = 0;
@@ -8810,7 +8809,7 @@ ResultType Script::PreparseCatchClass(Line *aLine)
 	if (prototype_count) // Currently should always be non-zero due to the length check.
 	{
 		auto args = (CatchStatementArgs *)aLine->mAttribute;
-		args->prototype = g_SimpleHeap->Alloc<IObject *>(prototype_count);
+		args->prototype = SimpleHeap::Alloc<IObject *>(prototype_count);
 		args->prototype_count = prototype_count;
 		memcpy(args->prototype, prototype, prototype_count * sizeof(IObject *));
 	}
@@ -9401,7 +9400,7 @@ ResultType Line::ExpressionToPostfix(ArgStruct &aArg, ExprTokenType *&aInfix)
 								return LineError(ERR_EXPR_SYNTAX, FAIL, cp-1); // Intentionally vague since the user's intention isn't clear.
 
 							auto callsite = new CallSite();
-							callsite->member = g_SimpleHeap->Alloc(cp, op_end - cp);
+							callsite->member = SimpleHeap::Alloc(cp, op_end - cp);
 
 							SymbolType new_symbol; // Type of token: SYM_FUNC or SYM_DOT (which must be treated differently as it doesn't have parentheses).
 							if (*op_end == '(')
@@ -9472,7 +9471,7 @@ unquoted_literal:
 					}
 					op_end = find_identifier_end(cp);
 					// SYM_STRING: either the "key" in "{key: value}" or a syntax error (might be impossible).
-					LPTSTR str = g_SimpleHeap->Alloc(cp, op_end - cp);
+					LPTSTR str = SimpleHeap::Alloc(cp, op_end - cp);
 					this_literal.SetValue(str, op_end - cp);
 					cp = op_end; // Have the loop process whatever lies at op_end and beyond.
 					continue; // "Continue" to avoid the ++cp at the bottom.
@@ -9547,7 +9546,7 @@ unquoted_literal:
 
 			if (!can_be_optimized_out)
 			{
-				LPTSTR str = g_SimpleHeap->Alloc(this_deref_ref.marker, this_deref_ref.length);
+				LPTSTR str = SimpleHeap::Alloc(this_deref_ref.marker, this_deref_ref.length);
 				infix[infix_count].SetValue(str, this_deref_ref.length);
 				infix_count++;
 			}
@@ -10337,7 +10336,7 @@ end_of_infix_to_postfix:
 		case SYM_FLOAT:
 			// Convert this numeric literal back into a string to ensure the format is consistent.
 			// This also ensures parentheses are not present in the output, for cases like MsgBox (1.0).
-			aArg.text = g_SimpleHeap->Alloc(TokenToString(only_token, number_buf));
+			aArg.text = SimpleHeap::Alloc(TokenToString(only_token, number_buf));
 			aArg.is_expression = false;
 			break;
 		case SYM_STRING:
@@ -10357,7 +10356,7 @@ end_of_infix_to_postfix:
 	}
 
 	// Create a new postfix array and attach it to this arg of this line.
-	aArg.postfix = g_SimpleHeap->Alloc<ExprTokenType>(postfix_count + 1); // +1 for the terminator item added below.
+	aArg.postfix = SimpleHeap::Alloc<ExprTokenType>(postfix_count + 1); // +1 for the terminator item added below.
 
 	int i, j, max_stack = 0, max_alloc = 0;
 	for (i = 0; i < postfix_count; ++i) // Copy the postfix array in physically sorted order into the new postfix array.
@@ -13218,7 +13217,7 @@ ResultType Script::PreprocessLocalVars(UserFunc &aFunc)
 	}
 	if (closure_count)
 	{
-		aFunc.mClosure = g_SimpleHeap->Alloc<ClosureInfo>(closure_count);
+		aFunc.mClosure = SimpleHeap::Alloc<ClosureInfo>(closure_count);
 		for (int v = 0; v < var_count; ++v)
 		{
 			Var &var = *vars[v];
@@ -13237,8 +13236,8 @@ ResultType Script::PreprocessLocalVars(UserFunc &aFunc)
 		// Upvars are vars local to an outer function which are referenced by aFunc.
 		// They might be local to aFunc.mOuterFunc or one further out.  In the latter
 		// case, aFunc.mOuterFunc contains a downvar which is also one of its upvars.
-		aFunc.mUpVar = g_SimpleHeap->Alloc<Var*>(aFunc.mUpVarCount);
-		aFunc.mUpVarIndex = g_SimpleHeap->Alloc<int>(aFunc.mUpVarCount);
+		aFunc.mUpVar = SimpleHeap::Alloc<Var*>(aFunc.mUpVarCount);
+		aFunc.mUpVarIndex = SimpleHeap::Alloc<int>(aFunc.mUpVarCount);
 
 		auto &outer = *aFunc.mOuterFunc; // Always non-null when aFunc.mUpVarCount > 0.
 		int upvar_count = 0;
@@ -13267,7 +13266,7 @@ ResultType Script::PreprocessLocalVars(UserFunc &aFunc)
 	if (aFunc.mDownVarCount)
 	{
 		// Downvars are vars local to aFunc which are referenced by a nested function.
-		aFunc.mDownVar = g_SimpleHeap->Alloc<Var*>(aFunc.mDownVarCount);
+		aFunc.mDownVar = SimpleHeap::Alloc<Var*>(aFunc.mDownVarCount);
 		
 		int downvar_count = 0;
 		for (int v = 0; v < var_count; ++v)
@@ -13454,7 +13453,7 @@ LPTSTR Script::ListKeyHistory(LPTSTR aBuf, int aBufSize) // aBufSize should be a
 		_T("\r\nModifiers (GetKeyState() now) = %s")
 		_T("\r\n")
 		, win_title
-		//, g_SimpleHeap->GetBlockCount()
+		//, SimpleHeap::GetBlockCount()
 		, g_KeybdHook == NULL ? _T("no") : _T("yes")
 		, g_MouseHook == NULL ? _T("no") : _T("yes")
 		, mTimerEnabledCount, mTimerCount, timer_list
@@ -13878,7 +13877,7 @@ Var* LoadDllFunction(LPTSTR parameter)
 					for (; i < s && flag == CRYPT_STRING_HEX; i++)
 						if (!isxdigit(parameter[i])) flag = CRYPT_STRING_BASE64;
 					if (CryptStringToBinary(parameter, s, flag, NULL, &i, NULL, NULL)) {
-						if (!(function = (void*)g_SimpleHeap->Malloc(i))) {
+						if (!(function = (void*)SimpleHeap::Malloc(i))) {
 							free(path);
 							g_script->ScriptError(ERR_OUTOFMEM);
 							return NULL;
@@ -13913,7 +13912,7 @@ Var* LoadDllFunction(LPTSTR parameter)
 		}
 
 	parameter = parameter + _tcslen(parameter) + 1;
-	LPTSTR parm = g_SimpleHeap->Malloc(parameter);
+	LPTSTR parm = SimpleHeap::Malloc(parameter);
 	bool has_return = false;
 	int aParamCount = !*parm || ATOI(parm) ? 0 : 1;
 	if (*parm)

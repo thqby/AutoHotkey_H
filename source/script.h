@@ -396,8 +396,8 @@ struct CallSite
 	bool is_variadic() { return flags & EIF_VARIADIC; }
 	void is_variadic(bool b) { if (b) flags |= EIF_VARIADIC; else flags &= ~EIF_VARIADIC; }
 	
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
 	void operator delete(void *aPtr) {}  // Intentionally does nothing.
 	void operator delete[](void *aPtr) {}
 };
@@ -1328,8 +1328,8 @@ public:
 		, mBreakpoint(NULL)
 #endif
 		{}
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
 	void operator delete(void *aPtr) {}  // Intentionally does nothing because we're using SimpleHeap for everything.
 	void operator delete[](void *aPtr) {}
 
@@ -1359,8 +1359,8 @@ public:
 		, mJumpToLine(NULL)
 		, mPrevLabel(NULL), mNextLabel(NULL)
 	{}
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
 	void operator delete(void *aPtr) {}
 	void operator delete[](void *aPtr) {}
 };
@@ -1730,8 +1730,8 @@ public:
 		return result;
 	}
 
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
 	void operator delete(void *aPtr) {}
 	void operator delete[](void *aPtr) {}
 };
@@ -1813,8 +1813,8 @@ public:
 
 	bool Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount) override;
 
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
 	void operator delete(void *aPtr) {}
 	void operator delete[](void *aPtr) {}
 };

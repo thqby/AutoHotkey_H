@@ -133,7 +133,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 	g_script = new Script();
 	g_clip = new Clipboard();
 	g_MsgMonitor = new MsgMonitorList();
-	g_SimpleHeap = new SimpleHeap();
 	InitializeCriticalSection(&g_Critical);
 	InitializeCriticalSection(&g_CriticalRegExCache); // v1.0.45.04: Must be done early so that it's unconditional, so that DeleteCriticalSection() in the script destructor can also be unconditional (deleting when never initialized can crash, at least on Win 9x).
 	InitializeCriticalSection(&g_CriticalTLSCallback);
@@ -148,7 +147,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 	SetErrorMode(SEM_FAILCRITICALERRORS);
 
 	UpdateWorkingDir(); // Needed for the FileSelect() workaround.
-	g_WorkingDirOrig = g_SimpleHeap->Alloc(g_WorkingDir.GetString()); // Needed by the Reload command.
+	g_WorkingDirOrig = SimpleHeap::Alloc(g_WorkingDir.GetString()); // Needed by the Reload command.
 
 	// Set defaults, to be overridden by command line args we receive:
 	bool restart_mode = false;
@@ -474,7 +473,6 @@ unsigned __stdcall ThreadMain(LPTSTR *data)
 		g_script = new Script();
 		g_clip = new Clipboard();
 		g_MsgMonitor = new MsgMonitorList();
-		g_SimpleHeap = new SimpleHeap();
 		Object::sAnyPrototype = Object::CreateRootPrototypes();
 		g_script->mEncrypt = encrypt;
 
@@ -488,7 +486,7 @@ unsigned __stdcall ThreadMain(LPTSTR *data)
 		SetErrorMode(SEM_FAILCRITICALERRORS);
 
 		UpdateWorkingDir(); // Needed for the FileSelect() workaround.
-		g_WorkingDirOrig = g_SimpleHeap->Malloc(const_cast<LPTSTR>(g_WorkingDir.GetString())); // Needed by the Reload command.
+		g_WorkingDirOrig = SimpleHeap::Malloc(const_cast<LPTSTR>(g_WorkingDir.GetString())); // Needed by the Reload command.
 
 		// Set defaults, to be overridden by command line args we receive:
 		bool restart_mode = false;

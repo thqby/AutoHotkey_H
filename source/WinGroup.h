@@ -27,7 +27,6 @@ GNU General Public License for more details.
 //    (probably correctible, but it's fine this way).
 
 
-thread_local extern SimpleHeap* g_SimpleHeap;
 class Label;
 class WindowSpec
 {
@@ -41,8 +40,8 @@ public:
 		: mTitle(aTitle), mText(aText), mExcludeTitle(aExcludeTitle), mExcludeText(aExcludeText)
 		, mNextWindow(NULL) // mNextWindow(NULL) is also required for thread-safety.
 	{}
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
 	void operator delete(void *aPtr) {}
 	void operator delete[](void *aPtr) {}
 };
@@ -97,8 +96,8 @@ public:
 		, mNextGroup(NULL) // v1.0.41: Required for thread-safety, but also for maintainability.
 		, mIsModeActivate(true) // arbitrary default.
 	{}
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Alloc(aBytes);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
 	void operator delete(void *aPtr) {}
 	void operator delete[](void *aPtr) {}
 };

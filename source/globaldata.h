@@ -334,7 +334,6 @@ thread_local extern LPTSTR* g_DispNameByIdMinus1;
 thread_local extern DISPID* g_DispIdSortByName;
 thread_local extern BuiltInFunc* g_sIsSetFunc;		// free it when thread terminates.
 extern LPSTR g_hWinAPI, g_hWinAPIlowercase; // loads WinAPI functions definitions from resource
-thread_local extern SimpleHeap *g_SimpleHeap;
 extern HRSRC g_hResource;		// for compiled AutoHotkey.exe
 thread_local extern int g_ExitCode;
 thread_local extern bool g_Reloading;

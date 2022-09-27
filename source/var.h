@@ -46,7 +46,6 @@ typedef UINT_PTR VarSizeType;  // jackieku(2009-10-23): Change this to UINT_PTR 
 #define VARSIZE_MAX ((VarSizeType) ~0)
 #define VARSIZE_ERROR VARSIZE_MAX
 
-thread_local extern SimpleHeap* g_SimpleHeap;
 class Var; // Forward declaration.
 // #pragma pack(4) not used here because although it would currently save 4 bytes per VarBkp struct (28 vs. 32),
 // it would probably reduce performance since VarBkp items are stored in contiguous array rather than a
@@ -894,14 +893,14 @@ public:
 	Var() : Var(_T(""), VAR_VARREF)
 	{
 		// Vars constructed this way are for temporary use, and therefore must have mHowAllocated set
-		// as below to prevent the use of g_SimpleHeap->Malloc().  Otherwise, each Var could allocate
+		// as below to prevent the use of SimpleHeap::Malloc().  Otherwise, each Var could allocate
 		// some memory which cannot be freed until the program exits.
 		mHowAllocated = ALLOC_MALLOC;
 	}
 
-	void *operator new(size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
+	void *operator new(size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
 	void *operator new(size_t aBytes, void *p) {return p;}
-	void *operator new[](size_t aBytes) {return g_SimpleHeap->Malloc(aBytes);}
+	void *operator new[](size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
 	void operator delete(void *aPtr) {}
 	void operator delete(void *aPtr, void *) {}
 	void operator delete[](void *aPtr) {}

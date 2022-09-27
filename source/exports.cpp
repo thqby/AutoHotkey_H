@@ -339,13 +339,11 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 	int aSourceFileIdx = Line::sSourceFileCount;
 	
 	// Backup SimpleHeap to restore later
-	SimpleHeap* aSimpleHeap = new SimpleHeap();
-	SimpleHeap* bkpSimpleHeap = g_SimpleHeap;
+	auto heapbkp = SimpleHeap::HeapBackUp();
 	TCHAR tmp[MAX_PATH];
 	void* p = nullptr;
-	g_SimpleHeap = aSimpleHeap;
 	if (!g_script->mEncrypt)
-		p = g_SimpleHeap->Alloc(script);
+		p = SimpleHeap::Alloc(script);
 	_stprintf(tmp, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, p, _tcslen(script) * sizeof(TCHAR));
 	BACKUP_G_SCRIPT
 	if (g_script->LoadFromText(script,tmp) != TRUE)
@@ -363,7 +361,6 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 		g_script->mLastStaticLine = aLastStaticLine;
 		g_script->mIsReadyToExecute = true;
 		RESTORE_G_SCRIPT;
-		g_SimpleHeap = bkpSimpleHeap;
 		Line::sSourceFileCount = aSourceFileIdx;
 		aVarBkp.~VarListBackup();
 		int len = g_script->mHotFuncs.mCount;
@@ -398,8 +395,8 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 				delete line->mBreakpoint;
 			delete line;
 		}
-		// Delete used and restore SimpleHeap
-		delete aSimpleHeap;
+		// restore SimpleHeap
+		heapbkp.Restore();
 		LeaveCriticalSection(&g_CriticalTLSCallback);
 		return 0;
 	}
@@ -409,8 +406,6 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 	g_script->mIsReadyToExecute = true;
 	g->CurrentFunc = (UserFunc*)aCurrFunc;
 	g->CurrentMacro = (UserFunc*)aCurrMacro;
-	g_SimpleHeap = bkpSimpleHeap;
-	g_SimpleHeap->Merge(aSimpleHeap);
 	Line *aTempLine = g_script->mFirstLine;
 	aLastLine->mNextLine = aTempLine;
 	aTempLine->mPrevLine = aLastLine;
@@ -479,9 +474,7 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 	BACKUP_G_SCRIPT
 
 	// Backup SimpleHeap to restore later
-	SimpleHeap *aSimpleHeap = new SimpleHeap();
-	SimpleHeap *bkpSimpleHeap = g_SimpleHeap;
-	g_SimpleHeap = aSimpleHeap;
+	auto heapbkp = SimpleHeap::HeapBackUp();
 
 	if (!aThreadID)
 		g->CurrentMacro = g->CurrentFunc = aCurrMacro ? aCurrMacro : aCurrFunc;
@@ -503,8 +496,6 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 	g_script->mLastStaticLine = aLastStaticLine;
 	g_script->mIsReadyToExecute = true;
 	RESTORE_G_SCRIPT;
-	// Restore SimpleHeap so functions will use correct memory
-	g_SimpleHeap = bkpSimpleHeap;
 	
 	if (result == TRUE) {
 		g_script->mLastLine->mNextLine = aExecLine;
@@ -550,8 +541,8 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 			delete line->mBreakpoint;
 		delete line;
 	}
-	// Delete used and restore SimpleHeap
-	delete aSimpleHeap;
+	// restore SimpleHeap
+	heapbkp.Restore();
 	LeaveCriticalSection(&g_CriticalTLSCallback);
 	return result == TRUE;
 }
@@ -688,11 +679,10 @@ IAhkApi* IAhkApi::Initialize() {
 		g_clip = new Clipboard();
 		g_script = new Script();
 		g_MsgMonitor = new MsgMonitorList();
-		g_SimpleHeap = new SimpleHeap();
 		Object::sAnyPrototype = Object::CreateRootPrototypes();
 		SetErrorMode(SEM_FAILCRITICALERRORS);
 		UpdateWorkingDir();
-		g_WorkingDirOrig = g_SimpleHeap->Malloc(const_cast<LPTSTR>(g_WorkingDir.GetString()));
+		g_WorkingDirOrig = SimpleHeap::Malloc(const_cast<LPTSTR>(g_WorkingDir.GetString()));
 		global_init(*g);
 		g_persistent = true;
 		g_NoTrayIcon = true;
