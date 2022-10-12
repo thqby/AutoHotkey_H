@@ -1197,7 +1197,7 @@ bif_impl FResult MsgBox(optl<StrArg> aText, optl<StrArg> aTitle, optl<StrArg> aO
 
 bif_impl FResult ToolTip(optl<StrArg> aText, optl<int> aX, optl<int> aY, optl<int> aIndex, UINT_PTR &aRetVal)
 {
-	int window_index = aIndex.value_or(0);
+	int window_index = aIndex.value_or(1) - 1;
 	if (window_index < 0 || window_index >= MAX_TOOLTIPS)
 		return FR_E_ARG(3);
 
@@ -3415,7 +3415,7 @@ BOOL TokenToBOOL(ExprTokenType &aToken)
 		return aToken.value_double != 0.0;
 	case SYM_STRING:
 		return ResultToBOOL(aToken.marker);
-	default:
+	case SYM_OBJECT:
 #ifdef ENABLE_DECIMAL
 		if (auto d = Decimal::ToDecimal(aToken.object))
 			return d->ToBOOL();
@@ -3424,6 +3424,9 @@ BOOL TokenToBOOL(ExprTokenType &aToken)
 		if (ComObject *aComObj = dynamic_cast<ComObject *>(aToken.object))
 			return aComObj->mVarType==VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType!=VT_NULL && aComObj->mVarType != VT_EMPTY;
 		return TRUE;
+	default:
+		// Check symbol anyway, in case SYM_MISSING or something else sneaks in.
+		return FALSE;
 	}
 }
 

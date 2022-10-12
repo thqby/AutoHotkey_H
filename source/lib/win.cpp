@@ -40,7 +40,7 @@ static FResult ThrowTargetError(LPCTSTR aMsg, LPCTSTR aExtraInfo, IObject*)
 static FResult WinAct(WINTITLE_PARAMETERS_DECL, BuiltInFunctionID action, optl<double> aWaitTime = nullptr)
 {
 	TCHAR title_buf[MAX_NUMBER_SIZE];
-	auto aTitle = TokenToString(*aWinTitle, title_buf);
+	auto aTitle = aWinTitle ? TokenToString(*aWinTitle, title_buf) : _T("");
 	auto aText = aWinText.value_or_empty();
 	// Set initial guess for is_ahk_group (further refined later).  For ahk_group, WinText,
 	// ExcludeTitle, and ExcludeText must be blank so that they are reserved for future use
@@ -2202,7 +2202,7 @@ ResultType DetermineTargetHwnd(HWND &aWindow, ResultToken &aResultToken, ExprTok
 		return CONDITION_FALSE;
 	aWindow = (HWND)(UINT_PTR)n;
 	// Callers expect the return value to be either a valid HWND or 0:
-	if (!IsWindow(aWindow))
+	if (!IsWindow(aWindow) && aWindow != HWND_BROADCAST) // HWND_BROADCAST is probably only meaningful for SendMessage, but is permitted for all, for reasons of code size vs. rarity.
 		aWindow = 0;
 	return OK;
 }
