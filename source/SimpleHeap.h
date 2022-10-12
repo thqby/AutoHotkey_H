@@ -43,9 +43,8 @@ private:
 	char *mBlock; // This object's memory block.  Although private, its contents are public.
 	char *mFreeMarker;  // Address inside the above block of the first unused byte.
 	size_t mSpaceAvailable;
-	thread_local static UINT sBlockCount;
+	//static UINT sBlockCount;
 	thread_local static SimpleHeap *sFirst, *sLast;  // The first and last objects in the linked list.
-	thread_local static SimpleHeap *sLastPrev;
 	thread_local static char *sMostRecentlyAllocated; // For use with Delete().
 	SimpleHeap *mNextBlock;  // The object after this one in the linked list; NULL if none.
 
@@ -81,13 +80,10 @@ public:
 
 	struct HeapBackUp {
 		SimpleHeap *mLast;
-		SimpleHeap *mLastPrev;
 		char *mMostRecentlyAllocated, *mFreeMarker;
 		size_t mSpaceAvailable;
-		UINT mBlockCount;
 		
-		HeapBackUp() :mLast(sLast), mLastPrev(sLastPrev), mBlockCount(sBlockCount)
-			, mMostRecentlyAllocated(sMostRecentlyAllocated)
+		HeapBackUp() :mLast(sLast), mMostRecentlyAllocated(sMostRecentlyAllocated)
 		{
 			if (sLast)
 				mFreeMarker = sLast->mFreeMarker, mSpaceAvailable = sLast->mSpaceAvailable;
@@ -106,9 +102,7 @@ public:
 				}
 				sLast->mNextBlock = NULL, sLast->mFreeMarker = mFreeMarker, sLast->mSpaceAvailable = mSpaceAvailable;
 			}
-			sLastPrev = mLastPrev;
 			sMostRecentlyAllocated = mMostRecentlyAllocated;
-			sBlockCount = mBlockCount;
 		}
 	};
 };

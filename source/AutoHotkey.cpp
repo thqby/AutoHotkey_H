@@ -23,7 +23,12 @@ GNU General Public License for more details.
 #include <iphlpapi.h>
 #include <initializer_list>
 #ifdef _DEBUG
-//#include <vld.h>	// find memory leaks
+#ifdef _WIN64
+#pragma comment(lib, "D:/Program Files/Visual Leak Detector/lib/Win64/vld.lib")
+#else
+#pragma comment(lib, "D:/Program Files/Visual Leak Detector/lib/Win32/vld.lib")
+#endif // _WIN64
+#include <vld.h>	// find memory leaks
 #endif
 
 #ifdef ENABLE_TLS_CALLBACK

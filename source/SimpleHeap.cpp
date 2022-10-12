@@ -21,9 +21,8 @@ GNU General Public License for more details.
 // Static member data:
 thread_local SimpleHeap *SimpleHeap::sFirst = NULL;
 thread_local SimpleHeap *SimpleHeap::sLast  = NULL;
-thread_local SimpleHeap *SimpleHeap::sLastPrev = NULL;
 thread_local char *SimpleHeap::sMostRecentlyAllocated = NULL;
-thread_local UINT SimpleHeap::sBlockCount = 0;
+//UINT SimpleHeap::sBlockCount = 0;
 
 LPTSTR SimpleHeap::strDup(LPCTSTR aBuf, size_t aLength)
 // v1.0.44.14: Added aLength to improve performance in cases where callers already know the length.
@@ -73,18 +72,18 @@ void *SimpleHeap::Malloc(size_t aSize)
 	if (aSize < 1)
 		return NULL;
 	if (!sFirst) // We need at least one block to do anything, so create it.
-		if (!(sFirst = sLast = new SimpleHeap) || !(sFirst->mNextBlock = CreateBlock()))
+		if (!(sFirst = CreateBlock()))
 			return NULL;
 	if (aSize > sLast->mSpaceAvailable)
 	{
 		if (aSize > MAX_ALLOC_IN_NEW_BLOCK) // Also covers aSize > BLOCK_SIZE.
 			if (auto p = malloc(aSize))
 			{
-				auto block = new SimpleHeap;
-				block->mNextBlock = sLast;
-				block->mFreeMarker = aSize + (block->mBlock = (char *)p);
-				sLastPrev->mNextBlock = block;
-				sLastPrev = block;
+				auto block = sLast->mNextBlock = new SimpleHeap;
+				block->mBlock = (char *)p;
+				block->mFreeMarker = sLast->mFreeMarker;
+				block->mSpaceAvailable = sLast->mSpaceAvailable;
+				sLast = block;
 				return p;
 			}
 			else
@@ -146,9 +145,8 @@ void SimpleHeap::DeleteAll()
 		delete curr;
 		curr = next;
 	}
-	sFirst = sLast = sLastPrev = NULL;
+	sFirst = sLast = NULL;
 	sMostRecentlyAllocated = NULL;
-	sBlockCount = 0;
 }
 
 
@@ -169,9 +167,7 @@ SimpleHeap *SimpleHeap::CreateBlock()
 	}
 	// Since above didn't return, block was successfully created:
 	block->mSpaceAvailable = BLOCK_SIZE;
-	sLastPrev = sLast;
 	sLast = block;  // Constructing a new block always results in it becoming the current block.
-	++sBlockCount;
 	return block;
 }
 

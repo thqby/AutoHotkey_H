@@ -465,6 +465,7 @@ Script::~Script() // Destructor.
 	}
 
 	Hotstring::AllDestruct();
+	Hotkey::AllDestruct();
 
 	if (mClassPropertyDef)
 		free(mClassPropertyDef), mClassPropertyDef = NULL;
@@ -2304,8 +2305,8 @@ ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAl
 			if (terminate_here)
 				*terminate_here = '\0', lpName = terminate_here + 1, lpType = full_path + 1;
 			else lpName = full_path + 1, lpType = RT_RCDATA;
-			if (!(hRes = FindResource(hInstance, aFileSpec + 1, RT_RCDATA)) && hInstance)
-				hRes = FindResource(hInstance = NULL, aFileSpec + 1, RT_RCDATA);
+			if (!(hRes = FindResource(hInstance, lpName, lpType)) && hInstance)
+				hRes = FindResource(hInstance = NULL, lpName, lpType);
 			if (terminate_here)
 				*terminate_here = '\\';
 		}
