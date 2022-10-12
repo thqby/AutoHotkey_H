@@ -176,12 +176,12 @@ UCHAR **ConstructEventSupportArray()
 	// This is mostly static data, but I haven't figured out how to construct it with just
 	// an array initialiser (other than by using a fixed size for the sub-array, which
 	// wastes space due to ListView and TreeView having many more events than other types).
-	thread_local static UCHAR *raises[GUI_CONTROL_TYPE_COUNT];
+	static UCHAR *raises[GUI_CONTROL_TYPE_COUNT];
 	// Not necessary since the array is static and therefore initialised to 0 (NULL):
 	//#define RAISES_NONE(ctrl) \
 	//	raises[ctrl] = NULL;
 	#define RAISES(ctrl, ...) { \
-		thread_local static UCHAR events[] = { __VA_ARGS__, 0 }; \
+		static UCHAR events[] = { __VA_ARGS__, 0 }; \
 		raises[ctrl] = events; \
 	}
 
@@ -217,7 +217,7 @@ UCHAR **ConstructEventSupportArray()
 	return raises;
 }
 
-thread_local UCHAR **GuiControlType::sRaisesEvents = ConstructEventSupportArray();
+UCHAR **GuiControlType::sRaisesEvents = ConstructEventSupportArray();
 
 bool GuiControlType::SupportsEvent(GuiEventType aEvent)
 {
@@ -306,6 +306,7 @@ ObjectMember GuiType::sMembers[] =
 	Object_Method (Minimize, 0, 0),
 	Object_Method (Move, 0, 4),
 	Object_Method (OnEvent, 2, 3),
+	Object_Method (OnMessage, 2, 3),
 	Object_Method (Opt, 1, 1),
 	Object_Method (Restore, 0, 0),
 	Object_Method (SetFont, 0, 2),
@@ -429,6 +430,12 @@ void GuiType::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTy
 			if (evt < GUI_EVENT_WINDOW_FIRST || evt > GUI_EVENT_WINDOW_LAST)
 				_o_throw_param(0);
 			return OnEvent(NULL, evt, GUI_EVENTKIND_EVENT, aParam, aParamCount, aResultToken);
+		}
+		case M_OnMessage:
+		{
+			if (ParamIndexIsNumeric(0) != SYM_INTEGER)
+				_o_throw_param(0, _T("Integer"));
+			return OnEvent(NULL, (UINT)ParamIndexToInt64(0), GUI_EVENTKIND_MESSAGE, aParam, aParamCount, aResultToken);
 		}
 		case P_Hwnd:
 		{
@@ -2573,6 +2580,7 @@ void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 			int param_count = 2;
 			switch (aEventKind)
 			{
+			case GUI_EVENTKIND_MESSAGE:		param_count = 4; break;
 			case GUI_EVENTKIND_COMMAND:		param_count = 1; break;
 			case GUI_EVENTKIND_EVENT:
 				switch (aEvent)
@@ -8580,7 +8588,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	// and the minimal consequences of this, no extra code (such as passing a new parameter to MsgSleep)
 	// is added to handle this.
 
-	GuiType *pgui;
+	GuiType *pgui = nullptr;
 	GuiControlType *pcontrol;
 	GuiIndexType control_index;
 	bool text_color_was_changed;
@@ -9773,6 +9781,16 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		break;
 
 	} // switch()
+
+	if (!pgui)
+		pgui = GuiType::FindGui(hWnd);
+	if (pgui && pgui->mEvents.IsMonitoring(iMsg, GUI_EVENTKIND_MESSAGE))
+	{
+		ExprTokenType param[] = { (__int64)wParam, (__int64)(DWORD_PTR)lParam, (__int64)iMsg, (__int64)(size_t)hWnd };
+		InitNewThread(0, false, true);
+		pgui->mEvents.Call(param, 4, iMsg, GUI_EVENTKIND_MESSAGE, pgui);
+		ResumeUnderlyingThread();
+	}
 
 	// This will handle anything not already fully handled and returned from above:
 	return DefDlgProc(hWnd, iMsg, wParam, lParam);

@@ -2309,7 +2309,7 @@ struct GuiControlType : public Object
 	static TypeAttribs TypeHasAttrib(GuiControls aType, TypeAttribs aAttrib);
 	TypeAttribs TypeHasAttrib(TypeAttribs aAttrib) { return TypeHasAttrib(type, aAttrib); }
 
-	thread_local static UCHAR **sRaisesEvents;
+	static UCHAR **sRaisesEvents;
 	bool SupportsEvent(GuiEventType aEvent);
 
 	bool SupportsBackgroundTrans()
@@ -2587,6 +2587,8 @@ public:
 		P_MarginX,
 		P_MarginY,
 		P_MenuBar,
+
+		M_OnMessage
 	};
 
 	static ObjectMember sMembers[];
