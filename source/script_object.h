@@ -836,7 +836,7 @@ public:
 	static BufferObject *Create(void *aData = nullptr, size_t aSize = 0);
 	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
-	thread_local static void *sVTable;
+	static void *sVTable;
 	static bool IsInstanceExact(IObject *aObj) { return *(void **)aObj == sVTable; } // Benchmarked a little faster than aObj->IsOfType(BufferObject::sPrototype);
 };
 

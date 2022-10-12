@@ -8,6 +8,9 @@
 #include "script_func_impl.h"
 #include "input_object.h"
 #include "script_com.h"
+#ifdef ENABLE_DECIMAL
+#include "decimal.h"
+#endif // ENABLE_DECIMAL
 
 #include <errno.h> // For ERANGE.
 #include <initializer_list>
@@ -3207,6 +3210,12 @@ ObjectMember Worker::sMembers[] =
 	Object_Method(Wait, 0, 1)
 };
 
+#ifdef ENABLE_DECIMAL
+ObjectMember Decimal::sMembers[] = {
+	Object_Method(ToString, 0, 0),
+};
+#endif // ENABLE_DECIMAL
+
 struct ClassDef
 {
 	LPCTSTR name;
@@ -3348,11 +3357,24 @@ Object *Object::CreateRootPrototypes()
 			{_T("Number"), &Object::sNumberPrototype, {BIF_Number, 2, 2}, no_members, 0, {
 				{_T("Float"), &Object::sFloatPrototype, {BIF_Float, 2, 2}},
 				{_T("Integer"), &Object::sIntegerPrototype, {BIF_Integer, 2, 2}}
+#ifdef ENABLE_DECIMAL
+				,{_T("Decimal"), &Decimal::sPrototype, {Decimal::Create, 2, 2}, Decimal::sMembers, _countof(Decimal::sMembers)}
+#endif // ENABLE_DECIMAL
 			}},
 			{_T("String"), &Object::sStringPrototype, {BIF_String, 2, 2}}
 		}},
 		{_T("VarRef"), &sVarRefPrototype}
 	});
+
+#ifdef ENABLE_DECIMAL
+	if (auto var = g_script->FindGlobalVar(_T("Decimal"), 7)) {
+		if (auto obj = dynamic_cast<Object *>(var->ToObject())) {
+			auto fn = new BuiltInFunc(_T("Decimal.SetPrecision"), Decimal::SetPrecision, 1, 2);
+			obj->DefineMethod(_T("SetPrecision"), fn);
+			fn->Release();
+		}
+	}
+#endif // ENABLE_DECIMAL
 
 	JSON::_true = new ComObject(VARIANT_TRUE, VT_BOOL);
 	JSON::_false = new ComObject(VARIANT_FALSE, VT_BOOL);

@@ -9,5 +9,7 @@ ipch/
 *.aps
 *.sdf
 *.opensdf
+*.lib
+*.7z
 source/ComServer_i.c
 source/ComServer_h.h

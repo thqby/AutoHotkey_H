@@ -225,6 +225,7 @@
     <ClCompile Include="source\MinHook.cpp" />
     <ClCompile Include="source\script_h.cpp" />
     <ClCompile Include="source\script_struct.cpp" />
+    <ClCompile Include="source\decimal.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\abi.h" />
@@ -272,6 +273,7 @@
     <ClInclude Include="source\LiteZip.h" />
     <ClInclude Include="source\MemoryModule.h" />
     <ClInclude Include="source\MinHook.h" />
+    <ClInclude Include="source\decimal.h" />
   </ItemGroup>
   <PropertyGroup>
     <Masm>ml /safeseh</Masm>

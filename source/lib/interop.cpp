@@ -59,7 +59,7 @@ void ConvertNumGetType(ExprTokenType &aToken, NumGetParams &op)
 	}
 }
 
-thread_local void *BufferObject::sVTable = getVTable(); // Placing this here vs. in script_object.cpp improves some simple benchmarks by as much as 7%.
+void *BufferObject::sVTable = getVTable(); // Placing this here vs. in script_object.cpp improves some simple benchmarks by as much as 7%.
 
 void GetBufferObjectPtr(ResultToken &aResultToken, IObject *obj, size_t &aPtr, size_t &aSize)
 {

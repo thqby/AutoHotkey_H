@@ -502,14 +502,17 @@ inline int ATOI(LPCTSTR buf)
 //	return strtoul(buf, NULL, IsHex(buf) ? 16 : 10);
 //}
 
-inline double ATOF(LPCTSTR buf)
+static double_conversion::StringToDoubleConverter S2Dconverter(5, 0, __builtin_nan("0"), 0, 0);
+inline double ATOF(LPCTSTR buf, LPTSTR *endptr = nullptr)
 // Unlike some Unix versions of strtod(), the VC++ version does not seem to handle hex strings
 // such as "0xFF" automatically.  So this macro must check for hex because some callers rely on that.
 // Also, it uses _strtoi64() vs. strtol() so that more of a double's capacity can be utilized:
 {
-	static double_conversion::StringToDoubleConverter converter(5, 0, __builtin_nan("0"), 0, 0);
 	int l = 2147483647;
-	return converter.StringToDouble(buf, l, &l);
+	auto v = S2Dconverter.StringToDouble(buf, l, &l);
+	if (endptr)
+		*endptr = (LPTSTR)buf + l;
+	return v;
 	//return IsHex(buf) ? (double)_tcstoi64(buf, NULL, 16) : _tstof(buf);
 }
 

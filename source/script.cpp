@@ -6344,7 +6344,8 @@ ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDe
 			if (!IS_HEX(op_begin)) // This check is probably only needed on VC++ 2015 and later, where _tcstod allows hex.
 			{
 				LPTSTR d_end;
-				_tcstod(op_begin, &d_end);
+				//_tcstod(op_begin, &d_end);
+				ATOF(op_begin, &d_end);
 				if (op_end < d_end && _tcschr(EXPR_OPERAND_TERMINATORS, *d_end))
 				{
 					op_end = d_end;
@@ -9448,7 +9449,8 @@ unquoted_literal:
 						__int64 i = istrtoi64(cp, &i_end);
 						if (!IsHex(cp))
 						{
-							double d = _tcstod(cp, &d_end);
+							//double d = _tcstod(cp, &d_end);
+							double d = ATOF(cp, &d_end);
 							if (d_end > i_end && _tcschr(EXPR_OPERAND_TERMINATORS, *d_end))
 							{
 								this_literal.symbol = SYM_FLOAT;

@@ -22,6 +22,9 @@ GNU General Public License for more details.
 #include "script_func_impl.h"
 #include "script_com.h"
 #include "abi.h"
+#ifdef ENABLE_DECIMAL
+#include "decimal.h"
+#endif // ENABLE_DECIMAL
 
 
 
@@ -3385,9 +3388,14 @@ BOOL VarToBOOL(Var &aVar)
 	case PURE_FLOAT:
 		return aVar.ToDouble() != 0.0;
 	default:
+		auto obj = aVar.ToObject();
+#ifdef ENABLE_DECIMAL
+		if (auto d = Decimal::ToDecimal(obj))
+			return d->ToBOOL();
+#endif // ENABLE_DECIMAL
 		// Even a string containing all whitespace would be considered non-numeric since it's a non-blank string
 		// that isn't equal to 0.
-		if (ComObject *aComObj = dynamic_cast<ComObject*>(aVar.ToObject()))
+		if (ComObject *aComObj = dynamic_cast<ComObject*>(obj))
 			return aComObj->mVarType == VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType != VT_NULL && aComObj->mVarType != VT_EMPTY;
 		return TRUE;
 	}
@@ -3408,6 +3416,10 @@ BOOL TokenToBOOL(ExprTokenType &aToken)
 	case SYM_STRING:
 		return ResultToBOOL(aToken.marker);
 	default:
+#ifdef ENABLE_DECIMAL
+		if (auto d = Decimal::ToDecimal(aToken.object))
+			return d->ToBOOL();
+#endif // ENABLE_DECIMAL
 		// The only remaining valid symbol is SYM_OBJECT, which is always TRUE.
 		if (ComObject *aComObj = dynamic_cast<ComObject *>(aToken.object))
 			return aComObj->mVarType==VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType!=VT_NULL && aComObj->mVarType != VT_EMPTY;
@@ -3610,6 +3622,11 @@ ResultType TokenToDoubleOrInt64(const ExprTokenType &aInput, ExprTokenType &aOut
 		case SYM_STRING:   // v1.0.40.06: Fixed to be listed explicitly so that "default" case can return failure.
 			str = aInput.marker;
 			break;
+#ifdef ENABLE_DECIMAL
+		case SYM_OBJECT:
+			if (auto obj = Decimal::ToDecimal(aInput.object))
+				return obj->ToToken(aOutput);
+#endif // ENABLE_DECIMAL
 		//case SYM_OBJECT: // L31: Treat objects as empty strings (or TRUE where appropriate).
 		//case SYM_MISSING:
 		default:

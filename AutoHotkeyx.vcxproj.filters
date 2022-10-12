@@ -218,6 +218,9 @@
     <ClCompile Include="source\script_h.cpp">
       <Filter>H</Filter>
     </ClCompile>
+    <ClCompile Include="source\decimal.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\ahkversion.h">
@@ -341,6 +344,9 @@
       <Filter>H</Filter>
     </ClInclude>
     <ClInclude Include="source\MinHook.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\decimal.h">
       <Filter>H</Filter>
     </ClInclude>
   </ItemGroup>

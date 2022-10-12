@@ -42,6 +42,9 @@ GNU General Public License for more details.
 #include "script_object.h"
 #include "globaldata.h" // for a lot of things
 #include "qmath.h" // For ExpandExpression()
+#ifdef ENABLE_DECIMAL
+#include "decimal.h"
+#endif // ENABLE_DECIMAL
 
 // __forceinline: Decided against it for this function because although it's only called by one caller,
 // testing shows that it wastes stack space (room for its automatic variables would be unconditionally 
@@ -693,6 +696,27 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			right_is_pure_number = TokenIsPureNumeric(right, right_is_number); // If it's SYM_VAR, it can be the clipboard in this case, but it works even then.
 		}
 
+#ifdef ENABLE_DECIMAL
+		static auto release_object = [](Var *sym_assign_var, ExprTokenType &this_token, ExprTokenType **to_free, int &to_free_count) {
+			if (sym_assign_var) {
+				auto result = sym_assign_var->Assign(this_token);
+				this_token.object->Release();
+				if (!result)
+					return 0;
+				if (sym_assign_var->Type() == VAR_NORMAL)
+					this_token.SetVar(sym_assign_var);
+			}
+			else {
+				if (to_free_count)
+					if (to_free[--to_free_count]->symbol == SYM_STRING)
+						free(to_free[to_free_count]->marker);
+					else to_free[to_free_count]->object->Release();
+				to_free[to_free_count++] = &this_token;
+			}
+			return 1;
+		};
+#endif // ENABLE_DECIMAL
+
 		// IF THIS IS A UNARY OPERATOR, we now have the single operand needed to perform the operation.
 		// The cases in the switch() below are all unary operators.  The other operators are handled
 		// in the switch()'s default section:
@@ -744,6 +768,13 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 				this_token.value_double = -TokenToDouble(right, FALSE); // Pass FALSE for aCheckForHex since PURE_FLOAT is never hex.
 			else // String.  Seems best to consider the application of unary minus to a string to be a failure.
 			{
+#ifdef ENABLE_DECIMAL
+				if (auto dec = Decimal::ToDecimal(right))
+					if (dec->Eval(this_token) == 1)
+						if (release_object(sym_assign_var, this_token, to_free, to_free_count))
+							goto push_this_token;
+						else goto abort;
+#endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
 				goto type_mismatch;
@@ -757,6 +788,13 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 				TokenToDoubleOrInt64(right, this_token);
 			else
 			{
+#ifdef ENABLE_DECIMAL
+				if (auto dec = Decimal::ToDecimal(right))
+					if (dec->Eval(this_token) == 1)
+						if (release_object(sym_assign_var, this_token, to_free, to_free_count))
+							goto push_this_token;
+						else goto abort;
+#endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
 				goto type_mismatch; // For consistency with unary minus (see above).
@@ -801,6 +839,13 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			is_pre_op = SYM_INCREMENT_OR_DECREMENT_IS_PRE(this_token.symbol); // Store this early because its symbol will soon be overwritten.
 			if (right_is_number == PURE_NOT_NUMERIC) // Not numeric: invalid operation.
 			{
+#ifdef ENABLE_DECIMAL
+				if (auto dec = Decimal::ToDecimal(right))
+					if (dec->Eval(this_token) == 1)
+						if (release_object(sym_assign_var, this_token, to_free, to_free_count))
+							goto push_this_token;
+						else goto abort;
+#endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
 				goto type_mismatch;
@@ -955,6 +1000,26 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 					// comparison operators as unsupported than for (obj == "") to evaluate to true.
 					if (right_obj || left_obj)
 					{
+#ifdef ENABLE_DECIMAL
+						if (left_obj) {
+							if (auto obj = Decimal::ToDecimal(left_obj)) {
+								if (obj->Eval(this_token, &right) != 1)
+									this_token.SetValue(0);
+								goto push_this_token;
+							}
+						}
+						else if (Decimal::ToDecimal(right_obj)) {
+							auto obj = Decimal::Create(&left);
+							if (!obj)
+								this_token.SetValue(this_token.symbol == SYM_NOTEQUAL || this_token.symbol == SYM_NOTEQUALCASE);
+							else
+							{
+								obj->Eval(this_token, &right);
+								delete obj;
+							}
+							goto push_this_token;
+						}
+#endif // ENABLE_DECIMAL
 						this_token.SetValue((this_token.symbol != SYM_NOTEQUAL && this_token.symbol != SYM_NOTEQUALCASE) == (right_obj == left_obj));
 						goto push_this_token;
 					}
@@ -1148,6 +1213,22 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 				}
 
 				default:
+#ifdef ENABLE_DECIMAL
+					if (auto dec = Decimal::ToDecimal(left)) {
+						auto r = dec->Eval(this_token, &right);
+						if (r == 1) {
+							if (this_token.symbol == SYM_OBJECT)
+								if (release_object(sym_assign_var, this_token, to_free, to_free_count))
+									goto push_this_token;
+								else goto abort;
+							break;
+						}
+						else if (r == 0)
+							goto divide_by_zero;
+						else if (r == -2)
+							goto abort_with_exception;
+					}
+#endif // ENABLE_DECIMAL
 					// All other operators do not support non-numeric operands.
 					error_info = _T("Number");
 					error_value = right_is_number ? &left : &right; // Must use right_is_number since if it's false, left_is_number wasn't set.
