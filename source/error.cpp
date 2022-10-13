@@ -692,7 +692,7 @@ ResultType Script::ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR 
 #ifdef CONFIG_DEBUGGER
 	error.stack_index = (aException || !g_script->mIsReadyToExecute) ? -1 : int(g_Debugger->mStack.mTop - g_Debugger->mStack.mBottom);
 #endif
-	INT_PTR result = DialogBoxParam(NULL, MAKEINTRESOURCE(IDD_ERRORBOX), NULL, ErrorBoxProc, (LPARAM)&error);
+	INT_PTR result = DialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_ERRORBOX), NULL, ErrorBoxProc, (LPARAM)&error);
 	if (result == IDCONTINUE && aErrorType == FAIL_OR_OK)
 		return OK;
 	if (result == -1) // May have failed to show the custom dialog box.
