@@ -139,12 +139,12 @@ thread_local HWND g_hWndToolTip[MAX_TOOLTIPS] = {NULL};
 thread_local MsgMonitorList *g_MsgMonitor;
 
 // Init not needed for these:
-thread_local UCHAR g_SortCaseSensitive;
-thread_local bool g_SortNumeric;
-thread_local bool g_SortReverse;
-thread_local int g_SortColumnOffset;
-thread_local IObject *g_SortFunc;
-thread_local ResultType g_SortFuncResult;
+//thread_local UCHAR g_SortCaseSensitive;
+//thread_local bool g_SortNumeric;
+//thread_local bool g_SortReverse;
+//thread_local int g_SortColumnOffset;
+//thread_local IObject *g_SortFunc;
+//thread_local ResultType g_SortFuncResult;
 
 // Hot-string vars (initialized when ResetHook() is first called):
 thread_local TCHAR g_HSBuf[HS_BUF_SIZE];

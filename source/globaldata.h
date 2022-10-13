@@ -117,12 +117,13 @@ thread_local extern GuiType *g_firstGui, *g_lastGui;
 thread_local extern HWND g_hWndToolTip[MAX_TOOLTIPS];
 thread_local extern MsgMonitorList *g_MsgMonitor;
 
-thread_local extern UCHAR g_SortCaseSensitive;
-thread_local extern bool g_SortNumeric;
-thread_local extern bool g_SortReverse;
-thread_local extern int g_SortColumnOffset;
-thread_local extern IObject *g_SortFunc;
-thread_local extern ResultType g_SortFuncResult;
+// These are not required with qsort_s
+//thread_local extern UCHAR g_SortCaseSensitive;
+//thread_local extern bool g_SortNumeric;
+//thread_local extern bool g_SortReverse;
+//thread_local extern int g_SortColumnOffset;
+//thread_local extern IObject *g_SortFunc;
+//thread_local extern ResultType g_SortFuncResult;
 
 #define g_DerefChar   '%' // As of v2 these are constant, so even more parts of the code assume they
 #define g_EscapeChar  '`' // are at their usual default values to reduce code size/complexity.

@@ -711,7 +711,16 @@ BIF_DECL(BIF_SplitPath)
 
 
 
-int SortWithOptions(const void *a1, const void *a2)
+struct SortContext
+{
+	IObject *SortFunc;
+	ResultType Result;
+	int ColumnOffset;
+	UCHAR CaseSensitive;
+	bool Numeric;
+	bool Reverse;
+};
+int SortWithOptions(void *context, const void *a1, const void *a2)
 // Decided to just have one sort function since there are so many permutations.  The performance
 // will be a little bit worse, but it seems simpler to implement and maintain.
 // This function's input parameters are pointers to the elements of the array.  Since those elements
@@ -719,16 +728,19 @@ int SortWithOptions(const void *a1, const void *a2)
 {
 	LPTSTR sort_item1 = *(LPTSTR *)a1;
 	LPTSTR sort_item2 = *(LPTSTR *)a2;
-	if (g_SortColumnOffset > 0)
+	int ColumnOffset = ((SortContext *)context)->ColumnOffset;
+	bool Numeric = ((SortContext *)context)->Numeric;
+	bool Reverse = ((SortContext *)context)->Reverse;
+	if (ColumnOffset > 0)
 	{
 		// Adjust each string (even for numerical sort) to be the right column position,
 		// or the position of its zero terminator if the column offset goes beyond its length:
 		size_t length = _tcslen(sort_item1);
-		sort_item1 += (size_t)g_SortColumnOffset > length ? length : g_SortColumnOffset;
+		sort_item1 += (size_t)ColumnOffset > length ? length : ColumnOffset;
 		length = _tcslen(sort_item2);
-		sort_item2 += (size_t)g_SortColumnOffset > length ? length : g_SortColumnOffset;
+		sort_item2 += (size_t)ColumnOffset > length ? length : ColumnOffset;
 	}
-	if (g_SortNumeric) // Takes precedence over g_SortCaseSensitive
+	if (Numeric) // Takes precedence over g_SortCaseSensitive
 	{
 		// For now, assume both are numbers.  If one of them isn't, it will be sorted as a zero.
 		// Thus, all non-numeric items should wind up in a sequential, unsorted group.
@@ -738,21 +750,21 @@ int SortWithOptions(const void *a1, const void *a2)
 			return (sort_item1 > sort_item2) ? 1 : -1; // Stable sort.
 		// Otherwise, it's either greater or less than zero:
 		int result = (item1_minus_2 > 0.0) ? 1 : -1;
-		return g_SortReverse ? -result : result;
+		return Reverse ? -result : result;
 	}
 	// Otherwise, it's a non-numeric sort.
 	// v1.0.43.03: Added support the new locale-insensitive mode.
-	int result = (g_SortCaseSensitive != SCS_INSENSITIVE_LOGICAL)
-		? tcscmp2(sort_item1, sort_item2, g_SortCaseSensitive) // Resolve large macro only once for code size reduction.
+	int result = (((SortContext *)context)->CaseSensitive != SCS_INSENSITIVE_LOGICAL)
+		? tcscmp2(sort_item1, sort_item2, ((SortContext *)context)->CaseSensitive) // Resolve large macro only once for code size reduction.
 		: StrCmpLogicalW(sort_item1, sort_item2);
 	if (!result)
 		result = (sort_item1 > sort_item2) ? 1 : -1; // Stable sort.
-	return g_SortReverse ? -result : result;
+	return Reverse ? -result : result;
 }
 
 
 
-int SortByNakedFilename(const void *a1, const void *a2)
+int SortByNakedFilename(void *context, const void *a1, const void *a2)
 // See comments in prior function for details.
 {
 	LPTSTR sort_item1 = *(LPTSTR *)a1;
@@ -763,12 +775,13 @@ int SortByNakedFilename(const void *a1, const void *a2)
 	if (cp = _tcsrchr(sort_item2, '\\'))  // Assign
 		sort_item2 = cp + 1;
 	// v1.0.43.03: Added support the new locale-insensitive mode.
-	int result = (g_SortCaseSensitive != SCS_INSENSITIVE_LOGICAL)
-		? tcscmp2(sort_item1, sort_item2, g_SortCaseSensitive) // Resolve large macro only once for code size reduction.
+	auto CaseSensitive = ((SortContext *)context)->CaseSensitive;
+	int result = (CaseSensitive != SCS_INSENSITIVE_LOGICAL)
+		? tcscmp2(sort_item1, sort_item2, CaseSensitive) // Resolve large macro only once for code size reduction.
 		: StrCmpLogicalW(sort_item1, sort_item2);
 	if (!result)
 		result = (sort_item1 > sort_item2) ? 1 : -1; // Stable sort.
-	return g_SortReverse ? -result : result;
+	return ((SortContext *)context)->Reverse ? -result : result;
 }
 
 
@@ -785,16 +798,18 @@ struct sort_rand_type
 	};
 };
 
-int SortRandom(const void *a1, const void *a2)
+int SortRandom(void *context, const void *a1, const void *a2)
 // See comments in prior functions for details.
 {
 	return ((sort_rand_type *)a1)->rand - ((sort_rand_type *)a2)->rand;
 }
 
-int SortUDF(const void *a1, const void *a2)
+int SortUDF(void *context, const void *a1, const void *a2)
 // See comments in prior function for details.
 {
-	if (!g_SortFuncResult || g_SortFuncResult == EARLY_EXIT)
+	IObject *SortFunc = ((SortContext *)context)->SortFunc;
+	ResultType &SortFuncResult = ((SortContext *)context)->Result;
+	if (!SortFuncResult || SortFuncResult == EARLY_EXIT)
 		return 0;
 
 	// The following isn't necessary because by definition, the current thread isn't paused because it's the
@@ -805,8 +820,8 @@ int SortUDF(const void *a1, const void *a2)
 	LPTSTR aStr2 = *(LPTSTR *)a2;
 	ExprTokenType param[] = { aStr1, aStr2, __int64(aStr2 - aStr1) };
 	__int64 i64;
-	g_SortFuncResult = CallMethod(g_SortFunc, g_SortFunc, nullptr, param, _countof(param), &i64);
-	// An alternative to g_SortFuncResult using 'throw' to abort qsort() produced slightly
+	SortFuncResult = CallMethod(SortFunc, SortFunc, nullptr, param, _countof(param), &i64);
+	// An alternative to SortFuncResult using 'throw' to abort qsort() produced slightly
 	// smaller code, but in release builds the program crashed with code 0xC0000409 and the
 	// catch() block never executed.
 
@@ -826,20 +841,18 @@ BIF_DECL(BIF_Sort)
 	// Set defaults in case of early goto:
 	LPTSTR mem_to_free = NULL;
 	LPTSTR *item = NULL; // The index/pointer list used for the sort.
-	IObject *sort_func_orig = g_SortFunc; // Because UDFs can be interrupted by other threads -- and because UDFs can themselves call Sort with some other UDF (unlikely to be sure) -- backup & restore original g_SortFunc so that the "collapsing in reverse order" behavior will automatically ensure proper operation.
-	ResultType sort_func_result_orig = g_SortFuncResult;
-	g_SortFunc = NULL; // Now that original has been saved above, reset to detect whether THIS sort uses a UDF.
-	g_SortFuncResult = OK;
+	SortContext context;
 
 	_f_param_string(aContents, 0);
 	_f_param_string_opt(aOptions, 1);
 
 	// Resolve options.  First set defaults for options:
 	TCHAR delimiter = '\n';
-	g_SortCaseSensitive = SCS_INSENSITIVE;
-	g_SortNumeric = false;
-	g_SortReverse = false;
-	g_SortColumnOffset = 0;
+	context.SortFunc = NULL;
+	context.CaseSensitive = SCS_INSENSITIVE;
+	context.Numeric = false;
+	context.Reverse = false;
+	context.ColumnOffset = 0;
 	bool trailing_delimiter_indicates_trailing_blank_item = false, terminate_last_item_with_delimiter = false
 		, trailing_crlf_added_temporarily = false, sort_by_naked_filename = false, sort_random = false
 		, omit_dupes = false;
@@ -855,7 +868,7 @@ BIF_DECL(BIF_Sort)
 				if (!_tcsnicmp(cp+2, _T("Logical") + 1, 6)) // CLogical.  Using "Logical" + 1 instead of "ogical" was confirmed to eliminate one string from the binary (due to string pooling).
 				{
 					cp += 7;
-					g_SortCaseSensitive = SCS_INSENSITIVE_LOGICAL;
+					context.CaseSensitive = SCS_INSENSITIVE_LOGICAL;
 				}
 				else
 				{
@@ -863,21 +876,21 @@ BIF_DECL(BIF_Sort)
 						cp += 6;
 					else // CL
 						++cp;
-					g_SortCaseSensitive = SCS_INSENSITIVE_LOCALE;
+					context.CaseSensitive = SCS_INSENSITIVE_LOCALE;
 				}
 			}
 			else if (!_tcsnicmp(cp+1, _T("Off"), 3)) // COff.  Using ctoupper() here significantly increased code size.
 			{
 				cp += 3;
-				g_SortCaseSensitive = SCS_INSENSITIVE;
+				context.CaseSensitive = SCS_INSENSITIVE;
 			}
 			else if (cp[1] == '0') // C0
-				g_SortCaseSensitive = SCS_INSENSITIVE;
+				context.CaseSensitive = SCS_INSENSITIVE;
 			else // C  C1  COn
 			{
 				if (!_tcsnicmp(cp+1, _T("On"), 2)) // COn.  Using ctoupper() here significantly increased code size.
 					cp += 2;
-				g_SortCaseSensitive = SCS_SENSITIVE;
+				context.CaseSensitive = SCS_SENSITIVE;
 			}
 			break;
 		case 'D':
@@ -888,15 +901,15 @@ BIF_DECL(BIF_Sort)
 				delimiter = *cp;
 			break;
 		case 'N':
-			g_SortNumeric = true;
+			context.Numeric = true;
 			break;
 		case 'P':
 			// Use atoi() vs. ATOI() to avoid interpreting something like 0x01C as hex
 			// when in fact the C was meant to be an option letter:
-			g_SortColumnOffset = _ttoi(cp + 1);
-			if (g_SortColumnOffset < 1)
-				g_SortColumnOffset = 1;
-			--g_SortColumnOffset;  // Convert to zero-based.
+			context.ColumnOffset = _ttoi(cp + 1);
+			if (context.ColumnOffset < 1)
+				context.ColumnOffset = 1;
+			--context.ColumnOffset;  // Convert to zero-based.
 			break;
 		case 'R':
 			if (!_tcsnicmp(cp, _T("Random"), 6))
@@ -905,7 +918,7 @@ BIF_DECL(BIF_Sort)
 				cp += 5; // Point it to the last char so that the loop's ++cp will point to the character after it.
 			}
 			else
-				g_SortReverse = true;
+				context.Reverse = true;
 			break;
 		case 'U':  // Unique.
 			omit_dupes = true;
@@ -922,12 +935,12 @@ BIF_DECL(BIF_Sort)
 
 	if (!ParamIndexIsOmitted(2))
 	{
-		if (  !(g_SortFunc = ParamIndexToObject(2))  )
+		if (  !(context.SortFunc = ParamIndexToObject(2))  )
 		{
 			aResultToken.ParamError(2, aParam[2]);
 			goto end;
 		}
-		g_SortFunc->AddRef(); // Must be done in case the parameter was SYM_VAR and that var gets reassigned.
+		context.SortFunc->AddRef(); // Must be done in case the parameter was SYM_VAR and that var gets reassigned.
 	}
 	
 	if (!*aContents) // Input is empty, nothing to sort, return empty string.
@@ -1084,19 +1097,20 @@ BIF_DECL(BIF_Sort)
 
 	// Now aContents has been divided up based on delimiter.  Sort the array of pointers
 	// so that they indicate the correct ordering to copy aContents into output_var:
-	if (g_SortFunc) // Takes precedence other sorting methods.
+	if (context.SortFunc) // Takes precedence other sorting methods.
 	{
-		qsort((void *)item, item_count, item_size, SortUDF);
-		if (!g_SortFuncResult || g_SortFuncResult == EARLY_EXIT)
+		context.Result = OK;
+		qsort_s((void *)item, item_count, item_size, SortUDF, &context);
+		if (!context.Result || context.Result == EARLY_EXIT)
 		{
-			aResultToken.SetExitResult(g_SortFuncResult);
+			aResultToken.SetExitResult(context.Result);
 			goto end;
 		}
 	}
 	else if (sort_random) // Takes precedence over all remaining options.
-		qsort((void *)item, item_count, item_size, SortRandom);
+		qsort_s((void *)item, item_count, item_size, SortRandom, NULL);
 	else
-		qsort((void *)item, item_count, item_size, sort_by_naked_filename ? SortByNakedFilename : SortWithOptions);
+		qsort_s((void *)item, item_count, item_size, sort_by_naked_filename ? SortByNakedFilename : SortWithOptions, &context);
 
 	// Allocate space to store the result.
 	if (!TokenSetResult(aResultToken, NULL, aContents_length))
@@ -1132,15 +1146,15 @@ BIF_DECL(BIF_Sort)
 			// the dupe-removal feature would remove duplicate songs if they happen to be sorted
 			// to lie adjacent to each other, which would be useful to prevent the same song from
 			// playing twice in a row.
-			if (g_SortNumeric && !g_SortColumnOffset)
+			if (context.Numeric && !context.ColumnOffset)
 				// if g_SortColumnOffset is zero, fall back to the normal dupe checking in case its
 				// ever useful to anyone.  This is done because numbers in an offset column are not supported
 				// since the extra code size doensn't seem justified given the rarity of the need.
 				keep_this_item = (ATOF(*item_curr) != ATOF(item_prev)); // ATOF() ignores any trailing \r in CRLF mode, so no extra logic is needed for that.
-			else if (g_SortCaseSensitive == SCS_INSENSITIVE_LOGICAL)
+			else if (context.CaseSensitive == SCS_INSENSITIVE_LOGICAL)
 				keep_this_item = StrCmpLogicalW(*item_curr, item_prev);
 			else
-				keep_this_item = tcscmp2(*item_curr, item_prev, g_SortCaseSensitive); // v1.0.43.03: Added support for locale-insensitive mode.
+				keep_this_item = tcscmp2(*item_curr, item_prev, context.CaseSensitive); // v1.0.43.03: Added support for locale-insensitive mode.
 				// Permutations of sorting case sensitive vs. eliminating duplicates based on case sensitivity:
 				// 1) Sort is not case sens, but dupes are: Won't work because sort didn't necessarily put
 				//    same-case dupes adjacent to each other.
@@ -1194,14 +1208,12 @@ BIF_DECL(BIF_Sort)
 	// changed since it was originally set by the above call TokenSetResult.
 
 end:
-	if (!item)
+	if (item)
 		free(item);
 	if (mem_to_free)
 		free(mem_to_free);
-	if (g_SortFunc)
-		g_SortFunc->Release();
-	g_SortFunc = sort_func_orig;
-	g_SortFuncResult = sort_func_result_orig;
+	if (context.SortFunc)
+		context.SortFunc->Release();
 }
 
 

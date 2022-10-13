@@ -1030,7 +1030,7 @@ error:
     return NULL;
 }
 
-static int _compare(const void *a, const void *b)
+static int _compare(void *context, const void *a, const void *b)
 {
     const struct ExportNameEntry *p1 = (const struct ExportNameEntry*) a;
     const struct ExportNameEntry *p2 = (const struct ExportNameEntry*) b;
@@ -1093,9 +1093,9 @@ FARPROC MemoryGetProcAddress(HMEMORYMODULE mod, LPCSTR name)
                 entry->name = (const char *) (codeBase + (*nameRef));
                 entry->idx = *ordinal;
             }
-            qsort(module->nameExportsTable,
+            qsort_s(module->nameExportsTable,
                     exports->NumberOfNames,
-                    sizeof(struct ExportNameEntry), _compare);
+                    sizeof(struct ExportNameEntry), _compare, NULL);
         }
 
         // search function name in list of exported names with binary search
