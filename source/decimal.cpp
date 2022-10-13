@@ -179,7 +179,7 @@ void Decimal::carry(bool ignore_integer, bool fix)
 		for (i = str_size - 1; i > 0 && !res_str[i]; i--);
 		if (i = str_size - i - 1) {
 			if ((e += i) > 0 && ignore_integer)
-				i -= e, e = 0;
+				i -= (size_t)e, e = 0;
 			str_size -= i;
 		}
 		if (raw_size != str_size) {
@@ -193,7 +193,7 @@ void Decimal::carry(bool ignore_integer, bool fix)
 bool Decimal::is_integer()
 {
 	if (e > 0) {
-		mul_10exp(this, this, e), e = 0;
+		mul_10exp(this, this, (mpir_ui)e), e = 0;
 		return true;
 	}
 	else carry();
@@ -228,7 +228,7 @@ LPTSTR Decimal::to_string()
 	LPTSTR buf, p;
 
 	if (e > 0) {
-		p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (1 + str_size + (e < el ? e : el) + negative));
+		p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (size_t)(1 + str_size + (e < el ? e : el) + negative));
 		if (negative)
 			*p++ = '-';
 		if (str_size + e > 20 && e > el) {
@@ -247,8 +247,8 @@ LPTSTR Decimal::to_string()
 				*p++ = ch[res_str[i++]];
 			*p++ = '.';
 		}
-		else if (e < -18 && 2ull - e > str_size + el) {
-			p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (1 + el + str_size + negative));
+		else if (e < -18 && (size_t)(2ull - e) >(size_t)(str_size + el)) {
+			p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (size_t)(1 + el + str_size + negative));
 			if (negative)
 				*p++ = '-';
 			*p++ = ch[res_str[i++]];
@@ -398,7 +398,7 @@ int Decimal::div(Decimal *v, Decimal *a, Decimal *b, bool intdiv)
 	}
 
 	auto aw = mpz_sizeinbase(dd, 10), bw = mpz_sizeinbase(d, 10);
-	__int64 exp = 0;
+	mpir_si exp = 0;
 	int eq;
 	v->e = a->e - b->e;
 	if (exp = bw - aw) {
@@ -470,10 +470,10 @@ void Decimal::SetPrecision(ResultToken &aResultToken, ExprTokenType *aParam[], i
 	if (!TokenIsNumeric(*aParam[1]))
 		_f_throw_param(1, _T("Integer"));
 	aResultToken.SetValue(sPrec);
-	auto v = TokenToInt64(*aParam[1]);
+	auto v = (mpir_si)TokenToInt64(*aParam[1]);
 	sPrec = v ? v : 20;
 	if (aParamCount > 2 && aParam[2]->symbol != SYM_MISSING)
-		if ((sOutputPrec = TokenToInt64(*aParam[2])) < 0)
+		if ((sOutputPrec = (mpir_si)TokenToInt64(*aParam[2])) < 0)
 			sOutputPrec = -sOutputPrec;
 }
 
@@ -549,9 +549,9 @@ int Decimal::Eval(ExprTokenType &this_token, ExprTokenType *right_token)
 			if (right_token->symbol == SYM_INTEGER) {
 				if (right_token->value_int64 < 0)
 					if (this_token.symbol == SYM_POWER)
-						neg = true, n = -right_token->value_int64;
+						neg = true, n = (mpir_ui) - right_token->value_int64;
 					else return -2;
-				else n = right_token->value_int64;
+				else n = (mpir_ui)right_token->value_int64;
 			}
 			else if (right_token->symbol == SYM_FLOAT)
 				return -2;
@@ -581,7 +581,7 @@ int Decimal::Eval(ExprTokenType &this_token, ExprTokenType *right_token)
 			}
 		}
 		else {
-			__int64 diff;
+			mpir_si diff;
 			if (right_token->symbol == SYM_STRING) {
 				if (!tmp.assign(right_token->marker))
 					return -1;

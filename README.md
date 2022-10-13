@@ -15,9 +15,9 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 ## Changes from ahkdll
 
 - The object structure is the same as the AHK_L version
-- remove built-in variable `NULL`
-- remove standard library in autohotkey.exe resource, but libraries can still be loaded from resources.
-- remove `CriticalObject`, it is not a safe way to use objects in multithreading
+- Remove built-in variable `NULL`
+- Remove standard library in autohotkey.exe resource, but libraries can still be loaded from resources.
+- Remove `CriticalObject`, it is not a safe way to use objects in multithreading
 - Remove the same hot string that defined in multiple threads firing at the same time
 - `DynaCall` object has `Param[index]` property, used to retrieve and set default parameters, the index is the same as the position of the argument when it is called.
 - `CryptAES` and Zip functions, parameter `Size` is not needed when previous parameter is an `Object` with `Ptr` and `Size` properties.
@@ -30,6 +30,16 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - Added `__thiscall` calling conventions supported by `DllCall` and `DynaCall`, eg. `DllCall(func, params, 'thiscall')`, `DynaCall(func, 'ret_type=@params_type')`.
 - Added parameter type `struct` supported by `DllCall` and `DynaCall`, eg. Calls a function that needs a 10-byte structure argument and returns a 12-byte structure, `DllCall(func, 'struct10', Buffer(10), '12')`, `DynaCall(func, 'b12=b10')(Buffer(10))`.
 - Added support for custom types of `DllCall` and `ComCall`, `ComCall({index: 5, iid: '{xxxx...}'}, coclassptr, mytype := {ArgPassInfo: {NativeType: 'ptr', ScriptToNative: (v) => nativetype, NativeToScript: (v) => scripttype}}, param)`, the current type object can be obtained from `A_EventInfo` within the conversion function.
+
+- After beta.12
+  - Change `OnMessage(..., hwnd)` to `Gui.Prototype.OnMessage(EventName, Callback [, AddRemove])`, is similar to `Gui.Prototype.OnEvent(...)`
+  - Added `Decimal` class, supports arbitrary precision decimal operations, `MsgBox Decimal('0.1') + Decimal('0.2') = '0.3'`
+  - Added `Array.Prototype.Filter(callback: (value [, index]) => Integer) => Array`
+  - Added `Array.Prototype.FindIndex(callback: (value [, index]) => Integer, start_index := 1) => Array`, if `start_index` less than 0 then reverse lookup
+  - Added `Array.Prototype.IndexOf(val_to_find, start_index := 1) => Integer`
+  - Added `Array.Prototype.Join(separator := '') => String`
+  - Added `Array.Prototype.Map(callback: (value [, index]) => Integer) => Array`
+  - Added `Array.Prototype.Sort(callback?: (a, b) => Integer) => Array`, sort in place and return and the default is random sort
 
 ## Classes List
 ```typescript

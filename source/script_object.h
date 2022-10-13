@@ -582,7 +582,12 @@ public:
 		M_Delete,
 		M_Clone,
 		M___Enum,
-		M_Join
+		M_Filter,
+		M_FindIndex,
+		M_IndexOf,
+		M_Join,
+		M_Map,
+		M_Sort,
 	};
 	static ObjectMember sMembers[];
 	thread_local static Object *sPrototype;

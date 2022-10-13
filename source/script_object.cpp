@@ -2067,7 +2067,12 @@ ObjectMember Array::sMembers[] =
 	Object_Method(Pop, 0, 0),
 	Object_Method(Push, 0, MAXP_VARIADIC),
 	Object_Method(RemoveAt, 1, 2),
+	Object_Method(Filter, 1, 1),
+	Object_Method(FindIndex, 1, 2),
+	Object_Method(IndexOf, 1, 2),
 	Object_Method(Join, 0, 1),
+	Object_Method(Map, 1, 1),
+	Object_Method(Sort, 0, 1),
 };
 
 void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
@@ -2226,10 +2231,172 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 				tmp += TokenToString(token, buf);
 			tmp += js;
 		}
+		if (!tmp.data())
+			_o_return_retval;
 		tmp.size() -= _tcslen(js);
 		aResultToken.AcceptMem(tmp.data(), tmp.size());
 		tmp.release();
 		_o_return_retval;
+	}
+	
+	case M_Sort:
+	{
+		auto obj = ParamIndexToOptionalObject(0);
+		int (*cmp)(void *context, const void *a, const void *b);
+		struct Context {
+			IObject *func;
+			ResultType result;
+		} context;
+		if (obj)
+		{
+			if (!ValidateFunctor(obj, 2, aResultToken))
+				return;
+			context.func = obj;
+			context.result = OK;
+			cmp = [](void *context, const void *a, const void *b) {
+				auto &result = ((Context *)context)->result;
+				if (!result || result == EARLY_EXIT)
+					return 0;
+				__int64 i64;
+				ExprTokenType param[2];
+				((Variant *)a)->ToToken(param[0]);
+				((Variant *)b)->ToToken(param[1]);
+				auto func = ((Context *)context)->func;
+				result = CallMethod(func, func, nullptr, param, _countof(param), &i64);
+				int returned_int;
+				if (i64)
+					returned_int = i64 < 0 ? -1 : 1;
+				else
+					returned_int = a < b ? -1 : 1;
+				return returned_int;
+			};
+		}
+		else
+		{
+			cmp = [](void *context, const void *a, const void *b) {
+				__int64 rand;
+				GenRandom(&rand, sizeof(rand));
+				return rand & 1 ? 1 : -1;
+			};
+		}
+		qsort_s(mItem, mLength, sizeof(Variant), cmp, &context);
+		AddRef();
+		_o_return(this);
+	}
+
+	case M_FindIndex:
+	case M_IndexOf:
+	{
+		__int64 start = ParamIndexToOptionalInt64(1, 1), end, step = 1;
+		if (!start)
+			start = -1;
+		if (start > 0)
+			start--, end = mLength;
+		else
+			start = mLength - 1, end = step = -1;
+		if (aID == M_IndexOf) {
+			ExprTokenType find_token = *aParam[0];
+			if (find_token.symbol == SYM_VAR)
+				find_token.var->ToTokenSkipAddRef(find_token);
+			for (; start != end; start += step)
+			{
+				auto &it = mItem[start];
+				if (it.symbol != find_token.symbol)
+					continue;
+				if (it.symbol == SYM_STRING) {
+					if (!_tcsicmp(it.string, find_token.marker))
+						break;
+				}
+				else if (it.n_int64 == find_token.value_int64)
+					break;
+			}
+		}
+		else
+		{
+			auto obj = ParamIndexToObject(0);
+			ExprTokenType param[2];
+			__int64 retval;
+			int param_count = 1;
+			if (!obj)
+				_o_throw_param(0);
+			if (ValidateFunctor(obj, 2, aResultToken, nullptr, false) == OK)
+				param_count = 2;
+			else if (!ValidateFunctor(obj, 1, aResultToken))
+				return;
+			for (; start != end; start += step)
+			{
+				mItem[start].ToToken(param[0]);
+				param[1].SetValue(start + 1);
+				auto result = CallMethod(obj, obj, nullptr, param, param_count, &retval);
+				if (!result)
+					_o_return_FAIL;
+				if (result == EARLY_EXIT)
+				{
+					start = -1;
+					break;
+				}
+				if (retval)
+					break;
+			}
+		}
+		if (start == mLength)
+			_o_return(0);
+		_o_return(start + 1);
+	}
+
+	case M_Filter:
+	case M_Map:
+	{
+		auto obj = ParamIndexToObject(0);
+		int param_count = 1;
+		if (ValidateFunctor(obj, 2, aResultToken, nullptr, false) == OK)
+			param_count = 2;
+		else if (!ValidateFunctor(obj, 1, aResultToken))
+			return;
+		__int64 retval;
+		ExprTokenType param[2];
+		auto arr = Array::Create();
+		param[1].SetValue(0);
+		if (aID == M_Map)
+		{
+			ExprTokenType this_token(obj), *params[] = { param,param + 1 };
+			arr->SetLength(mLength);
+			for (auto &i = param[1].value_int64; i < mLength;)
+			{
+				mItem[i++].ToToken(param[0]);
+				auto result = obj->Invoke(aResultToken, IT_CALL, nullptr, this_token, params, param_count);
+				if (!result)
+				{
+					aResultToken.mem_to_free = nullptr;
+					arr->Release();
+					_o_return_FAIL;
+				}
+				if (result == EARLY_EXIT)
+				{
+					arr->SetLength((index_t)i);
+					aResultToken.SetResult(OK);
+					break;
+				}
+				arr->mItem[i - 1].Assign(aResultToken);
+				aResultToken.Free();
+			}
+			aResultToken.mem_to_free = nullptr;
+		}
+		else for (auto &i = param[1].value_int64; i < mLength;)
+		{
+			mItem[i++].ToToken(param[0]);
+			auto result = CallMethod(obj, obj, nullptr, param, param_count, &retval);
+			if (!result)
+			{
+				arr->Release();
+				_o_return_FAIL;
+			}
+			if (result == EARLY_EXIT)
+				break;
+			if (retval)
+				arr->Append(param[0]);
+		}
+		_o_return(arr);
 	}
 	}
 }

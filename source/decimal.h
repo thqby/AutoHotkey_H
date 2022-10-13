@@ -6,7 +6,7 @@
 class Decimal : public ObjectBase
 {
 	mpz_t z;
-	__int64 e;
+	mpir_si e;
 
 	static const mpir_si sCarryPrec = -4;
 	thread_local static mpir_si sPrec;

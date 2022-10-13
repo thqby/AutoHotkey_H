@@ -1148,7 +1148,7 @@ private:
 public:
 	TString() {}
 	~TString() { if (_p) free(_p); }
-	TCHAR* data() { _p[_len] = 0; return _p; }
+	TCHAR *data() { if (_p) _p[_len] = 0; return _p; }
 	size_t& size() { return _len; }
 	TString& append(ResultToken& token) {
 		if (token.marker_length == -1)
