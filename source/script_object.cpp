@@ -2066,7 +2066,8 @@ ObjectMember Array::sMembers[] =
 	Object_Method(InsertAt, 1, MAXP_VARIADIC),
 	Object_Method(Pop, 0, 0),
 	Object_Method(Push, 0, MAXP_VARIADIC),
-	Object_Method(RemoveAt, 1, 2)
+	Object_Method(RemoveAt, 1, 2),
+	Object_Method(Join, 0, 1),
 };
 
 void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
@@ -2198,6 +2199,38 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 	case M___Enum:
 		_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 1)
 			, static_cast<IndexEnumerator::Callback>(&Array::GetEnumItem)));
+
+	case M_Join:
+	{
+		auto js = ParamIndexToOptionalString(0);
+		auto buf = aResultToken.buf;
+		ExprTokenType token;
+		TString tmp;
+		for (size_t i = 0; i < mLength; i++)
+		{
+			mItem[i].ToToken(token);
+			if (token.symbol == SYM_OBJECT) {
+				ObjectToString(aResultToken, token, token.object);
+				if (aResultToken.Exited())
+					_o_return_retval;
+				if (aResultToken.symbol != SYM_STRING) {
+					aResultToken.Free();
+					aResultToken.SetValue(_T(""));
+					_o_throw_type(_T("String"), token);
+				}
+				tmp += aResultToken.marker;
+				if (aResultToken.mem_to_free)
+					free(aResultToken.mem_to_free), aResultToken.mem_to_free = nullptr;
+			}
+			else
+				tmp += TokenToString(token, buf);
+			tmp += js;
+		}
+		tmp.size() -= _tcslen(js);
+		aResultToken.AcceptMem(tmp.data(), tmp.size());
+		tmp.release();
+		_o_return_retval;
+	}
 	}
 }
 

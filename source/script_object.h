@@ -581,7 +581,8 @@ public:
 		M_Has,
 		M_Delete,
 		M_Clone,
-		M___Enum
+		M___Enum,
+		M_Join
 	};
 	static ObjectMember sMembers[];
 	thread_local static Object *sPrototype;
