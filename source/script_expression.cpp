@@ -698,7 +698,11 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 		}
 
 #ifdef ENABLE_DECIMAL
-		static auto release_object = [](Var *sym_assign_var, ExprTokenType &this_token, ExprTokenType **to_free, int &to_free_count) {
+		static auto release_object = [](Var *sym_assign_var, ExprTokenType &this_token, ExprTokenType **&to_free, int &to_free_count, ExprTokenType *stack_top) {
+			while (to_free_count && to_free[to_free_count - 1] != stack_top)
+				if (to_free[--to_free_count]->symbol == SYM_STRING)
+					free(to_free[to_free_count]->marker);
+				else to_free[to_free_count]->object->Release();
 			if (sym_assign_var) {
 				auto result = sym_assign_var->Assign(this_token);
 				this_token.object->Release();
@@ -708,10 +712,6 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 					this_token.SetVar(sym_assign_var);
 			}
 			else {
-				if (to_free_count)
-					if (to_free[--to_free_count]->symbol == SYM_STRING)
-						free(to_free[to_free_count]->marker);
-					else to_free[to_free_count]->object->Release();
 				to_free[to_free_count++] = &this_token;
 			}
 			return 1;
@@ -772,7 +772,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 #ifdef ENABLE_DECIMAL
 				if (auto dec = Decimal::ToDecimal(right))
 					if (dec->Eval(this_token) == 1)
-						if (release_object(sym_assign_var, this_token, to_free, to_free_count))
+						if (release_object(sym_assign_var, this_token, to_free, to_free_count, stack[stack_count - 1]))
 							goto push_this_token;
 						else goto abort;
 #endif // ENABLE_DECIMAL
@@ -792,7 +792,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 #ifdef ENABLE_DECIMAL
 				if (auto dec = Decimal::ToDecimal(right))
 					if (dec->Eval(this_token) == 1)
-						if (release_object(sym_assign_var, this_token, to_free, to_free_count))
+						if (release_object(sym_assign_var, this_token, to_free, to_free_count, stack[stack_count - 1]))
 							goto push_this_token;
 						else goto abort;
 #endif // ENABLE_DECIMAL
@@ -843,7 +843,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 #ifdef ENABLE_DECIMAL
 				if (auto dec = Decimal::ToDecimal(right))
 					if (dec->Eval(this_token) == 1)
-						if (release_object(sym_assign_var, this_token, to_free, to_free_count))
+						if (release_object(sym_assign_var, this_token, to_free, to_free_count, stack[stack_count - 1]))
 							goto push_this_token;
 						else goto abort;
 #endif // ENABLE_DECIMAL
@@ -1219,7 +1219,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 						auto r = dec->Eval(this_token, &right);
 						if (r == 1) {
 							if (this_token.symbol == SYM_OBJECT)
-								if (release_object(sym_assign_var, this_token, to_free, to_free_count))
+								if (release_object(sym_assign_var, this_token, to_free, to_free_count, stack[stack_count - 1]))
 									goto push_this_token;
 								else goto abort;
 							break;
