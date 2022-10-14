@@ -373,7 +373,7 @@
       </ClCompile>
     </ItemGroup>
   </Target>
-  <Target Name="SetAhkVersion" Condition="Exists('@(AhkVersionInput)')" BeforeTargets="PrepareForBuild">
+  <Target Name="SetAhkVersion" Condition="!$(ConfigDebug) AND Exists('@(AhkVersionInput)')" BeforeTargets="PrepareForBuild">
     <Exec Condition="'$(RawAhkVersion)'==''" Command="git describe --dirty --match v*" ConsoleToMSBuild="true" IgnoreExitCode="true" EchoOff="true">
       <Output PropertyName="GitDescription" TaskParameter="ConsoleOutput" />
     </Exec>

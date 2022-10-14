@@ -446,10 +446,10 @@ int MainExecuteScript()
 unsigned __stdcall ThreadMain(LPTSTR *data)
 {
 	size_t len = (size_t)data[0];
-	TextMem::Buffer buf(malloc((len + MAX_INTEGER_LENGTH + 1) * sizeof(TCHAR)));
-	if (!buf.mBuffer)
+	auto buf = (LPTSTR)malloc((len + MAX_INTEGER_LENGTH + 1) * sizeof(TCHAR));
+	if (!buf)
 		return CRITICAL_ERROR;
-	LPTSTR lpScript = (LPTSTR)buf.mBuffer + MAX_INTEGER_LENGTH, lpTitle = _T("AutoHotkey");
+	LPTSTR lpScript = buf + MAX_INTEGER_LENGTH, lpTitle = _T("AutoHotkey");
 	int argc = 0;
 	LPTSTR* argv = NULL;
 	TCHAR filepath[MAX_PATH];
@@ -460,13 +460,13 @@ unsigned __stdcall ThreadMain(LPTSTR *data)
 	if (data[2])
 		argv = CommandLineToArgvW(data[2], &argc);
 	if (data[1])
-		_tcscpy(lpScript, data[1]), len -= lpScript - (LPTSTR)buf.mBuffer - MAX_INTEGER_LENGTH;
+		_tcscpy(lpScript, data[1]), len -= lpScript - buf - MAX_INTEGER_LENGTH;
 	else
 		lpScript = _T("Persistent"), len = 11;
 
 	auto lps = lpScript + crypt::linear_congruent_generator((int)(ULONG_PTR)lpScript & 8);
 	_stprintf(filepath, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, encrypt ? lps : lpScript, encrypt ? 0 : len * sizeof(TCHAR));
-	sntprintf((LPTSTR)buf.mBuffer, MAX_INTEGER_LENGTH, _T("ahk%d"), GetCurrentThreadId());
+	sntprintf(buf, MAX_INTEGER_LENGTH, _T("ahk%d"), GetCurrentThreadId());
 	HANDLE hEvent = OpenEvent(EVENT_MODIFY_STATE, true, buf);
 
 	InitializeCriticalSection(&g_CriticalRegExCache); // v1.0.45.04: Must be done early so that it's unconditional, so that DeleteCriticalSection() in the script destructor can also be unconditional (deleting when never initialized can crash, at least on Win 9x).
@@ -668,6 +668,7 @@ err:
 	}
 	g_script->TerminateApp(EXIT_EXIT, g_ExitCode = CRITICAL_ERROR);
 exit:
+	free(buf);
 	if (argv)
 		LocalFree(argv); // free memory allocated by CommandLineToArgvW
 	return g_ExitCode;

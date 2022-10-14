@@ -88,7 +88,8 @@ void *SimpleHeap::Malloc(size_t aSize)
 			}
 			else
 				return NULL;
-		if (!(sLast->mNextBlock = CreateBlock()))
+		auto &last_next = sLast->mNextBlock;
+		if (!(last_next = CreateBlock()))
 			return NULL;
 	}
 	sMostRecentlyAllocated = sLast->mFreeMarker; // THIS IS NOW THE NEWLY ALLOCATED BLOCK FOR THE CALLER, which is 32-bit aligned because the previous call to this function (i.e. the logic below) set it up that way.

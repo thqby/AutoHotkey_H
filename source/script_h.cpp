@@ -3674,6 +3674,8 @@ bool Worker::New(DWORD aThreadID)
 				mIndex = i;
 				break;
 			}
+		if (mIndex == -1 && aThreadID < MAX_AHK_THREADS && g_ahkThreads[aThreadID].Hwnd)
+			mIndex = aThreadID;
 	}
 	if (mIndex != -1 && (mThread = OpenThread(THREAD_ALL_ACCESS, TRUE, mThreadID = g_ahkThreads[mIndex].ThreadID))) {
 		mHwnd = g_ahkThreads[mIndex].Hwnd;

@@ -19,7 +19,7 @@ class Decimal : public ObjectBase
 	void assign(const char *str, size_t len, int base = 10);
 	void carry(bool ignore_integer = true, bool fix = false);
 	bool is_integer();
-	LPTSTR to_string();
+	LPTSTR to_string(size_t *aLength = nullptr);
 
 	static void mul_10exp(Decimal *v, Decimal *a, mpir_ui e);
 	static void add_or_sub(Decimal *v, Decimal *a, Decimal *b, int add = 1);
@@ -44,6 +44,7 @@ public:
 	static Decimal *ToDecimal(IObject *obj) { return *(void **)obj == sVTable ? static_cast<Decimal *>(obj) : nullptr; }
 	static Decimal *ToDecimal(ExprTokenType &aToken);
 	ResultType ToToken(ExprTokenType &aToken);
+	bool Assign(ExprTokenType *aToken);
 
 	IObject_Type_Impl("Decimal");
 	::Object *Base() { return sPrototype; }

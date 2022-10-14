@@ -200,7 +200,7 @@ bool Decimal::is_integer()
 	return e == 0;
 }
 
-LPTSTR Decimal::to_string()
+LPTSTR Decimal::to_string(size_t *aLength)
 {
 	static char ch[] = "0123456789";
 	auto sz = z->_mp_size;
@@ -219,10 +219,10 @@ LPTSTR Decimal::to_string()
 			res_buf[0] = 0;
 			for (auto p = res_str + str_size - 1; ++(*p) == 10; *p-- = 0);
 			if (res_buf[0])
-				res_str--, str_size++;
+				res_str--, e++;
 		}
 	}
-	for (; --str_size > 1 && !res_str[str_size]; e++);
+	for (; --str_size > 0 && !res_str[str_size]; e++);
 	str_size++;
 	auto el = e == 0 ? 0 : (__int64)log10(double(e > 0 ? e : -e)) + 3;
 	LPTSTR buf, p;
@@ -287,6 +287,8 @@ LPTSTR Decimal::to_string()
 		*p = 0;
 	}
 	free(res_buf);
+	if (aLength)
+		*aLength = p - buf;
 	return buf;
 }
 
@@ -389,7 +391,7 @@ int Decimal::div(Decimal *v, Decimal *a, Decimal *b, bool intdiv)
 			mpz_tdiv_qr(v->z, rem.z, a->z, quot.z);
 			v->e = 0;
 		}
-		else a->copy_to(v);
+		else a->copy_to(v), v->e -= b->e;
 		if (d->_mp_size < 0)
 			v->z->_mp_size = -v->z->_mp_size;
 		if (sPrec < 0)
@@ -407,20 +409,14 @@ int Decimal::div(Decimal *v, Decimal *a, Decimal *b, bool intdiv)
 			mul_10exp(aa = &quot, a, exp), bb = b;
 		else
 			mul_10exp(bb = &quot, b, -exp), aa = a;
-		eq = mpz_cmp(aa->z, bb->z);
+		eq = mpz_cmpabs(aa->z, bb->z);
 	}
-	else eq = mpz_cmp(a->z, b->z);
+	else eq = mpz_cmpabs(a->z, b->z);
 	if (eq == 0) {
-		if (exp >= 0) {
-			v->z->_mp_d[0] = v->z->_mp_size = 1;
-			v->e = -exp;
-			return 1;
-		}
-		else {
-			mpz_ui_pow_ui(v->z, 10, -exp);
-			v->e = 0;
-			return 1;
-		}
+		v->z->_mp_d[0] = 1;
+		v->z->_mp_size = (dd->_mp_size ^ d->_mp_size) < 0 ? -1 : 1;
+		v->e -= exp;
+		return 1;
 	}
 
 	exp += (sPrec < 0 ? -sPrec : sPrec) - (eq > 0);
@@ -477,42 +473,48 @@ void Decimal::SetPrecision(ResultToken &aResultToken, ExprTokenType *aParam[], i
 			sOutputPrec = -sOutputPrec;
 }
 
+bool Decimal::Assign(ExprTokenType *aToken)
+{
+	ExprTokenType tmp;
+	if (!aToken)
+		aToken = &tmp, tmp.SetValue(0);
+	else if (aToken->symbol == SYM_VAR)
+		aToken->var->ToTokenSkipAddRef(tmp), aToken = &tmp;
+	switch (aToken->symbol)
+	{
+	case SYM_STRING:
+		return assign(aToken->marker);
+	case SYM_INTEGER:
+		assign(aToken->value_int64);
+		return true;
+	case SYM_FLOAT:
+		assign(aToken->value_double);
+		return true;
+	case SYM_OBJECT:
+		if (auto obj = ToDecimal(aToken->object)) {
+			obj->copy_to(this);
+			return true;
+		}
+	default:
+		return false;
+	}
+}
+
 Decimal *Decimal::Create(ExprTokenType *aToken)
 {
 	auto obj = new Decimal;
-	if (aToken) {
-		switch (aToken->symbol)
-		{
-		case SYM_INTEGER:obj->assign(aToken->value_int64); break;
-		case SYM_FLOAT:obj->assign(aToken->value_double); break;
-		case SYM_STRING:
-			if (obj->assign(aToken->marker))
-				break;
-
-		default:
-			if (auto t = ToDecimal(*aToken)) {
-				obj->e = t->e;
-				mpz_set(obj->z, t->z);
-			}
-			else {
-				delete obj;
-				obj = nullptr;
-			}
-			break;
-		}
+	if (obj && !obj->Assign(aToken)) {
+		delete obj;
+		return nullptr;
 	}
 	return obj;
 }
 
 void Decimal::Create(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
 {
-	ExprTokenType val, *aToken = aParam[1];
-	if (aToken->symbol == SYM_VAR)
-		aToken->var->ToTokenSkipAddRef(val), aToken = &val;
 	if (auto obj = Decimal::Create(aParam[1]))
-		aResultToken.SetValue(obj);
-	else
-		_f_throw_param(0, _T("Number"));
+		_o_return(obj);
+	_o_throw_param(1, _T("Number"));
 }
 
 void Decimal::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
@@ -521,7 +523,7 @@ void Decimal::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTy
 	{
 	case M_ToString: {
 		aResultToken.symbol = SYM_STRING;
-		aResultToken.mem_to_free = aResultToken.marker = to_string();
+		aResultToken.mem_to_free = aResultToken.marker = to_string(&aResultToken.marker_length);
 		break;
 	}
 	default:
@@ -699,6 +701,7 @@ ResultType Decimal::ToToken(ExprTokenType &aToken)
 	}
 	return OK;
 }
+
 
 void *Decimal::sVTable = getVTable();
 thread_local Object *Decimal::sPrototype;

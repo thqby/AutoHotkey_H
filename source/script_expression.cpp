@@ -1005,19 +1005,14 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 						if (left_obj) {
 							if (auto obj = Decimal::ToDecimal(left_obj)) {
 								if (obj->Eval(this_token, &right) != 1)
-									this_token.SetValue(0);
+									this_token.SetValue(this_token.symbol == SYM_NOTEQUAL || this_token.symbol == SYM_NOTEQUALCASE);
 								goto push_this_token;
 							}
 						}
 						else if (Decimal::ToDecimal(right_obj)) {
-							auto obj = Decimal::Create(&left);
-							if (!obj)
+							Decimal tmp;
+							if (!tmp.Assign(&left) || tmp.Eval(this_token, &right) != 1)
 								this_token.SetValue(this_token.symbol == SYM_NOTEQUAL || this_token.symbol == SYM_NOTEQUALCASE);
-							else
-							{
-								obj->Eval(this_token, &right);
-								delete obj;
-							}
 							goto push_this_token;
 						}
 #endif // ENABLE_DECIMAL
@@ -1215,7 +1210,12 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 
 				default:
 #ifdef ENABLE_DECIMAL
-					if (auto dec = Decimal::ToDecimal(left)) {
+				{
+					Decimal tmp;
+					auto dec = Decimal::ToDecimal(left);
+					if (!dec && Decimal::ToDecimal(right) && tmp.Assign(&left))
+						dec = &tmp;
+					if (dec) {
 						auto r = dec->Eval(this_token, &right);
 						if (r == 1) {
 							if (this_token.symbol == SYM_OBJECT)
@@ -1229,6 +1229,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 						else if (r == -2)
 							goto abort_with_exception;
 					}
+				}
 #endif // ENABLE_DECIMAL
 					// All other operators do not support non-numeric operands.
 					error_info = _T("Number");

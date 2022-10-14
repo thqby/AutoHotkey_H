@@ -1260,6 +1260,12 @@ int Debugger::WritePropertyXml(PropertyInfo &aProp)
 	case SYM_FLOAT: type = "float"; break;
 
 	case SYM_OBJECT:
+		if (auto obj = Decimal::ToDecimal(aProp.value.object)) {
+			obj->Invoke(aProp.value, Decimal::M_ToString, IT_CALL, nullptr, 0);
+			obj->Release();
+			type = "float";
+			break;
+		}
 		// Recursively dump object.
 		return WritePropertyXml(aProp, aProp.value.object);
 
