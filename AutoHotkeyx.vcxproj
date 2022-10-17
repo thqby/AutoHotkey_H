@@ -284,6 +284,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="$(ConfigDebug)">
     <ExternalIncludePath>D:\Program Files\Visual Leak Detector\include;$(ExternalIncludePath)</ExternalIncludePath>
+    <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <CustomBuild>
@@ -298,6 +299,9 @@
     <ClCompile>
       <TreatWarningAsError Condition="!$(ConfigDebug)">true</TreatWarningAsError>
       <EnableFiberSafeOptimizations Condition="$(ConfigRelease)">true</EnableFiberSafeOptimizations>
+    </ClCompile>
+    <ClCompile>
+      <DebugInformationFormat Condition="$(ConfigDebug)">EditAndContinue</DebugInformationFormat>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>

@@ -43,6 +43,25 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 
 ## Classes List
 ```typescript
+class Decimal {
+  /**
+   * Sets the computation precision and tostring() precision
+   * @param prec Significant digits, greater than zero only affects division
+   * @param outputprec tostring() If it is greater than 0, it is reserved to n decimal places. If less than 0, retain n significant digits
+   * @return Returns the old prec value
+   */
+  static SetPrecision(prec := 20, outputprec := 0) => Integer
+
+  // Converts integer, float, and numeric strings to Decimal object
+  // Add, subtract, multiply and divide as with numbers
+  static Call(val?) => Decimal
+
+  ToString() => String
+
+  // Convert to ahk value, integers outside the __int64 range are converted to double
+  // Number(decimal_obj) => Integer | Float
+}
+
 class JSON {
   // JSON.stringify([JSON.null,JSON.true,JSON.false]) == '[null,true,false]'
   // !JSON.null == true

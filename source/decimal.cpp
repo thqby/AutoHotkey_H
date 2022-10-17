@@ -83,7 +83,7 @@ bool Decimal::assign(LPCTSTR str)
 	//wcslen
 	size_t len = _tcslen(str);
 	size_t dot = 0, e_pos = 0, i;
-	char *buf = (char *)malloc(len + 2), *p = buf;
+	char *buf = (char *)_malloca(len + 2), *p = buf;
 	int base = 10;
 	if (!buf)
 		return false;
@@ -119,16 +119,20 @@ bool Decimal::assign(LPCTSTR str)
 				break;
 			e = 0;
 		}
-		free(buf);
+		_freea(buf);
 		return false;
 	}
 	*p = 0;
 	if (!e_pos && dot)
 		e = dot - len;
+	for (; --p > buf && !*p; e++);
+	p++;
 	assign(buf, p - buf, base);
-	if (negative)
+	if (!z->_mp_size)
+		e = 0;
+	else if (negative)
 		z->_mp_size = -z->_mp_size;
-	free(buf);
+	_freea(buf);
 	return true;
 }
 
@@ -138,6 +142,7 @@ void Decimal::carry(bool ignore_integer, bool fix)
 		e = 0;
 		return;
 	}
+	auto prec = sPrec < 0 ? -sPrec : sPrec;
 	if (z->_mp_size == 1) {
 		auto &p = *z->_mp_d;
 		if (!ignore_integer)
@@ -151,7 +156,7 @@ void Decimal::carry(bool ignore_integer, bool fix)
 			}
 		if (!fix)
 			return;
-		auto c = (mpir_si)log10(double(p)) + 1 + sPrec;
+		auto c = (mpir_si)log10(double(p)) + 1 - prec;
 		if (c > 0) {
 			mp_limb_t t = 1;
 			for (auto i = c; i--; t *= 10);
@@ -163,16 +168,18 @@ void Decimal::carry(bool ignore_integer, bool fix)
 	}
 	else if (fix || (z->_mp_d[0] & 1)) {
 		auto sz = z->_mp_size < 0 ? -z->_mp_size : z->_mp_size;
-		auto res_buf = (unsigned char *)malloc((size_t)(0.3010299956639811 * GMP_NUMB_BITS * sz + 3)), res_str = res_buf + 1;
+		auto res_buf = (unsigned char *)_malloca(size_t(3 + sz * (__gmpn_bases[10].chars_per_bit_exactly * GMP_NUMB_BITS + SIZEOF_MP_LIMB_T)));
 		if (!res_buf)
 			return;
-		size_t str_size = mpn_get_str(res_str, 10, z->_mp_d, sz), raw_size = str_size, i;
-		if (fix && (size_t)-sPrec < str_size) {
-			e += str_size + sPrec;
-			if (res_str[str_size = -sPrec] > 4) {
-				res_buf[0] = 0;
+		auto res_str = res_buf + 1 + sz * SIZEOF_MP_LIMB_T, xp = res_buf;
+		memcpy(xp, z->_mp_d, sz * SIZEOF_MP_LIMB_T);
+		size_t str_size = mpn_get_str(res_str, 10, (mp_limb_t*)xp, sz), raw_size = str_size, i;
+		if (fix && (size_t)prec < str_size) {
+			e += str_size - prec;
+			if (res_str[str_size = prec] > 4) {
+				res_str[-1] = 0;
 				for (auto p = res_str + str_size - 1; ++(*p) == 10; *p-- = 0);
-				if (res_buf[0])
+				if (res_str[-1])
 					res_str--, str_size++;
 			}
 		}
@@ -186,7 +193,7 @@ void Decimal::carry(bool ignore_integer, bool fix)
 			auto sz = (int)mpn_set_str(z->_mp_d, res_str, str_size, 10);
 			z->_mp_size = z->_mp_size < 0 ? -sz : sz;
 		}
-		free(res_buf);
+		_freea(res_buf);
 	}
 }
 
@@ -200,93 +207,173 @@ bool Decimal::is_integer()
 	return e == 0;
 }
 
-LPTSTR Decimal::to_string(size_t *aLength)
+LPTSTR Decimal::to_string(size_t *aLength, mpir_si *prec)
 {
 	static char ch[] = "0123456789";
 	auto sz = z->_mp_size;
 	bool zs = false, negative = false;
 	if (sz < 0)
 		sz = -sz, negative = true;
-	auto res_buf = (unsigned char *)malloc((size_t)(0.3010299956639811 * GMP_NUMB_BITS * sz + 3));
+	else if (sz == 0)
+		e = 0;
+	auto res_buf = (unsigned char *)_malloca(size_t(2 + sz * (__gmpn_bases[10].chars_per_bit_exactly * GMP_NUMB_BITS + SIZEOF_MP_LIMB_T)));
 	if (!res_buf)
 		return nullptr;
-	auto res_str = res_buf + 1;
 	auto e = this->e;
-	size_t str_size = mpn_get_str(res_str, 10, z->_mp_d, sz), i = 0;
-	if (sOutputPrec > 0 && (size_t)sOutputPrec < str_size) {
-		e += str_size - sOutputPrec;
-		if (res_str[str_size = sOutputPrec] > 4) {
-			res_buf[0] = 0;
-			for (auto p = res_str + str_size - 1; ++(*p) == 10; *p-- = 0);
-			if (res_buf[0])
-				res_str--, e++;
-		}
-	}
-	for (; --str_size > 0 && !res_str[str_size]; e++);
-	str_size++;
-	auto el = e == 0 ? 0 : (__int64)log10(double(e > 0 ? e : -e)) + 3;
+	auto res_str = res_buf + sz * SIZEOF_MP_LIMB_T, xp = res_buf;
+	memcpy(xp, z->_mp_d, sz * SIZEOF_MP_LIMB_T);
+	size_t str_size = mpn_get_str(res_str, 10, (mp_limb_t*)xp, sz), i = 0;
+	mpir_si outputprec = prec ? *prec : sOutputPrec, ws = 0;
 	LPTSTR buf, p;
-
-	if (e > 0) {
-		p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (size_t)(1 + str_size + (e < el ? e : el) + negative));
-		if (negative)
-			*p++ = '-';
-		if (str_size + e > 20 && e > el) {
-			*p++ = ch[res_str[i++]];
-			*p++ = '.';
-			zs = true;
+	if (outputprec > 0) {
+		ws = outputprec;
+		mpir_si d = (mpir_si)str_size + e, l;
+		if (d > 0)
+			l = outputprec + d + 3 + negative;
+		else
+			l = outputprec + 4 + negative;
+		outputprec = -outputprec - d;
+		p = buf = (LPTSTR)malloc(sizeof(TCHAR) * l);
+		if (outputprec >= 0) {
+			if (negative && !outputprec && res_str[0] > 4)
+				*p++ = '-';
+			*p++ = '0', *p++ = '.';
+			for (mpir_si i = 0; i < ws; i++)
+				*p++ = '0';
+			if (!outputprec && res_str[0] > 4)
+				p[-1]++;
+			*p = 0, ws = -1;
 		}
 	}
-	else if (e < 0) {
-		el++;
-		if ((size_t)-e < str_size) {
-			p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (2 + str_size + negative));
-			if (negative)
-				*p++ = '-';
-			for (size_t n = str_size + e; i < n;)
-				*p++ = ch[res_str[i++]];
-			*p++ = '.';
+	if (outputprec < 0) {
+		outputprec = -outputprec;
+		if ((size_t)outputprec < str_size) {
+			e += str_size - outputprec;
+			if (res_str[str_size = (size_t)outputprec] > 4) {
+				for (auto p = res_str + str_size - 1; ++(*p) == 10 && p > res_str; *p-- = 0);
+				if (res_str[0] == 10)
+					e += str_size, str_size = res_str[0] = 1;
+			}
 		}
-		else if (e < -18 && (size_t)(2ull - e) >(size_t)(str_size + el)) {
-			p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (size_t)(1 + el + str_size + negative));
+	}
+	if (ws) {
+		if (ws > 0) {
+			__int64 d = (__int64)str_size + e, i = 0;
 			if (negative)
 				*p++ = '-';
-			*p++ = ch[res_str[i++]];
-			*p++ = '.';
-			zs = true;
+			if (d > 0) {
+				auto dl = min(d, (__int64)str_size);
+				for (; i < dl; i++)
+					*p++ = ch[res_str[i]];
+				for (; i < d; i++)
+					*p++ = '0';
+				*p++ = '.';
+				i = 0;
+				auto src = res_str + dl;
+				dl = min(ws, __int64(str_size - dl));
+				for (; i < dl; i++)
+					*p++ = ch[*src++];
+			}
+			else {
+				*p++ = '0', *p++ = '.';
+				for (d = -d; i < d; i++)
+					*p++ = '0';
+				auto dl = min(ws - d, (__int64)str_size) + i;
+				for (auto src = res_str; i < dl; i++)
+					*p++ = ch[*src++];
+			}
+			for (; i < ws; i++)
+				*p++ = '0';
+			*p = 0;
+		}
+	}
+	else {
+		for (; --str_size > 0 && !res_str[str_size]; e++);
+		str_size++;
+
+		auto el = e == 0 ? 0 : (__int64)log10(double(e > 0 ? e : -e)) + 3;
+		size_t yxsize = outputprec ? outputprec + 1 : str_size;
+		bool has_dot = false;
+		if (e > 0) {
+			if (outputprec && str_size + e > size_t(outputprec) || str_size + e > 20 && e > el) {
+				p = buf = (LPTSTR)malloc(sizeof(TCHAR) * size_t(1 + yxsize + el + negative));
+				if (negative)
+					*p++ = '-';
+				*p++ = ch[res_str[i++]];
+				*p++ = '.', has_dot = true;
+				zs = true;
+			}
+			else {
+				p = buf = (LPTSTR)malloc(sizeof(TCHAR) * size_t(1 + yxsize + e + negative));
+				if (negative)
+					*p++ = '-';
+			}
+		}
+		else if (e < 0) {
+			el++;
+			if ((size_t)-e < str_size) {
+				p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (2 + yxsize + negative));
+				if (negative)
+					*p++ = '-';
+				for (size_t n = str_size + e; i < n;)
+					*p++ = ch[res_str[i++]];
+				*p++ = '.', has_dot = true;
+			}
+			else if (e < -18 && size_t(2ull - e) > size_t(str_size + el)) {
+				p = buf = (LPTSTR)malloc(sizeof(TCHAR) * size_t(1 + el + yxsize + negative));
+				if (negative)
+					*p++ = '-';
+				*p++ = ch[res_str[i++]];
+				*p++ = '.', has_dot = true;
+				zs = true;
+			}
+			else {
+				p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (3 - e + yxsize + negative));
+				if (negative)
+					*p++ = '-';
+				*p++ = '0';
+				*p++ = '.', has_dot = true;
+				for (size_t n = -e - str_size; n > 0; n--)
+					*p++ = '0';
+			}
 		}
 		else {
-			p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (3 - e + str_size + negative));
+			p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (1 + yxsize + negative));
 			if (negative)
 				*p++ = '-';
-			*p++ = '0';
-			*p++ = '.';
-			for (size_t n = -e - str_size; n > 0; n--)
-				*p++ = '0';
+		}
+		for (size_t n = str_size; i < n;)
+			*p++ = ch[res_str[i++]];
+		if (i < size_t(outputprec)) {
+			auto end = size_t(outputprec);
+			if (str_size + e == end)
+				while (e > 0)
+					*p++ = '0', e--, i++;
+			if (i < end) {
+				if (!has_dot)
+					*p++ = '.';
+				for (; i < end; i++)
+					*p++ = '0';
+			}
+		}
+		if (zs) {
+			if (p[-1] == '.')
+				p--, has_dot = false;
+			*p++ = 'e';
+			if (e < 0)
+				*p++ = '-', e = -e, el--;
+			p += el - 2;
+			*p = 0;
+			for (auto pp = p; e;)
+				*--pp = (e % 10) + '0', e /= 10;
+		}
+		else {
+			while (e > 0)
+				*p++ = '0', e--;
+			*p = 0;
 		}
 	}
-	else {
-		p = buf = (LPTSTR)malloc(sizeof(TCHAR) * (1 + str_size + negative));
-		if (negative)
-			*p++ = '-';
-	}
-	for (size_t n = str_size; i < n;)
-		*p++ = ch[res_str[i++]];
-	if (zs) {
-		*p++ = 'e';
-		if (e < 0)
-			*p++ = '-', e = -e, el--;
-		p += el - 2;
-		*p = 0;
-		while (e)
-			*--p = (e % 10) + '0', e /= 10;
-	}
-	else {
-		while (e > 0)
-			*p++ = '0', e--;
-		*p = 0;
-	}
-	free(res_buf);
+	_freea(res_buf);
 	if (aLength)
 		*aLength = p - buf;
 	return buf;
@@ -385,17 +472,28 @@ int Decimal::div(Decimal *v, Decimal *a, Decimal *b, bool intdiv)
 	}
 
 	Decimal quot, rem;
-	if (d->_mp_d[0] == 1 && (d->_mp_size == 1 || d->_mp_size == -1)) {
-		if (intdiv && a->e < 0) {
-			mpz_ui_pow_ui(quot.z, 10, -a->e);
-			mpz_tdiv_qr(v->z, rem.z, a->z, quot.z);
-			v->e = 0;
+	if (intdiv) {
+		auto ediff = a->e - b->e;
+		if (ediff < 0) {
+			mpz_ui_pow_ui(quot.z, 10, -ediff);
+			mpz_tdiv_qr(dd = v->z, rem.z, a->z, quot.z);
 		}
-		else a->copy_to(v), v->e -= b->e;
-		if (d->_mp_size < 0)
-			v->z->_mp_size = -v->z->_mp_size;
+		else if (ediff > 0) {
+			mpz_ui_pow_ui(quot.z, 10, ediff);
+			mpz_mul(dd = v->z, a->z, quot.z);
+		}
+		mpz_tdiv_qr(v->z, rem.z, dd, d);
+		v->e = 0;
 		if (sPrec < 0)
 			v->carry(true, true);
+		return 1;
+	}
+	if (d->_mp_d[0] == 1 && (d->_mp_size == 1 || d->_mp_size == -1)) {
+		v->e = a->e - b->e;
+		mpz_set(v->z, a->z);
+		v->carry(true, true);
+		if (d->_mp_size < 0)
+			v->z->_mp_size = -v->z->_mp_size;
 		return 1;
 	}
 
@@ -420,7 +518,7 @@ int Decimal::div(Decimal *v, Decimal *a, Decimal *b, bool intdiv)
 	}
 
 	exp += (sPrec < 0 ? -sPrec : sPrec) - (eq > 0);
-	if (eq > 0 || aw > bw) {
+	if (eq > 0 && exp <= 0 || aw > bw) {
 		mpz_tdiv_qr(quot.z, rem.z, dd, d);
 		if (!rem.z->_mp_size || exp <= 0)
 			goto divend;
@@ -441,14 +539,7 @@ divend:
 		mpz_tdiv_qr(v->z, rem.z, v->z, d);
 		v->e -= exp;
 	}
-	if (intdiv) {
-		if (v->e < 0) {
-			mpz_ui_pow_ui(quot.z, 10, -v->e);
-			mpz_tdiv_qr(v->z, rem.z, v->z, quot.z);
-			v->e = 0;
-		}
-	}
-	else if (rem.z->_mp_size) {
+	if (rem.z->_mp_size) {
 		mpz_mul_2exp(rem.z, rem.z, 1);
 		if (mpz_cmp(rem.z, d) >= 0)
 			if (v->z->_mp_size > 0)
@@ -463,14 +554,18 @@ divend:
 
 void Decimal::SetPrecision(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
 {
-	if (!TokenIsNumeric(*aParam[1]))
-		_f_throw_param(1, _T("Integer"));
 	aResultToken.SetValue(sPrec);
-	auto v = (mpir_si)TokenToInt64(*aParam[1]);
-	sPrec = v ? v : 20;
+	if (aParamCount < 2)
+		return;
+	if (aParam[1]->symbol != SYM_MISSING) {
+		if (!TokenIsNumeric(*aParam[1]))
+			_f_throw_param(1, _T("Integer"));
+		auto v = (mpir_si)TokenToInt64(*aParam[1]);
+		sPrec = v ? v : 20;
+		sCarryPrec = -max((v < 0 ? -v : v) >> 1, 5);
+	}
 	if (aParamCount > 2 && aParam[2]->symbol != SYM_MISSING)
-		if ((sOutputPrec = (mpir_si)TokenToInt64(*aParam[2])) < 0)
-			sOutputPrec = -sOutputPrec;
+		sOutputPrec = (mpir_si)TokenToInt64(*aParam[2]);
 }
 
 bool Decimal::Assign(ExprTokenType *aToken)
@@ -512,9 +607,10 @@ Decimal *Decimal::Create(ExprTokenType *aToken)
 
 void Decimal::Create(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
 {
-	if (auto obj = Decimal::Create(aParam[1]))
+	++aParam;
+	if (auto obj = Decimal::Create(aParam[0]))
 		_o_return(obj);
-	_o_throw_param(1, _T("Number"));
+	_o_throw_param(0, _T("Number"));
 }
 
 void Decimal::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
@@ -522,9 +618,15 @@ void Decimal::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTy
 	switch (aID)
 	{
 	case M_ToString: {
-		aResultToken.symbol = SYM_STRING;
-		aResultToken.mem_to_free = aResultToken.marker = to_string(&aResultToken.marker_length);
-		break;
+		mpir_si outputprec, *p = nullptr;
+		if (aParamCount)
+			outputprec = (mpir_si)TokenToInt64(*aParam[0]), p = &outputprec;
+		if (auto str = to_string(&aResultToken.marker_length, p)) {
+			aResultToken.symbol = SYM_STRING;
+			aResultToken.mem_to_free = aResultToken.marker = str;
+			break;
+		}
+		_o_throw_oom;
 	}
 	default:
 		break;
@@ -551,32 +653,45 @@ int Decimal::Eval(ExprTokenType &this_token, ExprTokenType *right_token)
 			if (right_token->symbol == SYM_INTEGER) {
 				if (right_token->value_int64 < 0)
 					if (this_token.symbol == SYM_POWER)
-						neg = true, n = (mpir_ui) - right_token->value_int64;
+						neg = true, n = (mpir_ui)-right_token->value_int64;
 					else return -2;
 				else n = (mpir_ui)right_token->value_int64;
 			}
 			else if (right_token->symbol == SYM_FLOAT)
 				return -2;
 			else if (auto dec = ToDecimal(*right_token)) {
-				if (!dec->is_integer() || dec->z->_mp_size != 1)
+				if (!dec->is_integer())
 					return -2;
+				else if (dec->z->_mp_size == 0)
+					dec->z->_mp_d[0] = 0;
+				else if (dec->z->_mp_size != 1)
+					if (dec->z->_mp_size == -1 && this_token.symbol == SYM_POWER)
+						neg = true;
+					else return -2;
 				n = dec->z->_mp_d[0];
 			}
 			else return -1;
 
 			if (this_token.symbol == SYM_POWER) {
+				if (!n && !z->_mp_size)
+					return -2;
 				ret = new Decimal;
-				mpz_pow_ui(ret->z, z, n), ret->e = e * n;
-				if (neg) {
-					tmp.assign(1LL);
-					div(ret, &tmp, ret);
+				if (n) {
+					mpz_pow_ui(ret->z, z, n), ret->e = e * n;
+					if (neg) {
+						tmp.assign(1LL);
+						div(ret, &tmp, ret);
+					}
 				}
+				else ret->assign(1LL);
 			}
 			else {
 				if (!is_integer())
 					return -2;
 				ret = new Decimal;
-				if (this_token.symbol == SYM_BITSHIFTLEFT)
+				if (!n)
+					copy_to(ret);
+				else if (this_token.symbol == SYM_BITSHIFTLEFT)
 					mpz_mul_2exp(ret->z, z, n);
 				else
 					mpz_div_2exp(ret->z, z, n);
@@ -601,7 +716,7 @@ int Decimal::Eval(ExprTokenType &this_token, ExprTokenType *right_token)
 			switch (this_token.symbol)
 			{
 			case SYM_ADD: add_or_sub(ret, this, right); break;
-			case SYM_SUBTRACT: add_or_sub(ret, this, right, false); break;
+			case SYM_SUBTRACT: add_or_sub(ret, this, right, 0); break;
 			case SYM_MULTIPLY: mul(ret, this, right); break;
 			case SYM_DIVIDE:
 			case SYM_INTEGERDIVIDE:
@@ -655,23 +770,18 @@ int Decimal::Eval(ExprTokenType &this_token, ExprTokenType *right_token)
 		return 1;
 	}
 
-	if (this_token.symbol == SYM_POSITIVE)
-		AddRef(), ret = this;
-	else {
-		ret = new Decimal;
-		tmp.assign(1LL);
-		switch (this_token.symbol)
-		{
-		case SYM_NEGATIVE:       copy_to(ret), ret->z->_mp_size = -z->_mp_size; break;
-		case SYM_POST_INCREMENT: copy_to(ret), add_or_sub(this, this, &tmp); break;
-		case SYM_POST_DECREMENT: copy_to(ret), add_or_sub(this, this, &tmp, 0); break;
-		case SYM_PRE_INCREMENT:  add_or_sub(this, this, &tmp), copy_to(ret); break;
-		case SYM_PRE_DECREMENT:  add_or_sub(this, this, &tmp, 0), copy_to(ret); break;
-		//case SYM_BITNOT:
-		default:
-			delete ret;
-			return -1;
-		}
+	tmp.assign(1LL);
+	switch (this_token.symbol)
+	{
+	case SYM_POSITIVE:       ret = Clone(); if (sPrec < 0) ret->carry(); break;
+	case SYM_NEGATIVE:       ret = Clone(), ret->z->_mp_size = -z->_mp_size; if (sPrec < 0) ret->carry(); break;
+	case SYM_POST_INCREMENT: ret = Clone(), add_or_sub(this, this, &tmp); break;
+	case SYM_POST_DECREMENT: ret = Clone(), add_or_sub(this, this, &tmp, 0); break;
+	case SYM_PRE_INCREMENT:  AddRef(), add_or_sub(ret = this, this, &tmp); break;
+	case SYM_PRE_DECREMENT:  AddRef(), add_or_sub(ret = this, this, &tmp, 0); break;
+	//case SYM_BITNOT:
+	default:
+		return -1;
 	}
 	this_token.SetValue(ret);
 	return 1;
@@ -689,22 +799,39 @@ Decimal *Decimal::ToDecimal(ExprTokenType &aToken)
 
 ResultType Decimal::ToToken(ExprTokenType &aToken)
 {
-	if (is_integer())
-		aToken.SetValue(mpz_get_sx(z));
-	else {
-		auto t = sOutputPrec;
-		sOutputPrec = 17;
-		auto str = to_string();
-		sOutputPrec = t;
-		aToken.SetValue(ATOF(str));
-		free(str);
+	if (!z->_mp_size) {
+		aToken.SetValue(0);
+		return OK;
 	}
+
+	if (is_integer() && size_t(z->_mp_size < 0 ? -z->_mp_size : z->_mp_size) * SIZEOF_MP_LIMB_T <= sizeof(__int64)) {
+		auto sz = z->_mp_size < 0 ? -z->_mp_size : z->_mp_size;
+#if (SIZEOF_MP_LIMB_T == 4)
+		if (sz == 1) {
+			aToken.SetValue(sz < 0 ? -__int64(z->_mp_d[0]) : __int64(z->_mp_d[0]));
+			return OK;
+		}
+#endif // (SIZEOF_MP_LIMB_T == 4)
+		if (sz * SIZEOF_MP_LIMB_T == 8) {
+			auto v = *(unsigned __int64 *)z->_mp_d;
+			if (v <= 9223372036854775807ui64 || (sz < 0 && v == 9223372036854775808ui64)) {
+				aToken.SetValue(sz < 0 ? -__int64(v - 1) - 1 : __int64(v));
+				return OK;
+			}
+		}
+	}
+
+	mpir_si prec = 17;
+	auto str = to_string(nullptr, &prec);
+	aToken.SetValue(ATOF(str));
+	free(str);
 	return OK;
 }
 
 
 void *Decimal::sVTable = getVTable();
 thread_local Object *Decimal::sPrototype;
+thread_local mpir_si Decimal::sCarryPrec = -10;
 thread_local mpir_si Decimal::sPrec = 20;
 thread_local mpir_si Decimal::sOutputPrec = 0;
 

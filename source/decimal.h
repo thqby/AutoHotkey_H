@@ -8,7 +8,7 @@ class Decimal : public ObjectBase
 	mpz_t z;
 	mpir_si e;
 
-	static const mpir_si sCarryPrec = -4;
+	thread_local static mpir_si sCarryPrec;;
 	thread_local static mpir_si sPrec;
 	thread_local static mpir_si sOutputPrec;
 
@@ -19,7 +19,7 @@ class Decimal : public ObjectBase
 	void assign(const char *str, size_t len, int base = 10);
 	void carry(bool ignore_integer = true, bool fix = false);
 	bool is_integer();
-	LPTSTR to_string(size_t *aLength = nullptr);
+	LPTSTR to_string(size_t *aLength = nullptr, mpir_si *prec = nullptr);
 
 	static void mul_10exp(Decimal *v, Decimal *a, mpir_ui e);
 	static void add_or_sub(Decimal *v, Decimal *a, Decimal *b, int add = 1);
@@ -45,6 +45,7 @@ public:
 	static Decimal *ToDecimal(ExprTokenType &aToken);
 	ResultType ToToken(ExprTokenType &aToken);
 	bool Assign(ExprTokenType *aToken);
+	Decimal *Clone() { auto obj = new Decimal; copy_to(obj); return obj; }
 
 	IObject_Type_Impl("Decimal");
 	::Object *Base() { return sPrototype; }

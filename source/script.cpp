@@ -10401,11 +10401,7 @@ end_of_infix_to_postfix:
 	}
 	aArg.postfix[postfix_count].symbol = SYM_INVALID;  // Special item to mark the end of the array.
 	aArg.max_stack = max_stack;
-#ifdef ENABLE_DECIMAL
-	aArg.max_alloc = max(max_alloc, 2);
-#else
 	aArg.max_alloc = max_alloc;
-#endif // ENABLE_DECIMAL
 
 	return OK;
 }

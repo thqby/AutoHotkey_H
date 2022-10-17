@@ -697,27 +697,6 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			right_is_pure_number = TokenIsPureNumeric(right, right_is_number); // If it's SYM_VAR, it can be the clipboard in this case, but it works even then.
 		}
 
-#ifdef ENABLE_DECIMAL
-		static auto release_object = [](Var *sym_assign_var, ExprTokenType &this_token, ExprTokenType **&to_free, int &to_free_count, ExprTokenType *stack_top) {
-			while (to_free_count && to_free[to_free_count - 1] != stack_top)
-				if (to_free[--to_free_count]->symbol == SYM_STRING)
-					free(to_free[to_free_count]->marker);
-				else to_free[to_free_count]->object->Release();
-			if (sym_assign_var) {
-				auto result = sym_assign_var->Assign(this_token);
-				this_token.object->Release();
-				if (!result)
-					return 0;
-				if (sym_assign_var->Type() == VAR_NORMAL)
-					this_token.SetVar(sym_assign_var);
-			}
-			else {
-				to_free[to_free_count++] = &this_token;
-			}
-			return 1;
-		};
-#endif // ENABLE_DECIMAL
-
 		// IF THIS IS A UNARY OPERATOR, we now have the single operand needed to perform the operation.
 		// The cases in the switch() below are all unary operators.  The other operators are handled
 		// in the switch()'s default section:
@@ -771,10 +750,15 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			{
 #ifdef ENABLE_DECIMAL
 				if (auto dec = Decimal::ToDecimal(right))
-					if (dec->Eval(this_token) == 1)
-						if (release_object(sym_assign_var, this_token, to_free, to_free_count, stack[stack_count - 1]))
-							goto push_this_token;
-						else goto abort;
+					if (dec->Eval(this_token) == 1) {
+						if (mArg[aArgIndex].max_alloc < mArg[aArgIndex].max_stack) {
+							auto old_to_free = to_free;
+							to_free = (ExprTokenType **)_alloca((mArg[aArgIndex].max_alloc = mArg[aArgIndex].max_stack) * sizeof(ExprTokenType *));
+							memcpy(to_free, old_to_free, to_free_count * sizeof(ExprTokenType *));
+						}
+						to_free[to_free_count++] = &this_token;
+						break;
+					}
 #endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
@@ -791,10 +775,15 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			{
 #ifdef ENABLE_DECIMAL
 				if (auto dec = Decimal::ToDecimal(right))
-					if (dec->Eval(this_token) == 1)
-						if (release_object(sym_assign_var, this_token, to_free, to_free_count, stack[stack_count - 1]))
-							goto push_this_token;
-						else goto abort;
+					if (dec->Eval(this_token) == 1) {
+						if (mArg[aArgIndex].max_alloc < mArg[aArgIndex].max_stack) {
+							auto old_to_free = to_free;
+							to_free = (ExprTokenType **)_alloca((mArg[aArgIndex].max_alloc = mArg[aArgIndex].max_stack) * sizeof(ExprTokenType *));
+							memcpy(to_free, old_to_free, to_free_count * sizeof(ExprTokenType *));
+						}
+						to_free[to_free_count++] = &this_token;
+						break;
+					}
 #endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
@@ -842,10 +831,21 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			{
 #ifdef ENABLE_DECIMAL
 				if (auto dec = Decimal::ToDecimal(right))
-					if (dec->Eval(this_token) == 1)
-						if (release_object(sym_assign_var, this_token, to_free, to_free_count, stack[stack_count - 1]))
-							goto push_this_token;
-						else goto abort;
+					if (dec->Eval(this_token) == 1) {
+						if (is_pre_op) {
+							this_token.object->Release();
+							if (right.var->Type() == VAR_NORMAL)
+								this_token.SetVar(right.var);
+							break;
+						}
+						if (mArg[aArgIndex].max_alloc < mArg[aArgIndex].max_stack) {
+							auto old_to_free = to_free;
+							to_free = (ExprTokenType **)_alloca((mArg[aArgIndex].max_alloc = mArg[aArgIndex].max_stack) * sizeof(ExprTokenType *));
+							memcpy(to_free, old_to_free, to_free_count * sizeof(ExprTokenType *));
+						}
+						to_free[to_free_count++] = &this_token;
+						break;
+					}
 #endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
@@ -1218,11 +1218,23 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 					if (dec) {
 						auto r = dec->Eval(this_token, &right);
 						if (r == 1) {
-							if (this_token.symbol == SYM_OBJECT)
-								if (release_object(sym_assign_var, this_token, to_free, to_free_count, stack[stack_count - 1]))
-									goto push_this_token;
-								else goto abort;
-							break;
+							if (sym_assign_var)
+							{
+								auto result = sym_assign_var->Assign(this_token);
+								this_token.object->Release();
+								if (!result)
+									goto abort;
+								if (sym_assign_var->Type() == VAR_NORMAL)
+									this_token.SetVar(sym_assign_var);
+								goto push_this_token;
+							}
+							if (mArg[aArgIndex].max_alloc < mArg[aArgIndex].max_stack) {
+								auto old_to_free = to_free;
+								to_free = (ExprTokenType **)_alloca((mArg[aArgIndex].max_alloc = mArg[aArgIndex].max_stack) * sizeof(ExprTokenType *));
+								memcpy(to_free, old_to_free, to_free_count * sizeof(ExprTokenType *));
+							}
+							to_free[to_free_count++] = &this_token;
+							goto push_this_token;
 						}
 						else if (r == 0)
 							goto divide_by_zero;

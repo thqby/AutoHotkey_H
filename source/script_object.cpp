@@ -3412,7 +3412,7 @@ ObjectMember Worker::sMembers[] =
 
 #ifdef ENABLE_DECIMAL
 ObjectMember Decimal::sMembers[] = {
-	Object_Method(ToString, 0, 0),
+	Object_Method(ToString, 0, 1),
 };
 #endif // ENABLE_DECIMAL
 
@@ -3569,7 +3569,7 @@ Object *Object::CreateRootPrototypes()
 #ifdef ENABLE_DECIMAL
 	if (auto var = g_script->FindGlobalVar(_T("Decimal"), 7)) {
 		if (auto obj = dynamic_cast<Object *>(var->ToObject())) {
-			auto fn = new BuiltInFunc(_T("Decimal.SetPrecision"), Decimal::SetPrecision, 2, 3);
+			auto fn = new BuiltInFunc(_T("Decimal.SetPrecision"), Decimal::SetPrecision, 1, 3);
 			obj->DefineMethod(_T("SetPrecision"), fn);
 			fn->Release();
 		}
