@@ -1244,14 +1244,16 @@ BIF_DECL(BIF_sizeof)
 		if ((!_tcscmp(defbuf, _T(" bool ")) && (thissize = 1)) || (thissize = IsDefaultType(defbuf)))
 		{
 			// align offset
-			if ((!bitsize || bitsizetotal == bitsize) && thissize > 1 && (mod = offset % STRUCTALIGN(thissize)))
-				offset += (thisalign - mod) % thisalign;
 			if (!bitsize || bitsizetotal == bitsize)
+			{
+				if (thissize == 1)
+					thisalign = 1;
+				else if (mod = offset % STRUCTALIGN(thissize))
+					offset += (thisalign - mod) % thisalign;
 				offset += thissize * (arraydef ? arraydef : 1);
+			}
 			if (thisalign > *aligntotal)
 				*aligntotal = thisalign; // > ptrsize ? ptrsize : thissize;
-			//else if (thissize == 1)
-			//	*aligntotal = 1;
 		}
 		else // type was not found, check for user defined type in variables
 		{
