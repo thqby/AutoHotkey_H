@@ -21,7 +21,10 @@ GNU General Public License for more details.
 
 
 
-bif_impl FResult CoordMode(StrArg aCommand, optl<StrArg> aMode)
+static LPTSTR sCoordModes[] = COORD_MODES;
+
+
+FResult CoordMode(StrArg aCommand, optl<StrArg> aMode, StrRet *aRetVal = nullptr)
 {
 	CoordModeType mode = aMode.has_value() ? Line::ConvertCoordMode(aMode.value()) : COORD_MODE_SCREEN;
 	CoordModeType shift = Line::ConvertCoordModeCmd(aCommand);
@@ -29,34 +32,44 @@ bif_impl FResult CoordMode(StrArg aCommand, optl<StrArg> aMode)
 		return FR_E_ARG(0);
 	if (mode == COORD_MODE_INVALID)
 		return FR_E_ARG(1);
+	if (aRetVal)
+		aRetVal->SetStatic(sCoordModes[(g->CoordMode >> shift) & COORD_MODE_MASK]);
 	g->CoordMode = (g->CoordMode & ~(COORD_MODE_MASK << shift)) | (mode << shift);
 	return OK;
 }
 
+bif_impl FResult CoordMode(StrArg aCommand, optl<StrArg> aMode, StrRet &aRetVal)
+{
+	return CoordMode(aCommand, aMode, &aRetVal);
+}
 
-bif_impl FResult SendMode(StrArg aMode)
+
+bif_impl FResult SendMode(StrArg aMode, ResultToken &aResultToken)
 {
 	auto new_mode = Line::ConvertSendMode(aMode, SM_INVALID);
 	if (new_mode == SM_INVALID)
 		return FR_E_ARG(0);
+	BIV_SendMode(aResultToken, nullptr);
 	g->SendMode = new_mode;
 	return OK;
 }
 
 
-bif_impl FResult SendLevel(int aLevel)
+bif_impl FResult SendLevel(int aLevel, int &aRetVal)
 {
 	if (!SendLevelIsValid(aLevel))
 		return FR_E_ARG(0);
+	aRetVal = g->SendLevel;
 	g->SendLevel = aLevel;
 	return OK;
 }
 
 
-bif_impl FResult SetDefaultMouseSpeed(int aSpeed)
+bif_impl FResult SetDefaultMouseSpeed(int aSpeed, int &aRetVal)
 {
 	if (aSpeed < 0 || aSpeed > MAX_MOUSE_SPEED)
 		return FR_E_ARG(0);
+	aRetVal = g->DefaultMouseSpeed;
 	g->DefaultMouseSpeed = (UCHAR)aSpeed;
 	return OK;
 }
@@ -88,33 +101,35 @@ bif_impl FResult SetKeyDelay(optl<int> aDelay, optl<int> aDuration, optl<StrArg>
 }
 
 
-bif_impl FResult SetMouseDelay(int aDelay, optl<StrArg> aMode)
+bif_impl FResult SetMouseDelay(int aDelay, optl<StrArg> aMode, int &aRetVal)
 {
 	if (aDelay < -1)
 		return FR_E_ARG(0);
 	if (aMode.has_value() && !_tcsicmp(aMode.value(), _T("Play")))
-		g->MouseDelayPlay = aDelay;
+		aRetVal = g->MouseDelayPlay, g->MouseDelayPlay = aDelay;
 	else if (aMode.has_nonempty_value()) // Anything other than "Play" or "" is invalid.
 		return FR_E_ARG(1);
 	else
-		g->MouseDelay = aDelay;
+		aRetVal = g->MouseDelay, g->MouseDelay = aDelay;
 	return OK;
 }
 
 
-bif_impl FResult SetWinDelay(int aDelay)
+bif_impl FResult SetWinDelay(int aDelay, int &aRetVal)
 {
 	if (aDelay < -1)
 		return FR_E_ARG(0);
+	aRetVal = g->WinDelay;
 	g->WinDelay = aDelay;
 	return OK;
 }
 
 
-bif_impl FResult SetControlDelay(int aDelay)
+bif_impl FResult SetControlDelay(int aDelay, int &aRetVal)
 {
 	if (aDelay < -1)
 		return FR_E_ARG(0);
+	aRetVal = g->ControlDelay;
 	g->ControlDelay = aDelay;
 	return OK;
 }
@@ -144,7 +159,7 @@ BIV_DECL_W(BIV_Clipboard_Set)
 				_f_return_FAIL;
 			return;
 		}
-		_f_throw_type(_T("ClipboardAll"), obj->Type());
+		_f_throw_type(_T("ClipboardAll"), ExprTokenType(obj));
 	}
 	size_t aLength;
 	LPTSTR aBuf = BivRValueToString(&aLength);
@@ -260,21 +275,31 @@ BIV_DECL_R(BIV_TitleMatchMode)
 	_f_return_i(g->TitleMatchMode);
 }
 
+bif_impl FResult SetTitleMatchMode(StrArg aMode, ResultToken &aResultToken)
+{
+	aResultToken.symbol = SYM_INTEGER; // Set the default expected by BIV.
+	auto mode = Line::ConvertTitleMatchMode(aMode);
+	switch (mode)
+	{
+	case FIND_FAST:
+	case FIND_SLOW:
+		BIV_TitleMatchModeSpeed(aResultToken, nullptr);
+		g->TitleFindFast = (mode == FIND_FAST);
+		return OK;
+	case MATCHMODE_INVALID:
+		return FR_E_ARG(0);
+	default:
+		BIV_TitleMatchMode(aResultToken, nullptr);
+		g->TitleMatchMode = mode;
+		return OK;
+	}
+}
+
 BIV_DECL_W(BIV_TitleMatchMode_Set)
 {
-	LPTSTR aBuf = BivRValueToString();
-	switch (Line::ConvertTitleMatchMode(aBuf))
-	{
-	case FIND_IN_LEADING_PART: g->TitleMatchMode = FIND_IN_LEADING_PART; break;
-	case FIND_ANYWHERE: g->TitleMatchMode = FIND_ANYWHERE; break;
-	case FIND_REGEX: g->TitleMatchMode = FIND_REGEX; break;
-	case FIND_EXACT: g->TitleMatchMode = FIND_EXACT; break;
-	// For simplicity, this function handles both variables.
-	case FIND_FAST: g->TitleFindFast = true; break;
-	case FIND_SLOW: g->TitleFindFast = false; break;
-	default:
-		_f_throw_value(ERR_INVALID_VALUE, aBuf);
-	}
+	auto value = BivRValueToString();
+	if (SetTitleMatchMode(value, aResultToken) != OK)
+		_f_throw_value(ERR_INVALID_VALUE, value);
 }
 
 BIV_DECL_R(BIV_TitleMatchModeSpeed)
@@ -293,6 +318,12 @@ BIV_DECL_W(BIV_DetectHiddenWindows_Set)
 	g->DetectHiddenWindows = BivRValueToBOOL();
 }
 
+bif_impl void DetectHiddenWindows(BOOL aMode, BOOL &aRetVal)
+{
+	aRetVal = g->DetectHiddenWindows;
+	g->DetectHiddenWindows = aMode;
+}
+
 BIV_DECL_R(BIV_DetectHiddenText)
 {
 	_f_return_b(g->DetectHiddenText);
@@ -301,6 +332,12 @@ BIV_DECL_R(BIV_DetectHiddenText)
 BIV_DECL_W(BIV_DetectHiddenText_Set)
 {
 	g->DetectHiddenText = BivRValueToBOOL();
+}
+
+bif_impl void DetectHiddenText(BOOL aMode, BOOL &aRetVal)
+{
+	aRetVal = g->DetectHiddenText;
+	g->DetectHiddenText = aMode;
 }
 
 int& BIV_xDelay(LPTSTR aVarName)
@@ -358,7 +395,6 @@ BIV_DECL_W(BIV_DefaultMouseSpeed_Set)
 
 BIV_DECL_R(BIV_CoordMode)
 {
-	static LPTSTR sCoordModes[] = COORD_MODES;
 	_f_return_p(sCoordModes[(g->CoordMode >> Line::ConvertCoordModeCmd(aVarName + 11)) & COORD_MODE_MASK]);
 }
 
@@ -378,7 +414,7 @@ BIV_DECL_R(BIV_SendMode)
 BIV_DECL_W(BIV_SendMode_Set)
 {
 	auto value = BivRValueToString();
-	if (FAILED(SendMode(value)))
+	if (FAILED(SendMode(value, aResultToken)))
 		_f_throw_value(ERR_INVALID_VALUE, value);
 }
 
@@ -390,7 +426,8 @@ BIV_DECL_R(BIV_SendLevel)
 BIV_DECL_W(BIV_SendLevel_Set)
 {
 	Throw_if_RValue_NaN();
-	if (FAILED(SendLevel((int)BivRValueToInt64())))
+	int unused;
+	if (FAILED(SendLevel((int)BivRValueToInt64(), unused)))
 		_f_throw_value(ERR_INVALID_VALUE, BivRValueToString());
 }
 
@@ -402,6 +439,12 @@ BIV_DECL_R(BIV_StoreCapsLockMode)
 BIV_DECL_W(BIV_StoreCapsLockMode_Set)
 {
 	g->StoreCapslockMode = BivRValueToBOOL();
+}
+
+bif_impl void SetStoreCapsLockMode(BOOL aMode, BOOL &aRetVal)
+{
+	aRetVal = g->StoreCapslockMode;
+	g->StoreCapslockMode = aMode;
 }
 
 BIV_DECL_R(BIV_Hotkey)
@@ -533,13 +576,21 @@ BIV_DECL_R(BIV_FileEncoding)
 	_f_return_p(enc);
 }
 
+bif_impl FResult FileEncoding(StrArg aEncoding, ResultToken &aResultToken)
+{
+	UINT new_encoding = Line::ConvertFileEncoding(aEncoding);
+	if (new_encoding == -1)
+		return FR_E_ARG(0);
+	BIV_FileEncoding(aResultToken, nullptr);
+	g->Encoding = new_encoding;
+	return OK;
+}
+
 BIV_DECL_W(BIV_FileEncoding_Set)
 {
-	LPTSTR aBuf = BivRValueToString();
-	UINT new_encoding = Line::ConvertFileEncoding(aBuf);
-	if (new_encoding == -1)
-		_f_throw_value(ERR_INVALID_VALUE, aBuf);
-	g->Encoding = new_encoding;
+	auto value = BivRValueToString();
+	if (FileEncoding(value, aResultToken) != OK)
+		_f_throw_value(ERR_INVALID_VALUE, value);
 }
 
 
@@ -556,17 +607,25 @@ BIV_DECL_R(BIV_RegView)
 	_f_return_p(value);
 }
 
-BIV_DECL_W(BIV_RegView_Set)
+bif_impl FResult SetRegView(StrArg aRegView, ResultToken &aResultToken)
 {
-	LPTSTR aBuf = BivRValueToString();
-	DWORD reg_view = Line::RegConvertView(aBuf);
+	DWORD reg_view = Line::RegConvertView(aRegView);
 	// Validate the parameter even if it's not going to be used.
 	if (reg_view == -1)
-		_f_throw_value(ERR_INVALID_VALUE, aBuf);
+		return FR_E_ARG(0);
+	BIV_RegView(aResultToken, nullptr);
 	// Since these flags cause the registry functions to fail on Win2k and have no effect on
 	// any later 32-bit OS, ignore this command when the OS is 32-bit.  Leave A_RegView = "Default".
 	if (IsOS64Bit())
 		g->RegView = reg_view;
+	return OK;
+}
+
+BIV_DECL_W(BIV_RegView_Set)
+{
+	auto value = BivRValueToString();
+	if (SetRegView(value, aResultToken) != OK)
+		_f_throw_value(ERR_INVALID_VALUE, value);
 }
 
 
@@ -1402,15 +1461,6 @@ BIV_DECL_R(BIV_TimeIdle)
 	_f_return_i(GetTickCount() - time_last_input);
 }
 
-
-
-BIF_DECL(BIF_SetBIV)
-{
-	static VirtualVar::Setter sBiv[] = { &BIV_DetectHiddenText_Set, &BIV_DetectHiddenWindows_Set, &BIV_FileEncoding_Set, &BIV_RegView_Set, &BIV_StoreCapsLockMode_Set, &BIV_TitleMatchMode_Set };
-	auto biv = sBiv[_f_callee_id];
-	_f_set_retval_p(_T(""), 0);
-	biv(aResultToken, nullptr, *aParam[0]);
-}
 
 
 

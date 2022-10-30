@@ -418,7 +418,7 @@ ResultType CallEnumerator(IObject *aEnumerator, ExprTokenType *aParam[], int aPa
 		if (aParam[i]->symbol == SYM_OBJECT)
 		{
 			ASSERT(dynamic_cast<VarRef *>(aParam[i]->object));
-			((VarRef *)aParam[i]->object)->MarkUninitialized();
+			((VarRef *)aParam[i]->object)->Uninitialize(VAR_NEVER_FREE);
 		}
 	auto result = aEnumerator->Invoke(result_token, IT_CALL, nullptr, t_this, aParam, aParamCount);
 	if (result == FAIL || result == EARLY_EXIT || result == INVOKE_NOT_HANDLED)
@@ -1142,6 +1142,20 @@ Object *Object::CreatePrototype(LPTSTR aClassName, Object *aBase, ObjectMember a
 {
 	auto obj = CreatePrototype(aClassName, aBase);
 	return DefineMembers(obj, aClassName, aMember, aMemberCount);
+}
+
+Object *Object::CreatePrototype(LPTSTR aClassName, Object *aBase, ObjectMemberMd aMember[], int aMemberCount)
+{
+	auto obj = CreatePrototype(aClassName, aBase);
+	return DefineMetadataMembers(obj, aClassName, aMember, aMemberCount);
+}
+
+Object *Object::CreatePrototype(LPTSTR aClassName, Object *aBase, ObjectMemberListType aMember, int aMemberCount)
+{
+	if (aMember.duck)
+		return CreatePrototype(aClassName, aBase, aMember.duck, aMemberCount);
+	else
+		return CreatePrototype(aClassName, aBase, aMember.meta, aMemberCount);
 }
 
 
@@ -2430,9 +2444,11 @@ ResultType Array::GetEnumItem(UINT &aIndex, Var *aVal, Var *aReserved, int aVarC
 			switch (item.symbol)
 			{
 			default:
-				aVal->AssignString(item.string, item.string.Length());
 				if (item.symbol == SYM_MISSING)
-					aVal->MarkUninitialized();
+					aVal->Uninitialize();
+				else
+					aVal->AssignString(item.string, item.string.Length());
+				
 				break;
 			case SYM_INTEGER:	aVal->Assign(item.n_int64);			break;
 			case SYM_FLOAT:		aVal->Assign(item.n_double);		break;
@@ -2953,7 +2969,7 @@ void Func::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType 
 		{
 			int param = ParamIndexToInt(0);
 			if (param > 0 && (param <= mParamCount || mIsVariadic))
-				_o_return(param > mMinParams);
+				_o_return(ArgIsOptional(param-1));
 			else
 				_o_throw_param(0);
 		}
@@ -3421,7 +3437,7 @@ struct ClassDef
 	LPCTSTR name;
 	Object **proto_var;
 	ClassFactoryDef factory;
-	ObjectMember *members;
+	ObjectMemberListType members;
 	int member_count;
 	std::initializer_list<ClassDef> subclasses;
 };

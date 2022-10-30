@@ -293,7 +293,7 @@ struct VarListBackup {
 			for (int i = 0, j = 0; i < len; i++) {
 				auto var = j < mCount ? mItem[j] : nullptr;
 				while (i < len && var != vars[i])
-					vars[i]->Free(VAR_ALWAYS_FREE, true), vars[i++] = NULL;
+					vars[i]->Free(VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES | VAR_REQUIRE_INIT), vars[i++] = NULL;
 				vars[j++] = var;
 			}
 			list.mCount = mCount;
@@ -767,7 +767,7 @@ bool STDMETHODCALLTYPE IAhkApi::VarAssign(Var* aVar, ExprTokenType& aToken) { re
 
 void STDMETHODCALLTYPE IAhkApi::VarToToken(Var* aVar, ExprTokenType& aToken) { aVar->ToTokenSkipAddRef(aToken); }
 
-void STDMETHODCALLTYPE IAhkApi::VarFree(Var* aVar, bool aExcludeAliasesAndRequireInit) { aVar->Free(VAR_ALWAYS_FREE, aExcludeAliasesAndRequireInit); }
+void STDMETHODCALLTYPE IAhkApi::VarFree(Var* aVar, int aWhenToFree) { aVar->Free(aWhenToFree); }
 
 bool STDMETHODCALLTYPE IAhkApi::VariantAssign(Object::Variant& aVariant, ExprTokenType& aValue) { return aVariant.Assign(aValue); }
 

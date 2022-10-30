@@ -342,6 +342,9 @@ public:
 		ASSERT(IsObject());
 		// Remove the attributes applied by AssignSkipAddRef().
 		mAttrib &= ~(VAR_ATTRIB_IS_OBJECT | VAR_ATTRIB_NOT_NUMERIC);
+		// Mark the variable as uninitialized so that any attempt to access it from __Delete
+		// causes an error (but our caller can assign a new value and remove the attribute).
+		mAttrib |= VAR_ATTRIB_UNINITIALIZED;
 		// MUST BE DONE AFTER THE ABOVE IN CASE IT TRIGGERS __Delete:
 		// Release this variable's object.  Setting mObject = NULL is not necessary
 		// since the value of mObject, mContentsInt64 and mContentsDouble is never used
@@ -545,10 +548,12 @@ public:
 	}
 
 	// Not an enum so that it can be global more easily:
-	#define VAR_ALWAYS_FREE                    0
-	#define VAR_NEVER_FREE                     3
-	#define VAR_FREE_IF_LARGE                  4
-	void Free(int aWhenToFree = VAR_ALWAYS_FREE, bool aExcludeAliasesAndRequireInit = false);
+	#define VAR_NEVER_FREE			0
+	#define VAR_ALWAYS_FREE			1
+	#define VAR_FREE_IF_LARGE		2
+	#define VAR_CLEAR_ALIASES		4
+	#define VAR_REQUIRE_INIT		8
+	void Free(int aWhenToFree = VAR_ALWAYS_FREE);
 	ResultType Append(LPTSTR aStr, VarSizeType aLength);
 	ResultType AppendIfRoom(LPTSTR aStr, VarSizeType aLength);
 	void AcceptNewMem(LPTSTR aNewMem, VarSizeType aLength);
@@ -934,8 +939,13 @@ public:
 
 	void MarkUninitialized()
 	{
-		Var &var = *ResolveAlias();
+		Var& var = *ResolveAlias();
 		var.mAttrib |= VAR_ATTRIB_UNINITIALIZED;
+	}
+
+	void Uninitialize(int aWhenToFree = VAR_FREE_IF_LARGE) 
+	{
+		Free(aWhenToFree | VAR_REQUIRE_INIT);
 	}
 
 }; // class Var
@@ -950,7 +960,7 @@ public:
 
 	~VarRef()
 	{
-		Free(VAR_ALWAYS_FREE, true);
+		Free(VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES | VAR_REQUIRE_INIT);
 	}
 
 	IObject_Type_Impl("VarRef");

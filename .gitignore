@@ -13,3 +13,4 @@ ipch/
 *.7z
 source/ComServer_i.c
 source/ComServer_h.h
+/.vscode

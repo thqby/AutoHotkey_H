@@ -61,16 +61,11 @@ FuncEntry g_BIF[] =
 	BIF1(ComObjValue, 1, 1),
 	BIF1(Cos, 1, 1),
 	BIF1(CryptAES, 2, 5),
-	BIF1(DateAdd, 3, 3),
-	BIF1(DateDiff, 3, 3),
-	BIFn(DetectHiddenText, 1, 1, BIF_SetBIV),
-	BIFn(DetectHiddenWindows, 1, 1, BIF_SetBIV),
 #ifdef ENABLE_DLLCALL
 	BIFn(DllCall, 1, NA, BIF_DllCall),
 	BIFn(DynaCall, 1, NA, BIF_DynaCall),
 #endif
 	BIF1(Exp, 1, 1),
-	BIFn(FileEncoding, 1, 1, BIF_SetBIV),
 	BIF1(FileOpen, 2, 3),
 	BIFn(Floor, 1, 1, BIF_FloorCeil),
 	BIF1(Format, 1, NA),
@@ -146,9 +141,6 @@ FuncEntry g_BIF[] =
 	BIF1(Round, 1, 2),
 	BIFn(RTrim, 1, 2, BIF_Trim),
 	BIF1(RunWait, 1, 4, {4}),
-	BIFn(SetRegView, 1, 1, BIF_SetBIV),
-	BIFn(SetStoreCapsLockMode, 1, 1, BIF_SetBIV),
-	BIFn(SetTitleMatchMode, 1, 1, BIF_SetBIV),
 	BIF1(Sin, 1, 1),
 	BIF1(sizeof, 1, 2),
 	BIF1(Sort, 1, 3),
@@ -489,7 +481,7 @@ Script::~Script() // Destructor.
 		Var& aVar = *mVars.mItem[i];
 		if (aVar.mType == VAR_VIRTUAL || aVar.mType == VAR_CONSTANT)
 			continue;
-		aVar.Free(VAR_ALWAYS_FREE, true);
+		aVar.Free(VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES | VAR_REQUIRE_INIT);
 		if (g->ThrownToken)
 			g_script->FreeExceptionToken(g->ThrownToken);
 	}
@@ -498,7 +490,7 @@ Script::~Script() // Destructor.
 	{
 		Var& aVar = *mVars.mItem[i];
 		if (aVar.mType == VAR_CONSTANT) {
-			aVar.Free(VAR_ALWAYS_FREE, true), aVar.mType = VAR_NORMAL;
+			aVar.Free(VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES | VAR_REQUIRE_INIT), aVar.mType = VAR_NORMAL;
 			if (g->ThrownToken)
 				g_script->FreeExceptionToken(g->ThrownToken);
 		}
@@ -1381,7 +1373,7 @@ ResultType Script::SetTrayIcon(LPCTSTR aIconFile, int aIconNumber, ToggleValueTy
 		if ( !(new_icon = (HICON)LoadPicture(aIconFile, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), image_type, aIconNumber, false, NULL, &icon_module)) )
 			DestroyIcon(new_icon_small);
 	if ( !new_icon )
-		return g_script->RuntimeError(_T("Can't load icon."), aIconFile);
+		return g_script->RuntimeError(ERR_LOAD_ICON, aIconFile);
 
 	GuiType::DestroyIconsIfUnused(mCustomIcon, mCustomIconSmall); // This destroys it if non-NULL and it's not used by an GUI windows.
 
@@ -1879,7 +1871,7 @@ void ReleaseVarObjects(VarList &aVars)
 	for (int v = 0; v < aVars.mCount; ++v)
 	{
 		Var &var = *aVars.mItem[v];
-		if (var.IsObject())
+		if (var.IsObject() && var.Type() == VAR_NORMAL)
 			var.ReleaseObject(); // ReleaseObject() vs Free() for performance (though probably not important at this point).
 		// Otherwise, maybe best not to free it in case an object's __Delete meta-function uses it?
 	}
@@ -4906,6 +4898,8 @@ ResultType Script::UpdateOrCreateTimer(IObject *aCallback
 			timer->mPeriod = (DWORD)aPeriod;
 			timer->mRunOnlyOnce = false;
 		}
+		if (timer->mPeriod == 1)
+			timer->mPeriod = 0; // Allow execution within the same tick (though not guaranteed).
 	}
 
 	if (aUpdatePriority)
@@ -11451,7 +11445,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 						// It doesn't make sense to specify case sensitivity for objects, so treat that as an error
 						// (otherwise EvaluateSwitchCase would ignore string_case_sense). 
 						if (switch_value.symbol == SYM_OBJECT)
-							result = ResultToken().TypeError(_T("String"), switch_value);
+							result = TypeError(_T("String"), switch_value);
 					}
 				}
 			}
@@ -11747,7 +11741,7 @@ ResultType Line::EvaluateSwitchCase(ExprTokenType &aSwitch, SymbolType aSwitchIs
 	else // Since CaseSense was specified, unconditionally use string comparison.
 	{
 		if (aCase.symbol == SYM_OBJECT)
-			return ResultToken().TypeError(_T("String"), aCase);
+			return TypeError(_T("String"), aCase);
 		// Caller has unconditionally set aSwitchIsNumeric to PURE_NOT_NUMERIC in this case,
 		// and has already verified aSwitch.symbol != SYM_OBJECT.
 	}
@@ -12041,7 +12035,7 @@ ResultType Line::PerformLoopFor(ResultToken *aResultToken, Line *&aJumpToLine, L
 		if (mArg[i].type == ARG_TYPE_OUTPUT_VAR)
 		{
 			Var *var = VAR(mArg[i]);
-			var->Free(VAR_NEVER_FREE, true); // Release var's reference to the VarRef.
+			var->Free(VAR_NEVER_FREE | VAR_CLEAR_ALIASES); // Release var's reference to the VarRef.
 			var->Restore(var_bkp[i]);
 		}
 		if (var_param[i]->symbol == SYM_OBJECT)

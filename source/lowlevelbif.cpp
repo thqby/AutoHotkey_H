@@ -46,7 +46,7 @@ BIF_DECL(BIF_Alias)
 				len = (UINT_PTR)ATOI64(aParam1.marker);
 			}
 		// free variable
-		var.Free(VAR_ALWAYS_FREE, true);
+		var.Free(VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES | VAR_REQUIRE_INIT);
 		if (var.mAttrib & VAR_ATTRIB_UNINITIALIZED)
 			var.mAttrib &= ~VAR_ATTRIB_UNINITIALIZED;
 		if (len)

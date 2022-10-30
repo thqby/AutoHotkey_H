@@ -68,7 +68,7 @@ public:
 	virtual bool STDMETHODCALLTYPE TokenToNumber(ExprTokenType& aInput, ExprTokenType& aOutput);
 	virtual bool STDMETHODCALLTYPE VarAssign(Var* aVar, ExprTokenType& aToken);
 	virtual void STDMETHODCALLTYPE VarToToken(Var* aVar, ExprTokenType& aToken);
-	virtual void STDMETHODCALLTYPE VarFree(Var* aVar, bool aExcludeAliasesAndRequireInit = false);
+	virtual void STDMETHODCALLTYPE VarFree(Var* aVar, int aWhenToFree = VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES);
 	virtual bool STDMETHODCALLTYPE VariantAssign(Object::Variant& aVariant, ExprTokenType& aValue);
 	virtual void STDMETHODCALLTYPE VariantToToken(Object::Variant& aVariant, ExprTokenType& aToken);
 	virtual void STDMETHODCALLTYPE VariantToToken(VARIANT& aVariant, ResultToken& aToken, bool aRetainVar = true);
