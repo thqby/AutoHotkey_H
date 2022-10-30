@@ -147,7 +147,7 @@ FResult InputObject::set_Input(StrArg aInput)
 	if (len > (size_t)input.BufferLengthMax)
 		return FR_E_OUTOFMEM;
 	_tcscpy(input.Buffer, aInput);
-	input.BufferLength = len;
+	input.BufferLength = (int)len;
 	return OK;
 }
 
