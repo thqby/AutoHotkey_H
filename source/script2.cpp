@@ -3308,15 +3308,17 @@ BOOL VarToBOOL(Var &aVar)
 	case PURE_FLOAT:
 		return aVar.ToDouble() != 0.0;
 	default:
-		auto obj = aVar.ToObject();
+		if (auto obj = aVar.ToObject())
+		{
 #ifdef ENABLE_DECIMAL
-		if (auto d = Decimal::ToDecimal(obj))
-			return d->ToBOOL();
+			if (auto d = Decimal::ToDecimal(obj))
+				return d->ToBOOL();
 #endif // ENABLE_DECIMAL
+			if (ComObject *aComObj = dynamic_cast<ComObject *>(obj))
+				return aComObj->mVarType == VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType != VT_NULL && aComObj->mVarType != VT_EMPTY;
+		}
 		// Even a string containing all whitespace would be considered non-numeric since it's a non-blank string
 		// that isn't equal to 0.
-		if (ComObject *aComObj = dynamic_cast<ComObject*>(obj))
-			return aComObj->mVarType == VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType != VT_NULL && aComObj->mVarType != VT_EMPTY;
 		return TRUE;
 	}
 }

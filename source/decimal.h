@@ -41,7 +41,7 @@ public:
 	int Eval(ExprTokenType &op, ExprTokenType *right = nullptr);
 	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 	BOOL ToBOOL() { return z->_mp_size != 0; }
-	static Decimal *ToDecimal(IObject *obj) { return *(void **)obj == sVTable ? static_cast<Decimal *>(obj) : nullptr; }
+	static Decimal *ToDecimal(IObject *obj) { return obj && *(void **)obj == sVTable ? static_cast<Decimal *>(obj) : nullptr; }
 	static Decimal *ToDecimal(ExprTokenType &aToken);
 	ResultType ToToken(ExprTokenType &aToken);
 	bool Assign(ExprTokenType *aToken);

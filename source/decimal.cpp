@@ -707,7 +707,7 @@ int Decimal::Eval(ExprTokenType &this_token, ExprTokenType *right_token)
 				tmp.assign(right_token->value_int64);
 			else if (right_token->symbol == SYM_FLOAT)
 				tmp.assign(right_token->value_double);
-			else if (auto t = ToDecimal(right_token->object))
+			else if (auto t = ToDecimal(*right_token))
 				right = t;
 			else return -1;
 
