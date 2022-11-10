@@ -2992,7 +2992,8 @@ public:
 
 	UserMenu *mTrayMenu; // Our tray menu, which should be destroyed upon exiting the program.
 	DWORD mEncrypt;
-	Array* mInitFuncs;	// run before AutoExecSection
+	Line *mExecLineBeforeAutoExec;	// run before AutoExecSection
+	void ResolveLinesBeforeAutoExec();
     
 	ResultType Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestart, HINSTANCE hInstance, LPTSTR aTitle);
 	ResultType CreateWindows();

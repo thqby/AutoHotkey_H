@@ -388,7 +388,7 @@ Script::Script()
 	, mCustomIcon(NULL), mCustomIconSmall(NULL) // Normally NULL unless there's a custom tray icon loaded dynamically.
 	, mCustomIconFile(NULL), mIconFrozen(false), mTrayIconTip(NULL) // Allocated on first use.
 	, mCustomIconNumber(0)
-	, mTrayMenu(NULL), mEncrypt(0), mExiting(false), mInitFuncs(NULL), mKind(ScriptKindFile)
+	, mTrayMenu(NULL), mEncrypt(0), mExiting(false), mExecLineBeforeAutoExec(NULL), mKind(ScriptKindFile)
 {
 	// v1.0.25: mLastScriptRest (removed in v2) and mLastPeekTime are now initialized
 	// right before the auto-exec section of the script is launched, which avoids an
@@ -471,8 +471,6 @@ Script::~Script() // Destructor.
 		mClassObject[mClassObjectCount]->EndClassDefinition();
 		mClassObject[mClassObjectCount]->Release();
 	}
-	if (mInitFuncs)
-		mInitFuncs->Release(), mInitFuncs = NULL;
 
 	// L31: Release objects stored in variables, where possible.
 	g->ExcptMode |= EXCPTMODE_CATCH;
@@ -830,6 +828,23 @@ Script::~Script() // Destructor.
 	//	OleUninitialize();
 	//else
 		CoUninitialize();
+}
+
+
+
+void Script::ResolveLinesBeforeAutoExec()
+{
+	if (mExecLineBeforeAutoExec)
+	{
+		if (mExecLineBeforeAutoExec->mNextLine = mFirstLine)
+			mFirstLine->mPrevLine = mExecLineBeforeAutoExec;
+		else
+			mLastLine = mExecLineBeforeAutoExec;
+		mFirstLine = mExecLineBeforeAutoExec;
+		mExecLineBeforeAutoExec = nullptr;
+		while (mFirstLine->mPrevLine)
+			mFirstLine = mFirstLine->mPrevLine;
+	}
 }
 
 
@@ -1422,22 +1437,6 @@ ResultType Script::AutoExecSection()
 	// would terminate the script:
 	++g_nThreads;
 
-	if (mInitFuncs) {
-		ExprTokenType val;
-		for (UINT i = 0; mInitFuncs->ItemToToken(i, val); i++) {
-			Var* var;
-			IObject* obj;
-			ResultToken result;
-			if ((var = FindGlobalVar(val.marker)) && (obj = var->ToObject())) {
-				result.InitResult(result.buf);
-				obj->Invoke(result, IT_CALL, nullptr, ExprTokenType{ obj }, nullptr, 0);
-				result.Free();
-			}
-		}
-		mInitFuncs->Release();
-		mInitFuncs = NULL;
-	}
-
 	// v1.0.48: Due to switching from SET_UNINTERRUPTIBLE_TIMER to IsInterruptible():
 	// In spite of the comments in IsInterruptible(), periodically have a timer call IsInterruptible() due to
 	// the following scenario:
@@ -1796,7 +1795,9 @@ LineNumberType Script::LoadFromText(LPTSTR aScript, LPCTSTR aPathToShow)
 	// function library auto-inclusions to be processed correctly.
 
 	// Load the main script file.  This will also load any files it includes with #Include.
-	if (LoadIncludedText(aScript, aPathToShow) != OK)
+	auto result = LoadIncludedText(aScript, aPathToShow);
+	ResolveLinesBeforeAutoExec();
+	if (!result)
 		return LOADING_FAILED;
 
 #ifdef ENABLE_DLLCALL
@@ -1829,7 +1830,7 @@ LineNumberType Script::LoadFromText(LPTSTR aScript, LPCTSTR aPathToShow)
 	// Resolve any unresolved base classes.
 	if (mUnresolvedClasses)
 	{
-		auto result = ResolveClasses();
+		result = ResolveClasses();
 		mUnresolvedClasses->Release();
 		mUnresolvedClasses = NULL;
 		if (!result)
@@ -2037,7 +2038,9 @@ UINT Script::LoadFromFile(LPCTSTR aFileSpec)
 #endif
 
 	// Load the main script file.  This will also load any files it includes with #Include.
-	if (!LoadIncludedFile(mKind == ScriptKindStdIn ? _T("*") : aFileSpec, false, false))
+	auto result = LoadIncludedFile(mKind == ScriptKindStdIn ? _T("*") : aFileSpec, false, false);
+	ResolveLinesBeforeAutoExec();
+	if (!result)
 		return LOADING_FAILED;
 
 #ifdef ENABLE_DLLCALL
@@ -4772,14 +4775,25 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 #endif
 	}
 
-	if (IS_DIRECTIVE_MATCH(_T("#Init")) && g_script->mInitFuncs)
+	if (IS_DIRECTIVE_MATCH(_T("#InitExec")))
 	{
-		parameter = strip_quote_marks(parameter);
-		if (!*parameter)
-			return ScriptError(ERR_PARAM1_INVALID);
-		if (!Var::ValidateName(parameter, DISPLAY_FUNC_ERROR))
+		if (!parameter)
+			return ScriptError(ERR_PARAM1_REQUIRED);
+		if (g->CurrentFunc || g->CurrentMacro)
+			return ScriptError(_T("#InitExec are not allowed inside functions or classes."), aBuf);
+		auto line = mPendingRelatedLine;
+		auto result = ParseAndAddLine(parameter);
+		mPendingRelatedLine = line, line = mLastLine;
+		if (!result)
 			return FAIL;
-		g_script->mInitFuncs->Append(parameter);
+		if (line->mActionType != ACT_EXPRESSION && line->mActionType != ACT_ASSIGNEXPR)
+			return ScriptError(ERR_UNRECOGNIZED_ACTION, aBuf);
+		if (mLastLine = mLastLine->mPrevLine)
+			mLastLine->mNextLine = nullptr;
+		else mFirstLine = nullptr;
+		if (line->mPrevLine = mExecLineBeforeAutoExec)
+			mExecLineBeforeAutoExec->mNextLine = line;
+		mExecLineBeforeAutoExec = line;
 		return CONDITION_TRUE;
 	}
 

@@ -278,7 +278,6 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 	// Set up the basics of the script:
 	if (g_script->Init(*g, script_filespec, restart_mode, 0, _T("")) != OK)
 		goto err;
-	g_script->mInitFuncs = Array::Create();
 
 	// Could use CreateMutex() but that seems pointless because we have to discover the
 	// hWnd of the existing process so that we can close or restart it, so we would have
@@ -576,7 +575,6 @@ unsigned __stdcall ThreadMain(LPTSTR *data)
 		// Set up the basics of the script:
 		if (g_script->Init(*g, filepath, 0, g_hInstance, lpTitle) != OK) // Set up the basics of the script, using the above.
 			goto err;
-		g_script->mInitFuncs = Array::Create();
 
 		//if (nameHinstanceP.istext)
 		//	GetCurrentDirectory(MAX_PATH, g_script->mFileDir);

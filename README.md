@@ -41,6 +41,9 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
   - Added `Array.Prototype.Map(callback: (value [, index]) => Integer) => Array`
   - Added `Array.Prototype.Sort(callback?: (a, b) => Integer) => Array`, sort in place and return and the default is random sort
 
+- After beta.15
+  - Added `#InitExec expression`, execute the expressions in load order before the script begins, is similar to the static initializer for v1
+
 ## Classes List
 ```typescript
 class Decimal {
