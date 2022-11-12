@@ -466,7 +466,7 @@ Array *Array::FromEnumerable(ExprTokenType &aEnumerable)
 
 
 //
-// Array::ToStrings - Used by BIF_StrSplit.
+// Array::ToStrings - Used by StrSplit.
 //
 
 ResultType Array::ToStrings(LPTSTR *aStrings, int &aStringCount, int aStringsMax)
@@ -912,7 +912,7 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 			{
 				auto result = Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType { this }, nullptr, 0);
 				if (result == INVOKE_NOT_HANDLED || (aResultToken.symbol == SYM_STRING && aResultToken.marker == g_DefaultObjectValue))
-					_o_throw(ERR_ITEM_UNSET, ParamIndexToString(0, _f_number_buf), ErrorPrototype::UnsetItem);
+					_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
 				return;
 			}
 			// Otherwise, caller provided a default value.
@@ -1280,7 +1280,7 @@ void Map::Delete(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 	{
 		// Our return value when only one arg is given is supposed to be the value
 		// removed from this[arg].  Since this[arg] would throw an exception...
-		_o_throw(ERR_ITEM_UNSET, ParamIndexToString(0, _f_number_buf), ErrorPrototype::UnsetItem);
+		_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
 	}
 	// Set return value to the removed item.
 	item->ReturnMove(aResultToken);
@@ -1352,8 +1352,7 @@ void Map::CaseSense(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 	if (mCount)
 		_o_throw(_T("Map must be empty"));
 
-	LPTSTR value = ParamIndexToString(0, _f_number_buf);
-	switch (Line::ConvertStringCaseSense(value))
+	switch (TokenToStringCase(*aParam[0]))
 	{
 	case SCS_SENSITIVE:
 		mFlags &= ~(MapCaseless | MapUseLocale);
@@ -1365,7 +1364,7 @@ void Map::CaseSense(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 		mFlags = (mFlags | MapCaseless) & ~MapUseLocale;
 		break;
 	default:
-		_o_throw_value(ERR_INVALID_VALUE, value);
+		_o_throw(ERR_INVALID_VALUE, *aParam[0], ErrorPrototype::Value);
 	}
 }
 
@@ -2101,7 +2100,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 			ExprTokenType def;
 			if (IS_INVOKE_GET && Array::sPrototype->GetOwnProp(def, _T("Default")))
 				return (void)aResultToken.CopyValueFrom(def);
-			_o_throw(ERR_INVALID_INDEX, ParamIndexToString(IS_INVOKE_SET ? 1 : 0, _f_number_buf), ErrorPrototype::Index);
+			_o_throw(ERR_INVALID_INDEX, *aParam[IS_INVOKE_SET ? 1 : 0], ErrorPrototype::Index);
 		}
 		auto &item = mItem[index];
 		if (IS_INVOKE_SET)
@@ -2120,7 +2119,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 			auto result = Object::Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType{this}, nullptr, 0);
 			if (result != INVOKE_NOT_HANDLED && (aResultToken.symbol != SYM_STRING || aResultToken.marker != g_DefaultObjectValue))
 				_o_return_retval;
-			_o_throw(ERR_ITEM_UNSET, ParamIndexToString(0, _f_number_buf), ErrorPrototype::UnsetItem);
+			_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
 		}
 		item.ReturnRef(aResultToken);
 		_o_return_retval;
@@ -2179,7 +2178,12 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 			index = mLength - 1;
 		}
 		
-		index_t count = (index_t)ParamIndexToOptionalInt64(1, 1);
+		index_t count = 1;
+		if (!ParamIndexIsOmitted(1))
+		{
+			Throw_if_Param_NaN(1);
+			count = (index_t)ParamIndexToInt64(1);
+		}
 		if (index + count > mLength)
 			_o_throw_param(1);
 
@@ -2418,7 +2422,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 Array::index_t Array::ParamToZeroIndex(ExprTokenType &aParam)
 {
 	if (!TokenIsNumeric(aParam))
-		return -1;
+		return BadIndex;
 	auto index = TokenToInt64(aParam);
 	if (index <= 0) // Let -1 be the last item and 0 be the first unused index.
 		index += mLength + 1;
@@ -3030,8 +3034,15 @@ bool BoundFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPa
 	this_token.object = mFunc;
 
 	// Call the function or object.
-	return mFunc->Invoke(aResultToken, mFlags, mMember, this_token, aParam, aParamCount);
-	//return CallFunc(*mFunc, aResultToken, params, param_count);
+	switch (mFunc->Invoke(aResultToken, mFlags, mMember, this_token, aParam, aParamCount))
+	{
+	case FAIL:
+		return FAIL;
+	default:
+		return OK;
+	case INVOKE_NOT_HANDLED:
+		return aResultToken.UnknownMemberError(this_token, IT_CALL, mMember);
+	}
 }
 
 BoundFunc *BoundFunc::Bind(IObject *aFunc, int aFlags, LPCTSTR aMember, ExprTokenType **aParam, int aParamCount)
@@ -3294,15 +3305,19 @@ void ClipboardAll::__New(ResultToken &aResultToken, int aID, int aFlags, ExprTok
 		else
 		{
 			// Caller supplied an address.
+			Throw_if_Param_NaN(0);
 			caller_data = (size_t)ParamIndexToIntPtr(0);
 			if (caller_data < 65536) // Basic check to catch incoming raw addresses that are zero or blank.  On Win32, the first 64KB of address space is always invalid.
 				_o_throw_param(0);
 			size = -1;
 		}
 		if (!ParamIndexIsOmitted(1))
+		{
+			Throw_if_Param_NaN(1);
 			size = (size_t)ParamIndexToIntPtr(1);
+		}
 		else if (size == -1) // i.e. it can be omitted when size != -1 (a string was passed).
-			_o_throw_value(ERR_PARAM2_MUST_NOT_BE_BLANK);
+			return (void)aResultToken.ParamError(1, nullptr);
 		if (  !(data = malloc(size))  ) // More likely to be due to invalid parameter than out of memory.
 			_o_throw_oom;
 		memcpy(data, (void *)caller_data, size);
@@ -3457,7 +3472,7 @@ void DefineClasses(Object *aBaseClass, Object *aBaseProto, std::initializer_list
 }
 
 
-Object *Object::CreateRootPrototypes()
+void Object::CreateRootPrototypes()
 {
 	// Create the root prototypes before defining any members, since
 	// each member relies on Func::sPrototype having been initialized.
@@ -3603,11 +3618,9 @@ Object *Object::CreateRootPrototypes()
 	// Permit Object.Call to construct Error objects.
 	ErrorPrototype::Error->mFlags &= ~NativeClassPrototype;
 	ErrorPrototype::OS->mFlags &= ~NativeClassPrototype;
-
-	return sAnyPrototype;
 }
 
-thread_local Object *Object::sAnyPrototype; // = CreateRootPrototypes();
+thread_local Object *Object::sAnyPrototype;
 thread_local Object *Func::sPrototype;
 thread_local Object *Object::sPrototype;
 

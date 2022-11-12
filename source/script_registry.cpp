@@ -100,7 +100,7 @@ bif_impl FResult IniRead(StrArg aFilespec, optl<StrArg> aSection, optl<StrArg> a
 static BOOL IniEncodingFix(LPCWSTR aFilespec, LPCWSTR aSection)
 {
 	BOOL result = TRUE;
-	if (!DoesFilePatternExist(aFilespec))
+	if (GetFileAttributes(aFilespec) == INVALID_FILE_ATTRIBUTES) // File does not appear to exist.
 	{
 		HANDLE hFile;
 		DWORD dwWritten;
@@ -378,12 +378,14 @@ void RegWrite(ResultToken &aResultToken, ExprTokenType *aValue, DWORD aValueType
 	if (aValue) // RegWrite, not RegCreateKey
 	{
 		if (aValueType == REG_NONE) // Omitted
-			_f_throw_value(ERR_PARAM2_MUST_NOT_BE_BLANK);
+			return (void)aResultToken.ParamError(1, nullptr);
 
 		if (aValueType != REG_DWORD)
 			value = TokenToString(*aValue, nbuf, &length);
-		else
+		else if (TokenIsNumeric(*aValue))
 			dwBuf = (DWORD)TokenToInt64(*aValue);
+		else
+			return (void)aResultToken.ParamError(0, aValue, _T("Number"));
 	}
 
 	// Open/Create the registry key
@@ -686,10 +688,14 @@ BIF_DECL(BIF_Reg)
 		LPTSTR key_name = ParamIndexToOptionalString(0); // No buf needed since numbers aren't valid root keys.
 		root_key = Line::RegConvertKey(key_name, &sub_key, &close_root);
 		if (!root_key)
-			_f_throw_value(action == FID_RegWrite ? ERR_PARAM3_INVALID : ERR_PARAM1_INVALID, key_name);
+			return (void)aResultToken.ParamError(action == FID_RegWrite ? 2 : 0, aParamCount ? aParam[0] : nullptr);
 	}
 	if (!ParamIndexIsOmitted(1)) // Implies this isn't RegDeleteKey.
+	{
+		if (ParamIndexToObject(1))
+			return (void)aResultToken.ParamError(action == FID_RegWrite ? 3 : 1, aParam[1], _T("String"));
 		value_name = ParamIndexToString(1, _f_number_buf);
+	}
 
 	switch (action)
 	{

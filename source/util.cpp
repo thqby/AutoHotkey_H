@@ -145,6 +145,10 @@ ResultType YYYYMMDDToSystemTime(LPCTSTR aYYYYMMDD, SYSTEMTIME &aSystemTime, bool
 // (Windows generally does not support earlier years).  Otherwise OK is returned.
 {
 	// sscanf() is avoided because it adds 2 KB to the compressed EXE size.
+	// Alternative approaches were tried to further reduce size but ultimately had the opposite effect:
+	//  - Parse each sequence of digits inline; e.g. (t[0] - '0') * 10 + (t[1] - '0') ...
+	//  - Parse with istrtoi64() and use division and modulo to extract each component.
+	//  - tcslcpy() once and take each component from the right, re-terminating instead of copying each.
 	TCHAR temp[16];
 	size_t length = _tcslen(aYYYYMMDD); // Use this rather than incrementing the pointer in case there are ever partial fields such as 20051 vs. 200501.
 
@@ -214,7 +218,7 @@ ResultType YYYYMMDDToSystemTime(LPCTSTR aYYYYMMDD, SYSTEMTIME &aSystemTime, bool
 	}
 
 	// Callers who check the return value expect this to be done even when !aValidateTimeValues:
-	if (length < 4 || (length & 1) || length > 14)
+	if (length < 4 || (length & 1) || length > 14 || !IsNumeric(aYYYYMMDD, false, false))
 		return FAIL;
 
 	if (aValidateTimeValues)
@@ -1415,7 +1419,7 @@ size_t PredictReplacementSize(ptrdiff_t aLengthDelta, int aReplacementCount, int
 
 
 
-LPTSTR TranslateLFtoCRLF(LPTSTR aString)
+LPTSTR TranslateLFtoCRLF(LPCTSTR aString)
 // Can't use StrReplace() for this because any CRLFs originally present in aString are not changed (i.e. they
 // don't become CRCRLF) [there may be other reasons].
 // Translates any naked LFs in aString to CRLF.  If there are none, the original string is returned.
@@ -1424,9 +1428,8 @@ LPTSTR TranslateLFtoCRLF(LPTSTR aString)
 {
 	UINT naked_LF_count = 0;
 	size_t length = 0;
-	LPTSTR cp;
 
-	for (cp = aString; *cp; ++cp)
+	for (auto cp = aString; *cp; ++cp)
 	{
 		++length;
 		if (*cp == '\n' && (cp == aString || cp[-1] != '\r')) // Relies on short-circuit boolean order.
@@ -1434,16 +1437,16 @@ LPTSTR TranslateLFtoCRLF(LPTSTR aString)
 	}
 
 	if (!naked_LF_count)
-		return aString;  // The original string is returned, which the caller must check for (vs. new string).
+		return const_cast<LPTSTR>(aString);
 
 	// Allocate the new memory that will become the caller's responsibility:
-	LPTSTR buf = (LPTSTR)tmalloc(length + naked_LF_count + 1);  // +1 for zero terminator.
+	LPTSTR buf = tmalloc(length + naked_LF_count + 1);  // +1 for zero terminator.
 	if (!buf)
-		return NULL;
+		return nullptr;
 
 	// Now perform the translation.
 	LPTSTR dp = buf; // Destination.
-	for (cp = aString; *cp; ++cp)
+	for (auto cp = aString; *cp; ++cp)
 	{
 		if (*cp == '\n' && (cp == aString || cp[-1] != '\r')) // Relies on short-circuit boolean order.
 			*dp++ = '\r';  // Insert an extra CR here, then insert the '\n' normally below.
@@ -1669,20 +1672,12 @@ void AssignColor(LPTSTR aColorName, COLORREF &aColor, HBRUSH &aBrush)
 // be determined, it will always be set to CLR_DEFAULT (and aBrush set to NULL to match).
 // It will never be set to CLR_NONE.
 {
-	COLORREF color;
-	if (!*aColorName)
-		color = CLR_DEFAULT;
-	else
-	{
-		color = ColorNameToBGR(aColorName);
-		if (color == CLR_NONE) // A matching color name was not found, so assume it's a hex color value.
-			// It seems strtol() automatically handles the optional leading "0x" if present:
-			color = rgb_to_bgr(_tcstol(aColorName, NULL, 16));
-			// if aColorName does not contain something hex-numeric, black (0x00) will be assumed,
-			// which seems okay given how rare such a problem would be.
-	}
+	COLORREF color = 0;
+	ColorToBGR(aColorName, color);
 	AssignColor(color, aColor, aBrush);
 }
+
+
 
 void AssignColor(COLORREF color, COLORREF &aColor, HBRUSH &aBrush)
 {
@@ -1701,7 +1696,29 @@ void AssignColor(COLORREF color, COLORREF &aColor, HBRUSH &aBrush)
 
 
 
-COLORREF ColorNameToBGR(LPTSTR aColorName)
+bool ColorToBGR(LPCTSTR aColorNameOrRGB, COLORREF &aBGR)
+{
+	if (!*aColorNameOrRGB)
+		aBGR = CLR_DEFAULT;
+	else
+	{
+		aBGR = ColorNameToBGR(aColorNameOrRGB);
+		if (aBGR == CLR_NONE) // A matching color name was not found, so assume it's a hex color value.
+		{
+			wchar_t *endptr;
+			// It seems _tcstol() automatically handles the optional leading "0x" if present:
+			aBGR = rgb_to_bgr(_tcstol(aColorNameOrRGB, &endptr, 16));
+			// If the leading part of aColorNameOrRGB was not hex-numeric, black (0x00) will be assumed.
+			// The return value will indicate whether the value was entirely a valid hex number.
+			return !*endptr;
+		}
+	}
+	return true;
+}
+
+
+
+COLORREF ColorNameToBGR(LPCTSTR aColorName)
 // These are the main HTML color names.  Returns CLR_NONE if a matching HTML color name can't be found.
 // Returns CLR_DEFAULT only if aColorName is the word Default.
 {
@@ -3103,14 +3120,14 @@ bool IsStringInList(LPTSTR aStr, LPTSTR aList, bool aFindExactMatch)
 
 
 
-LPTSTR InStrAny(LPTSTR aStr, LPTSTR aNeedle[], int aNeedleCount, size_t &aFoundLen)
+LPCTSTR InStrAny(LPCTSTR aStr, LPTSTR aNeedle[], int aNeedleCount, size_t &aFoundLen)
 {
 	// For each character in aStr:
 	for ( ; *aStr; ++aStr)
 		// For each needle:
 		for (int i = 0; i < aNeedleCount; ++i)
 			// For each character in this needle:
-			for (LPTSTR needle_pos = aNeedle[i], str_pos = aStr; ; ++needle_pos, ++str_pos)
+			for (LPCTSTR needle_pos = aNeedle[i], str_pos = aStr; ; ++needle_pos, ++str_pos)
 			{
 				if (!*needle_pos)
 				{

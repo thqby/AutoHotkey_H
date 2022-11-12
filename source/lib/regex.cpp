@@ -736,7 +736,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 	ExprTokenType param, obj_token;
 	ExprTokenType* params = &param;
 	ResultToken result_token;
-	if (aParamCount > 2 && (obj = ParamIndexToObject(2))) {
+	if (!ParamIndexIsOmitted(2) && (obj = ParamIndexToObject(2))) {
 		if (!ValidateFunctor(obj, 1, aResultToken))
 			return;
 		result_token.InitResult(repl_buf);
@@ -771,7 +771,12 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 	}
 
 	// See if a replacement limit was specified.  If not, use the default (-1 means "replace all").
-	int limit = ParamIndexToOptionalInt(4, -1);
+	int limit = -1;
+	if (!ParamIndexIsOmitted(4))
+	{
+		Throw_if_Param_NaN(4);
+		limit = ParamIndexToInt(4);
+	}
 
 	// aStartingOffset is altered further on in the loop; but for its initial value, the caller has ensured
 	// that it lies within aHaystackLength.  Also, if there are no replacements yet, haystack_pos ignores
@@ -1142,6 +1147,11 @@ BIF_DECL(BIF_RegEx)
 // This function is the initial entry point for both RegExMatch() and RegExReplace().
 // Caller has set aResultToken.symbol to a default of SYM_INTEGER.
 {
+	if (ParamIndexToObject(0))
+		_f_throw_param(0, _T("String"));
+	if (ParamIndexToObject(1))
+		_f_throw_param(1, _T("String"));
+
 	bool mode_is_replace = _f_callee_id == FID_RegExReplace;
 	LPTSTR needle = ParamIndexToString(1, _f_number_buf); // Caller has already ensured that at least two actual parameters are present.
 
@@ -1165,6 +1175,7 @@ BIF_DECL(BIF_RegEx)
 		starting_offset = 0; // The one-based starting position in haystack (if any).  Convert it to zero-based.
 	else
 	{
+		Throw_if_Param_NaN(param_index);
 		starting_offset = ParamIndexToInt(param_index);
 		if (starting_offset <= 0) // Same convention as SubStr(): Treat negative StartingPos as a position relative to the end of the string.
 		{

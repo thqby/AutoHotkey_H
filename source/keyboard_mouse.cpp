@@ -1763,18 +1763,6 @@ void KeyEvent(KeyEventTypes aEventType, vk_type aVK, sc_type aSC, HWND aTargetWi
 		// Users of the below want them updated only for keybd_event() keystrokes (not PostMessage ones):
 		sPrevEventType = aEventType;
 		sPrevVK = aVK;
-		// Turn off BlockInput momentarily to support sending of the ALT key.
-		// Jon Bennett noted: "As many of you are aware BlockInput was "broken" by a SP1 hotfix under
-		// Windows XP so that the ALT key could not be sent. I just tried it under XP SP2 and it seems
-		// to work again."  In light of this, it seems best to unconditionally and momentarily disable
-		// input blocking regardless of which OS is being used.
-		// For thread safety, allow block-input modification only by the main thread.  This should avoid
-		// any chance that block-input will get stuck on due to two threads simultaneously reading+changing
-		// g_BlockInput (changes occur via calls to ScriptBlockInput).
-		bool we_turned_blockinput_off = g_BlockInput && (aVK == VK_MENU || aVK == VK_LMENU || aVK == VK_RMENU)
-			&& !caller_is_keybd_hook; // Ordered for short-circuit performance.
-		if (we_turned_blockinput_off)
-			OurBlockInput(false);
 
 		ResultType target_layout_has_altgr = caller_is_keybd_hook ? LayoutHasAltGr(GetFocusedKeybdLayout())
 			: sTargetLayoutHasAltGr;
@@ -1836,9 +1824,6 @@ void KeyEvent(KeyEventTypes aEventType, vk_type aVK, sc_type aSC, HWND aTargetWi
 			if (do_key_history)
 				UpdateKeyEventHistory(true, aVK, aSC);
 		}
-
-		if (we_turned_blockinput_off)  // Already made thread-safe by action higher above.
-			OurBlockInput(true);  // Turn BlockInput back on.
 	}
 
 	if (aDoKeyDelay) // SM_PLAY also uses DoKeyDelay(): it stores the delay item in the event array.
@@ -2089,7 +2074,7 @@ void PerformMouseCommon(ActionTypeType aActionType, vk_type aVK, int aX1, int aY
 void MouseClickDrag(vk_type aVK, int aX1, int aY1, int aX2, int aY2, int aSpeed, bool aMoveOffset)
 {
 	// Check if one of the coordinates is missing, which can happen in cases where this was called from
-	// a source that didn't already validate it. Can't call Line::ValidateMouseCoords() because that accepts strings.
+	// a source that didn't already validate it.
 	if (   (aX1 == COORD_UNSPECIFIED && aY1 != COORD_UNSPECIFIED) || (aX1 != COORD_UNSPECIFIED && aY1 == COORD_UNSPECIFIED)
 		|| (aX2 == COORD_UNSPECIFIED && aY2 != COORD_UNSPECIFIED) || (aX2 != COORD_UNSPECIFIED && aY2 == COORD_UNSPECIFIED)   )
 		return;

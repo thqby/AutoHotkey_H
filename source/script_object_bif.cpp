@@ -92,8 +92,12 @@ BIF_DECL(BIF_ObjBindMethod)
 	LPCTSTR name = nullptr;
 	if (aParamCount > 1)
 	{
-		if (aParam[1]->symbol != SYM_MISSING)
-			name = TokenToString(*aParam[1], _f_number_buf);
+		switch (TypeOfToken(*aParam[1]))
+		{
+		case SYM_MISSING: break;
+		case SYM_OBJECT: _f_throw_param(1, _T("String"));
+		default: name = TokenToString(*aParam[1], _f_number_buf);
+		}
 		aParam += 2;
 		aParamCount -= 2;
 	}
@@ -222,7 +226,12 @@ BIF_DECL(BIF_GetMethod)
 	auto method = method_name ? obj->GetMethod(method_name) : obj; // Validate obj itself as a function if method name is omitted.
 	if (method)
 	{
-		int param_count = ParamIndexToOptionalInt(2, -1); // Default to no parameter count validation.
+		int param_count = -1; // Default to no parameter count validation.
+		if (!ParamIndexIsOmitted(2))
+		{
+			Throw_if_Param_NaN(2);
+			param_count = ParamIndexToInt(2);
+		}
 		if (param_count != -1 && method_name)
 			++param_count; // So caller does not need to include the implicit `this` parameter.
 		switch (ValidateFunctor(method, param_count, aResultToken, nullptr, _f_callee_id == FID_GetMethod))

@@ -338,7 +338,7 @@ BIF_DECL(BIF_FormatTime)
 BIF_DECL(BIF_StrCase)
 {
 	size_t length;
-	LPTSTR contents = ParamIndexToString(0, _f_number_buf, &length);
+	_f_param_string(contents, 0, &length);
 
 	// Make a modifiable copy of the string to return:
 	if (!TokenSetResult(aResultToken, contents, length))
@@ -370,7 +370,12 @@ BIF_DECL(BIF_StrReplace)
 		_f_throw_param(3);
 
 	Var *output_var_count = ParamIndexToOutputVar(4); 
-	UINT replacement_limit = (UINT)ParamIndexToOptionalInt64(5, UINT_MAX); 
+	UINT replacement_limit = UINT_MAX;
+	if (!ParamIndexIsOmitted(5))
+	{
+		Throw_if_Param_NaN(5);
+		replacement_limit = (UINT)ParamIndexToInt64(5); 
+	}
 	
 
 	// Note: The current implementation of StrReplace() should be able to handle any conceivable inputs
@@ -400,54 +405,57 @@ BIF_DECL(BIF_StrReplace)
 
 
 
-BIF_DECL(BIF_StrSplit)
 // Array := StrSplit(String [, Delimiters, OmitChars, MaxParts])
+bif_impl FResult StrSplit(StrArg aInputString, ExprTokenType *aDelimiters, optl<StrArg> aOmitChars, optl<int> aMaxParts, IObject *&aRetVal)
 {
-	LPTSTR aInputString = ParamIndexToString(0, _f_number_buf);
 	LPTSTR *aDelimiterList = NULL;
 	int aDelimiterCount = 0;
-	LPTSTR aOmitList = _T("");
+	auto aOmitList = aOmitChars.value_or_empty();
 	int splits_left = -2;
 
-	if (aParamCount > 1)
+	if (aDelimiters)
 	{
-		if (auto arr = dynamic_cast<Array *>(TokenToObject(*aParam[1])))
+		if (auto obj = TokenToObject(*aDelimiters))
 		{
+			auto arr = dynamic_cast<Array *>(obj);
+			if (!arr)
+				return FR_E_ARG(1);
 			aDelimiterCount = arr->Length();
+			if (!aDelimiterCount)
+				return FR_E_ARG(1);
 			aDelimiterList = (LPTSTR *)_alloca(aDelimiterCount * sizeof(LPTSTR *));
 			if (!arr->ToStrings(aDelimiterList, aDelimiterCount, aDelimiterCount))
 				// Array contains something other than a string.
-				goto throw_invalid_delimiter;
+				return FR_E_ARG(1);
 			for (int i = 0; i < aDelimiterCount; ++i)
 				if (!*aDelimiterList[i])
 					// Empty string in delimiter list. Although it could be treated similarly to the
 					// "no delimiter" case, it's far more likely to be an error. If ever this check
 					// is removed, the loop below must be changed to support "" as a delimiter.
-					goto throw_invalid_delimiter;
+					return FR_E_ARG(1);
 		}
 		else
 		{
 			aDelimiterList = (LPTSTR *)_alloca(sizeof(LPTSTR *));
-			*aDelimiterList = TokenToString(*aParam[1]);
+			*aDelimiterList = TokenToString(*aDelimiters);
 			aDelimiterCount = **aDelimiterList != '\0'; // i.e. non-empty string.
 		}
-		if (aParamCount > 2)
-		{
-			aOmitList = TokenToString(*aParam[2]);
-			if (aParamCount > 3)
-				splits_left = (int)TokenToInt64(*aParam[3]) - 1;
-		}
 	}
+	if (aMaxParts.has_value())
+		splits_left = aMaxParts.value() - 1;
 	
 	auto output_array = Array::Create();
 	if (!output_array)
-		goto throw_outofmem;
+		return FR_E_OUTOFMEM;
 
 	if (!*aInputString // The input variable is blank, thus there will be zero elements.
 		|| splits_left == -1) // The caller specified 0 parts.
-		_f_return(output_array);
+	{
+		aRetVal = output_array;
+		return OK;
+	}
 	
-	LPTSTR contents_of_next_element, delimiter, new_starting_pos;
+	LPCTSTR contents_of_next_element, delimiter, new_starting_pos;
 	size_t element_length, delimiter_length;
 
 	if (aDelimiterCount) // The user provided a list of delimiters, so process the input variable normally.
@@ -477,11 +485,14 @@ BIF_DECL(BIF_StrSplit)
 	else
 	{
 		// Otherwise aDelimiterList is empty, so store each char of aInputString in its own array element.
-		LPTSTR cp, dp;
+		LPCTSTR cp, dp;
 		for (cp = aInputString; ; ++cp)
 		{
 			if (!*cp)
-				_f_return(output_array); // All done.
+			{
+				aRetVal = output_array;
+				return OK;
+			}
 			for (dp = aOmitList; *dp; ++dp)
 				if (*cp == *dp) // This char is a member of the omitted list, thus it is not included in the output array.
 					break; // (inner loop)
@@ -513,19 +524,16 @@ BIF_DECL(BIF_StrSplit)
 	// If there are no chars to the left of the delim, or if they were all in the list of omitted
 	// chars, the item will be an empty string:
 	if (output_array->Append(contents_of_next_element, element_length))
-		_f_return(output_array); // All done.
+	{
+		aRetVal = output_array;
+		return OK;
+	}
 	//else memory allocation failed, so fall through:
 outofmem:
 	// The fact that this section is executing means that a memory allocation failed and caused the
 	// loop to break, so throw an exception.
 	output_array->Release(); // Since we're not returning it.
-	// Below: Using goto probably won't reduce code size (due to compiler optimizations), but keeping
-	// rarely executed code at the end of the function might help performance due to cache utilization.
-throw_outofmem:
-	// Either goto was used or FELL THROUGH FROM ABOVE.
-	_f_throw_oom;
-throw_invalid_delimiter:
-	_f_throw_param(1);
+	return FR_E_OUTOFMEM;
 }
 
 
@@ -1227,10 +1235,8 @@ BIF_DECL(BIF_StrCompare)
 	//	0,		if str1 is identical to str2.
 	//	> 0,	if str1 is greater than str2.
 	// Param 1 and 2, str1 and str2
-	TCHAR str1_buf[MAX_NUMBER_SIZE];	// numeric input is converted to string.
-	TCHAR str2_buf[MAX_NUMBER_SIZE];
-	LPTSTR str1 = ParamIndexToString(0, str1_buf);
-	LPTSTR str2 = ParamIndexToString(1, str2_buf);
+	_f_param_string(str1, 0);
+	_f_param_string(str2, 0);
 	// Could return 0 here if str1 == str2, but it is probably rare to call StrCompare(str_var, str_var)
 	// so for most cases that would just be an unnecessary cost, albeit low.
 	// Param 3 - CaseSensitive
@@ -1254,7 +1260,7 @@ BIF_DECL(BIF_StrLen)
 {
 	// Caller has ensured that there's exactly one actual parameter.
 	size_t length;
-	ParamIndexToString(0, _f_number_buf, &length); // Allow StrLen(numeric_expr) for flexibility.
+	_f_param_string(value, 0, &length);
 	_f_return_i(length);
 }
 
@@ -1266,11 +1272,11 @@ BIF_DECL(BIF_SubStr) // Added in v1.0.46.
 	_f_set_retval_p(_T(""), 0);
 
 	// Get the first arg, which is the string used as the source of the extraction. Call it "haystack" for clarity.
-	TCHAR haystack_buf[MAX_NUMBER_SIZE]; // A separate buf because _f_number_buf is sometimes used to store the result.
 	INT_PTR haystack_length;
-	LPTSTR haystack = ParamIndexToString(0, haystack_buf, (size_t *)&haystack_length);
+	_f_param_string(haystack, 0, (size_t *)&haystack_length);
 
 	// Load-time validation has ensured that at least the first two parameters are present:
+	Throw_if_Param_NaN(1);
 	INT_PTR starting_offset = (INT_PTR)ParamIndexToInt64(1); // The one-based starting position in haystack (if any).
 	if (starting_offset > haystack_length || starting_offset == 0)
 		_f_return_retval; // Yield the empty string (a default set higher above).
@@ -1289,6 +1295,7 @@ BIF_DECL(BIF_SubStr) // Added in v1.0.46.
 		extract_length = remaining_length_available;
 	else
 	{
+		Throw_if_Param_NaN(2);
 		if (   !(extract_length = (INT_PTR)ParamIndexToInt64(2))   )  // It has asked to extract zero characters.
 			_f_return_retval; // Yield the empty string (a default set higher above).
 		if (extract_length < 0)
@@ -1315,11 +1322,10 @@ BIF_DECL(BIF_SubStr) // Added in v1.0.46.
 BIF_DECL(BIF_InStr)
 {
 	// Caller has already ensured that at least two actual parameters are present.
-	TCHAR needle_buf[MAX_NUMBER_SIZE];
 	INT_PTR haystack_length;
-	LPTSTR haystack = ParamIndexToString(0, _f_number_buf, (size_t *)&haystack_length);
+	_f_param_string(haystack, 0, (size_t *)&haystack_length);
 	size_t needle_length;
-	LPTSTR needle = ParamIndexToString(1, needle_buf, &needle_length);
+	_f_param_string(needle, 1, &needle_length);
 	if (!needle_length) // Although arguably legitimate, this is more likely an error, so throw.
 		_f_throw_param(1);
 
@@ -1329,13 +1335,23 @@ BIF_DECL(BIF_InStr)
 		_f_throw_param(2);
 	// BIF_StrReplace sets string_case_sense similarly, maintain together.
 
-	INT_PTR offset = ParamIndexToOptionalIntPtr(3, 1);
-	if (!offset)
-		_f_throw_param(3);
+	INT_PTR offset = 1;
+	if (!ParamIndexIsOmitted(3))
+	{
+		Throw_if_Param_NaN(3);
+		offset = ParamIndexToIntPtr(3);
+		if (!offset)
+			_f_throw_param(3);
+	}
 	
-	int occurrence_number = ParamIndexToOptionalInt(4, 1);
-	if (!occurrence_number)
-		_f_throw_param(4);
+	int occurrence_number = 1;
+	if (!ParamIndexIsOmitted(4))
+	{
+		Throw_if_Param_NaN(4);
+		occurrence_number = ParamIndexToInt(4);
+		if (!occurrence_number)
+			_f_throw_param(4);
+	}
 
 	if (offset < 0)
 	{
@@ -1372,7 +1388,7 @@ BIF_DECL(BIF_Ord)
 {
 	// Result will always be an integer (this simplifies scripts that work with binary zeros since an
 	// empty string yields zero).
-	LPTSTR cp = ParamIndexToString(0, _f_number_buf);
+	_f_param_string(cp, 0);
 #ifndef UNICODE
 	// This section could convert a single- or multi-byte character to a Unicode code point
 	// for consistency, but since the ANSI build won't be officially supported that doesn't
@@ -1422,6 +1438,9 @@ BIF_DECL(BIF_Format)
 {
 	if (TokenIsPureNumeric(*aParam[0]))
 		_f_return_p(ParamIndexToString(0, _f_retval_buf));
+
+	if (ParamIndexToObject(0))
+		_f_throw_param(0, _T("String"));
 
 	LPCTSTR fmt = ParamIndexToString(0), lit, cp, cp_end, cp_spec;
 	LPTSTR target = NULL;
@@ -1500,22 +1519,23 @@ BIF_DECL(BIF_Format)
 					spec[spec_len++] = '6';
 					spec[spec_len++] = '4';
 					// Integer value; apply I64 prefix to avoid truncation.
-					value.value_int64 = ParamIndexToInt64(param);
+					value.symbol = SYM_INTEGER;
 					spec[spec_len++] = *cp++;
 				}
 				else if (_tcschr(_T("eEfgGaA"), *cp))
 				{
-					value.value_double = ParamIndexToDouble(param);
+					value.symbol = SYM_FLOAT;
 					spec[spec_len++] = *cp++;
 				}
 				else if (_tcschr(_T("cCp"), *cp))
 				{
 					// Input is an integer or pointer, but I64 prefix should not be applied.
-					value.value_int64 = ParamIndexToInt64(param);
+					value.symbol = SYM_INTEGER;
 					spec[spec_len++] = *cp++;
 				}
 				else
 				{
+					value.symbol = SYM_STRING;
 					spec[spec_len++] = 's'; // Default to string if not specified.
 					if (_tcschr(_T("ULlTt"), *cp))
 						custom_format = toupper(*cp++);
@@ -1525,13 +1545,25 @@ BIF_DECL(BIF_Format)
 			}
 			else
 			{
+				value.symbol = SYM_STRING;
 				// spec[0] contains '%'.
 				spec[1] = 's';
 				spec_len = 2;
 			}
-			if (spec[spec_len - 1] == 's')
+			if (value.symbol == SYM_STRING)
 			{
+				if (ParamIndexToObject(param))
+					_f_throw_param(param, _T("String"));
 				value.marker = ParamIndexToString(param, number_buf);
+			}
+			else
+			{
+				if (!ParamIndexIsNumeric(param))
+					_f_throw_param(param, _T("Number"));
+				if (value.symbol == SYM_INTEGER)
+					value.value_int64 = ParamIndexToInt64(param);
+				else
+					value.value_double = ParamIndexToDouble(param);
 			}
 			spec[spec_len] = '\0';
 			
@@ -1576,17 +1608,18 @@ BIF_DECL(BIF_Format)
 
 BIF_DECL(BIF_Trim) // L31
 {
+	if (ParamIndexToObject(0))
+		_f_throw_param(0, _T("String"));
+
 	BuiltInFunctionID trim_type = _f_callee_id;
 
 	LPTSTR buf = _f_retval_buf;
 	size_t extract_length;
 	LPTSTR str = ParamIndexToString(0, buf, &extract_length);
 
-	LPTSTR result = str; // Prior validation has ensured at least 1 param.
+	_f_param_string_opt_def(omit_list, 1, _T(" \t")); // Default: space and tab.
 
-	TCHAR omit_list_buf[MAX_NUMBER_SIZE]; // Support SYM_INTEGER/SYM_FLOAT even though it doesn't seem likely to happen.
-	LPTSTR omit_list = ParamIndexIsOmitted(1) ? _T(" \t") : ParamIndexToString(1, omit_list_buf); // Default: space and tab.
-
+	LPTSTR result = str;
 	if (trim_type != FID_RTrim) // i.e. it's Trim() or LTrim()
 	{
 		result = omit_leading_any(result, omit_list, extract_length);

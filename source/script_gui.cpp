@@ -109,13 +109,25 @@ void UpdateScrollbars(GuiType *agui, int client_right, int client_bottom,bool do
 		ScrollWindow(agui->mHwnd, xScroll, yScroll, NULL, NULL);
 }
 
+// Gui methods use this macro either if they require the Gui to have a window,
+// or if they aren't safe to use after Dispose() is called.
+#define GUI_MUST_HAVE_HWND if (!mHwnd) return GuiNoWindowError()
+// Using a noinline function reduces code by a few hundred bytes across all methods.
+// Returning something like FR_E_WIN32(ERROR_INVALID_WINDOW_HANDLE) instead is about
+// the same, so it seems better to use the clearer error message.
+__declspec(noinline) FResult GuiNoWindowError() { return FError(ERR_GUI_NO_WINDOW); }
+
+#define CTRL_THROW_IF_DESTROYED if (!hwnd) return ControlDestroyedError()
+__declspec(noinline) FResult ControlDestroyedError() { return FError(_T("The control is destroyed.")); }
+
+
 // Window class atom used by Guis.
 thread_local static ATOM sGuiWinClass;
 
 
 LPTSTR GuiControlType::sTypeNames[GUI_CONTROL_TYPE_COUNT] = { GUI_CONTROL_TYPE_NAMES };
 
-GuiControls GuiControlType::ConvertTypeName(LPTSTR aTypeName)
+GuiControls GuiControlType::ConvertTypeName(LPCTSTR aTypeName)
 {
 	for (int i = 1; i < _countof(sTypeNames); ++i) // Start at 1 because 0 is GUI_CONTROL_INVALID.
 		if (!_tcsicmp(aTypeName, sTypeNames[i]))
@@ -263,377 +275,150 @@ ResultType GuiType::GetEnumItem(UINT &aIndex, Var *aOutputVar1, Var *aOutputVar2
 }
 
 
-ObjectMember GuiType::sMembers[] =
+FResult GuiType::__Enum(optl<int> aVarCount, IObject *&aRetVal)
 {
-	Object_Method (__Enum, 0, 1),
-	Object_Method_(__New, 0, 3, __New, 0),
+	GUI_MUST_HAVE_HWND;
+	aRetVal = new IndexEnumerator(this, aVarCount.value_or(1)
+		, static_cast<IndexEnumerator::Callback>(&GuiType::GetEnumItem));
+	return OK;
+}
 
-	Object_Method_(Add, 1, 3, AddControl, GUI_CONTROL_INVALID),
-	Object_Method_(AddActiveX, 0, 2, AddControl, GUI_CONTROL_ACTIVEX),
-	Object_Method_(AddButton, 0, 2, AddControl, GUI_CONTROL_BUTTON),
-	Object_Method_(AddCheckBox, 0, 2, AddControl, GUI_CONTROL_CHECKBOX),
-	Object_Method_(AddComboBox, 0, 2, AddControl, GUI_CONTROL_COMBOBOX),
-	Object_Method_(AddCustom, 0, 2, AddControl, GUI_CONTROL_CUSTOM),
-	Object_Method_(AddDateTime, 0, 2, AddControl, GUI_CONTROL_DATETIME),
-	Object_Method_(AddDDL, 0, 2, AddControl, GUI_CONTROL_DROPDOWNLIST),
-	Object_Method_(AddDropDownList, 0, 2, AddControl, GUI_CONTROL_DROPDOWNLIST),
-	Object_Method_(AddEdit, 0, 2, AddControl, GUI_CONTROL_EDIT),
-	Object_Method_(AddGroupBox, 0, 2, AddControl, GUI_CONTROL_GROUPBOX),
-	Object_Method_(AddHotkey, 0, 2, AddControl, GUI_CONTROL_HOTKEY),
-	Object_Method_(AddLink, 0, 2, AddControl, GUI_CONTROL_LINK),
-	Object_Method_(AddListBox, 0, 2, AddControl, GUI_CONTROL_LISTBOX),
-	Object_Method_(AddListView, 0, 2, AddControl, GUI_CONTROL_LISTVIEW),
-	Object_Method_(AddMonthCal, 0, 2, AddControl, GUI_CONTROL_MONTHCAL),
-	Object_Method_(AddPic, 0, 2, AddControl, GUI_CONTROL_PIC),
-	Object_Method_(AddPicture, 0, 2, AddControl, GUI_CONTROL_PIC),
-	Object_Method_(AddProgress, 0, 2, AddControl, GUI_CONTROL_PROGRESS),
-	Object_Method_(AddRadio, 0, 2, AddControl, GUI_CONTROL_RADIO),
-	Object_Method_(AddSlider, 0, 2, AddControl, GUI_CONTROL_SLIDER),
-	Object_Method_(AddStatusBar, 0, 2, AddControl, GUI_CONTROL_STATUSBAR),
-	Object_Method_(AddTab, 0, 2, AddControl, GUI_CONTROL_TAB),
-	Object_Method_(AddTab2, 0, 2, AddControl, GUI_CONTROL_TAB2),
-	Object_Method_(AddTab3, 0, 2, AddControl, GUI_CONTROL_TAB3),
-	Object_Method_(AddText, 0, 2, AddControl, GUI_CONTROL_TEXT),
-	Object_Method_(AddTreeView, 0, 2, AddControl, GUI_CONTROL_TREEVIEW),
-	Object_Method_(AddUpDown, 0, 2, AddControl, GUI_CONTROL_UPDOWN),
 
-	Object_Method (Destroy, 0, 0),
-	Object_Method (Flash, 0, 1),
-	Object_Method (GetClientPos, 0, 4),
-	Object_Method (GetPos, 0, 4),
-	Object_Method (Hide, 0, 0),
-	Object_Method (Maximize, 0, 0),
-	Object_Method (Minimize, 0, 0),
-	Object_Method (Move, 0, 4),
-	Object_Method (OnEvent, 2, 3),
-	Object_Method (OnMessage, 2, 3),
-	Object_Method (Opt, 1, 1),
-	Object_Method (Restore, 0, 0),
-	Object_Method (SetFont, 0, 2),
-	Object_Method (Show, 0, 1),
-	Object_Method (Submit, 0, 1),
-
-	Object_Property_get    (__Item, 1, 1),
-	Object_Property_get    (Hwnd),
-	Object_Property_get_set(Title),
-	Object_Property_get_set(Name),
-	Object_Property_get    (FocusedCtrl),
-	Object_Property_get_set(BackColor),
-	Object_Property_get_set(MarginX),
-	Object_Property_get_set(MarginY),
-	Object_Property_get_set(MenuBar),
+ObjectMemberMd GuiType::sMembers[] =
+{
+	md_member(GuiType, __Enum, CALL, (In_Opt, Int32, VarCount), (Ret, Object, RetVal)),
+	md_member(GuiType, __New, CALL, (In_Opt, String, Options), (In_Opt, String, Title), (In_Opt, Object, EventObj)),
+	
+	md_member(GuiType, Add, CALL, (In, String, ControlType), (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddActiveX, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddButton, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddCheckBox, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddComboBox, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddCustom, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddDateTime, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddDDL, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddDropDownList, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddEdit, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddGroupBox, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddHotkey, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddLink, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddListBox, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddListView, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddMonthCal, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddPic, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddPicture, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddProgress, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddRadio, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddSlider, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddStatusBar, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddTab, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddTab2, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddTab3, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddText, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddTreeView, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	md_member(GuiType, AddUpDown, CALL, (In_Opt, String, Options), (In_Opt, Variant, Content), (Ret, Object, RetVal)),
+	
+	md_member(GuiType, Destroy, CALL, md_arg_none),
+	md_member(GuiType, Flash, CALL, (In_Opt, Bool32, Blink)),
+	md_member(GuiType, GetClientPos, CALL, (Out_Opt, Int32, X), (Out_Opt, Int32, Y), (Out_Opt, Int32, Width), (Out_Opt, Int32, Height)),
+	md_member(GuiType, GetPos, CALL, (Out_Opt, Int32, X), (Out_Opt, Int32, Y), (Out_Opt, Int32, Width), (Out_Opt, Int32, Height)),
+	md_member(GuiType, Hide, CALL, md_arg_none),
+	md_member(GuiType, Maximize, CALL, md_arg_none),
+	md_member(GuiType, Minimize, CALL, md_arg_none),
+	md_member(GuiType, Move, CALL, (In_Opt, Int32, X), (In_Opt, Int32, Y), (In_Opt, Int32, Width), (In_Opt, Int32, Height)),
+	md_member(GuiType, OnEvent, CALL, (In, String, EventName), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
+	md_member(GuiType, OnMessage, CALL, (In, UInt32, Number), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
+	md_member(GuiType, Opt, CALL, (In, String, Options)),
+	md_member(GuiType, Restore, CALL, md_arg_none),
+	md_member(GuiType, SetFont, CALL, (In_Opt, String, Options), (In_Opt, String, FontName)),
+	md_member(GuiType, Show, CALL, (In_Opt, String, Options)),
+	md_member(GuiType, Submit, CALL, (In_Opt, Bool32, Hide), (Ret, Object, RetVal)),
+	
+	md_member		(GuiType, __Item, GET, (In, Variant, Index), (Ret, Object, RetVal)),
+	md_property_get	(GuiType, Hwnd, UInt32),
+	md_property		(GuiType, Title, String),
+	md_property		(GuiType, Name, String),
+	md_property_get	(GuiType, FocusedCtrl, Object),
+	md_property		(GuiType, BackColor, Variant),
+	md_property		(GuiType, MarginX, Int32),
+	md_property		(GuiType, MarginY, Int32),
+	md_property		(GuiType, MenuBar, Variant)
 };
 
 int GuiType::sMemberCount = _countof(sMembers);
 
-void GuiType::AddControl(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+
+FResult GuiType::Add(StrArg aCtrlType, optl<StrArg> aOptions, ExprTokenType *aContent, IObject *&aRetVal)
 {
-	auto ctrl_type = GuiControls(aID);
-	if (ctrl_type == GUI_CONTROL_INVALID) // Gui.Add(CtrlType)
-	{
-		LPTSTR ctrl_type_name = ParamIndexToString(0, _f_number_buf); // Pass buf for error-reporting purposes.
-		--aParamCount; // Exclude control type from param count.
-		++aParam; // As above, but for the param array.
-		ctrl_type = GuiControlType::ConvertTypeName(ctrl_type_name);
-		if (ctrl_type == GUI_CONTROL_INVALID)
-			_o_throw(_T("Invalid control type."), ctrl_type_name);
-	}
-	_f_param_string_opt(options, 0);
-	_f_param_string_opt(text, 1);
+	auto ctrl_type = GuiControlType::ConvertTypeName(aCtrlType);
+	if (ctrl_type == GUI_CONTROL_INVALID)
+		return FValueError(_T("Invalid control type."), aCtrlType);
+	auto fr = AddControl(aOptions, aContent, aRetVal, ctrl_type);
+	return fr;
+}
+
+
+FResult GuiType::AddControl(optl<StrArg> aOptions, ExprTokenType *aContent, IObject *&aRetVal, GuiControls ctrl_type)
+{
+	auto options = aOptions.value_or_empty();
+	TCHAR text_buf[MAX_NUMBER_SIZE], *text = _T("");
 	Array *text_obj = nullptr;
-	if (   !ParamIndexIsOmitted(1)
-		&& GuiControlType::TypeHasAttrib(ctrl_type, GuiControlType::TYPE_HAS_ITEMS)
-		&& !(text_obj = TokenToArray(*aParam[1]))   )
+	if (aContent)
 	{
-		aResultToken.ParamError(aID ? 1 : 2, aParam[1], _T("Array"));
-		return;
+		auto temp_obj = TokenToObject(*aContent);
+		if (GuiControlType::TypeHasAttrib(ctrl_type, GuiControlType::TYPE_HAS_ITEMS)) // Need an Array.
+		{
+			if (  !(text_obj = dynamic_cast<Array*>(temp_obj))  )
+				return FTypeError(_T("Array"), *aContent);
+		}
+		else // Need a String.
+		{
+			if (temp_obj)
+				return FTypeError(_T("String"), *aContent);
+			text = TokenToString(*aContent, text_buf);
+		}
 	}
-	if (!mHwnd)
-		_o_throw(ERR_GUI_NO_WINDOW);
+	GUI_MUST_HAVE_HWND;
 	GuiControlType* pcontrol;
 	ResultType result = AddControl(ctrl_type, options, text, pcontrol, text_obj);
 	if (pcontrol)
 	{
 		pcontrol->AddRef();
-		_o_return(pcontrol);
-	} // else: above already displayed an error message.
-	if (!result)
-		aResultToken.SetExitResult(result);
-}
-
-void GuiType::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
-{
-	if (!mHwnd)
-		_o_throw(ERR_GUI_NO_WINDOW);
-
-	TCHAR nbuf1[MAX_NUMBER_SIZE], nbuf2[MAX_NUMBER_SIZE];
-
-	auto member = MemberID(aID);
-	switch (member)
-	{
-		case M_Destroy:
-			Destroy();
-			_o_return_empty;
-		case M_Show:
-			if (!Show(ParamIndexToOptionalString(0, nbuf1)))
-				_o_return_FAIL;
-			_o_return_empty;
-		case M_Hide:
-			Cancel();
-			_o_return_empty;
-		case M_Minimize:
-			// If the window is hidden, it is unhidden as a side-effect (this happens even for SW_SHOWMINNOACTIVE).
-			ShowWindow(mHwnd, SW_MINIMIZE);
-			_o_return_empty;
-		case M_Maximize:
-			ShowWindow(mHwnd, SW_MAXIMIZE);
-			_o_return_empty;
-		case M_Restore:
-			ShowWindow(mHwnd, SW_RESTORE);
-			_o_return_empty;
-		case M_Flash:
-			FlashWindow(mHwnd, ParamIndexToOptionalBOOL(0, TRUE));
-			_o_return_empty;
-		case M_SetFont:
-		{
-			LPTSTR options = ParamIndexToOptionalString(0, nbuf1);   // A number currently isn't valid here, so nbuf is passed just for maintainability.
-			LPTSTR font_name = ParamIndexToOptionalString(1, nbuf2); //
-			if (!SetCurrentFont(options, font_name))
-				_o_return_FAIL;
-			_o_return_empty;
-		}
-		case M_Opt:
-		{
-			LPTSTR options = ParamIndexToOptionalString(0, nbuf1);
-			bool set_last_found_window = false;
-			ToggleValueType own_dialogs = TOGGLE_INVALID;
-			if (!ParseOptions(options, set_last_found_window, own_dialogs))
-				break; // Above already displayed an error message.
-			if (set_last_found_window)
-				g->hWndLastUsed = mHwnd;
-			SetOwnDialogs(own_dialogs);
-			_o_return_empty;
-		}
-		case M_Submit:
-		{
-			return Submit(aResultToken, ParamIndexToOptionalBOOL(0, TRUE));
-		}
-		case M___Enum:
-		{
-			_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 1)
-				, static_cast<IndexEnumerator::Callback>(&GuiType::GetEnumItem)));
-		}
-		case M_OnEvent:
-		{
-			LPTSTR event_name = ParamIndexToString(0, nbuf1);
-			GuiEventType evt = ConvertEvent(event_name);
-			if (evt < GUI_EVENT_WINDOW_FIRST || evt > GUI_EVENT_WINDOW_LAST)
-				_o_throw_param(0);
-			return OnEvent(NULL, evt, GUI_EVENTKIND_EVENT, aParam, aParamCount, aResultToken);
-		}
-		case M_OnMessage:
-		{
-			if (ParamIndexIsNumeric(0) != SYM_INTEGER)
-				_o_throw_param(0, _T("Integer"));
-			return OnEvent(NULL, (UINT)ParamIndexToInt64(0), GUI_EVENTKIND_MESSAGE, aParam, aParamCount, aResultToken);
-		}
-		case P_Hwnd:
-		{
-			_o_return((__int64)(UINT_PTR)mHwnd);
-		}
-		case P_Title:
-		{
-			if (IS_INVOKE_SET)
-			{
-				SetWindowText(mHwnd, ParamIndexToString(0, _f_number_buf));
-				return;
-			}
-			else
-			{
-				int length = GetWindowTextLength(mHwnd);
-				if (!TokenSetResult(aResultToken, NULL, length))
-					return; // Already displayed error.
-				GetWindowText(mHwnd, aResultToken.marker, length+1);
-				_o_return_retval;
-			}
-		}
-		case P_MenuBar:
-		{
-			if (IS_INVOKE_SET)
-			{
-				return SetMenu(aResultToken, *aParam[0]);
-			}
-			if (mMenu)
-			{
-				mMenu->AddRef();
-				_o_return(mMenu);
-			}
-			_o_return_empty;
-		}
-		case P___Item:
-		{
-			ExprTokenType& tok = *aParam[0];
-			GuiControlType* ctrl = NULL;
-			if (TokenIsPureNumeric(tok) == SYM_INTEGER)
-			{
-				HWND hWnd = (HWND)(UINT_PTR)TokenToInt64(tok);
-				ctrl = FindControl(hWnd);
-			}
-			else
-			{
-				GuiIndexType u = FindControl(TokenToString(tok, aResultToken.buf));
-				if (u < mControlCount)
-					ctrl = mControl[u];
-			}
-			if (!ctrl)
-				_o_throw(_T("The specified control does not exist."));
-
-			ctrl->AddRef();
-			_o_return(ctrl);
-		}
-		case P_FocusedCtrl:
-		{
-			HWND hwnd = GetFocus();
-			GuiControlType* pcontrol = hwnd ? FindControl(hwnd) : NULL;
-			if (pcontrol)
-			{
-				pcontrol->AddRef();
-				_o_return(pcontrol);
-			}
-			_o_return_empty;
-		}
-		case P_MarginX:
-		case P_MarginY:
-		{
-			int& margin = member == P_MarginX ? mMarginX : mMarginY;
-			if (IS_INVOKE_SET)
-			{
-				if (!ParamIndexIsNumeric(0))
-					_f_throw_type(_T("Number"), *aParam[0]);
-				margin = Scale(ParamIndexToInt(0)); // Seems okay to allow negative margins.
-				return;
-			}
-			if (margin == COORD_UNSPECIFIED)
-			{
-				// Avoid returning an arbitrary value such as COORD_UNSPECIFIED or -1 (Unscale(COORD_UNSPECIFIED)).
-				// Instead, set the default margins if MarginX or MarginY is queried without having first been set,
-				// prior to adding any controls.
-				SetDefaultMargins();
-			}
-			_o_return(Unscale(margin));
-		}
-		case P_BackColor:
-		{
-			COLORREF &color = mBackgroundColorWin; // Future use: code reuse for TextColor property?
-			HBRUSH   &brush = mBackgroundBrushWin;
-
-			if (IS_INVOKE_SET)
-			{
-				// AssignColor() takes care of deleting old brush, etc.
-				if (TokenIsPureNumeric(*aParam[0])) // Integer or float; float is invalid, so just truncate it to integer.
-					AssignColor(rgb_to_bgr((COLORREF)ParamIndexToInt64(0)), color, brush);
-				else
-					AssignColor(ParamIndexToString(0), color, brush);
-
-				if (IsWindowVisible(mHwnd))
-					// Force the window to repaint so that colors take effect immediately.
-					// UpdateWindow() isn't enough sometimes/always, so do something more aggressive:
-					InvalidateRect(mHwnd, NULL, TRUE);
-				
-				return;
-			}
-			
-			// Return the property's proper value, which may differ from the value assigned by the script.
-			if (color == CLR_DEFAULT)
-				_o_return_empty;
-			_sntprintf(_f_retval_buf, _f_retval_buf_size, _T("%06X"), bgr_to_rgb(color));
-			_o_return_p(_f_retval_buf);
-		}
-		case M_GetPos:
-		case M_GetClientPos:
-		{
-			RECT rect;
-			if (member == M_GetPos)
-				GetWindowRect(mHwnd, &rect);
-			else
-				GetClientRect(mHwnd, &rect);
-			MapWindowPoints(member == M_GetPos ? NULL : mHwnd, mOwner, (LPPOINT)&rect, 2);
-			return MethodGetPos(aResultToken, aParam, aParamCount, rect);
-		}
-		case M_Move:
-		{
-			int coord[4];
-			if (!ParseMoveParams(coord, aResultToken, aParam, aParamCount))
-				return;
-			// Like WinMove, this doesn't check if the window is minimized or do any autosizing.
-			// Unlike WinMove, this does DPI scaling.
-			RECT rect;
-			GetWindowRect(mHwnd, &rect);
-			rect.right -= rect.left; // Convert to width.
-			rect.bottom -= rect.top; // Convert to height.
-			if (HWND parent = GetParent(mHwnd)) // Allow for +Parent.
-				ScreenToClient(parent, (LPPOINT)&rect); // Must do this before the loop, as coord[] already contains client coords.
-			for (int i = 0; i < aParamCount; ++i)
-				if (coord[i] != COORD_UNSPECIFIED)
-					((int *)&rect)[i] = Scale(coord[i]);
-			MoveWindow(mHwnd, rect.left, rect.top, rect.right, rect.bottom, TRUE);
-			_o_return_empty;
-		}
-		case P_Name:
-		{
-			// Name is used to help identify the Gui in event handlers, and has no use outside
-			// of the script being able to assign or retrieve it using this property.
-			if (IS_INVOKE_SET)
-			{
-				if (!SetName(ParamIndexToString(0, _f_number_buf)))
-					_o_return_FAIL;
-				return;
-			}
-			_o_return_p(mName ? mName : _T(""));
-		}
+		aRetVal = pcontrol;
 	}
+	return result ? OK : FR_FAIL;
 }
 
 
-void GuiType::__New(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+FResult GuiType::__New(optl<StrArg> aOptions, optl<StrArg> aTitle, optl<IObject*> aEventObj)
 {
 	if (mHwnd || mDisposed)
-		_o_throw(ERR_INVALID_USAGE);
-
-	LPTSTR options = ParamIndexToOptionalString(0, _f_number_buf);
+		return FError(ERR_INVALID_USAGE);
 
 	bool set_last_found_window = false;
 	ToggleValueType own_dialogs = TOGGLE_INVALID;
-	if (*options && !ParseOptions(options, set_last_found_window, own_dialogs))
-		_o_return_FAIL; // ParseOptions() already displayed the error.
+	if (!ParseOptions(aOptions.value_or_empty(), set_last_found_window, own_dialogs))
+		return FR_FAIL;
 
 	mControl = (GuiControlType **)malloc(GUI_CONTROL_BLOCK_SIZE * sizeof(GuiControlType*));
 	if (!mControl)
-		_o_throw_oom;
+		return FR_E_OUTOFMEM;
 	mControlCapacity = GUI_CONTROL_BLOCK_SIZE;
 
-	if (!ParamIndexIsOmittedOrEmpty(2))
+	if (aEventObj.has_value())
 	{
-		if (IObject* obj = TokenToObject(*aParam[2]))
-		{
-			// The caller specified an object to use as event sink.
-			if (obj != this) // Primarily for custom GUI classes: prevent a circular reference.
-				obj->AddRef();
-			mEventSink = obj;
-		}
-		else
-			_o_throw_param(2, _T("object"));
+		// The caller specified an object to use as event sink.
+		mEventSink = aEventObj.value();
+		if (mEventSink != this) // Primarily for custom GUI classes: prevent a circular reference.
+			mEventSink->AddRef();
 	}
 	
-	LPTSTR title;
-	if (ParamIndexIsOmitted(1)) // Completely omitted, not an empty string.
-		title = g_script->DefaultDialogTitle();
-	else
-		title = ParamIndexToString(1, _f_number_buf);
+	LPCTSTR title = aTitle.has_value() ? aTitle.value() : g_script->DefaultDialogTitle();
 
 	// Create the Gui, now that we're past all other failure points.
-	if (!Create(title))
-		_o_return_FAIL; // Error already displayed.
+	auto fr = Create(title);
+	if (fr != OK)
+		return fr;
 
 	if (set_last_found_window)
 		g->hWndLastUsed = mHwnd;
@@ -641,47 +426,232 @@ void GuiType::__New(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 
 	// Successful creation - add the Gui to the global list of Guis and return it
 	AddGuiToList(this);
-	_o_return_empty;
+	return OK;
 }
 
 
-bif_impl void GuiFromHwnd(UINT_PTR aHwnd, optl<BOOL> aRecurse, IObject *&aGui)
+FResult GuiType::get_Hwnd(UINT &aRetVal)
 {
-	if (aGui = aRecurse.value_or(FALSE) ? GuiType::FindGuiParent((HWND)aHwnd) : GuiType::FindGui((HWND)aHwnd))
+	// Throwing if Destroy() has been called provides a clearer error message than
+	// returning 0 when the Gui is being passed to a WinTitle parameter, and ensures
+	// that it won't cause silent failures, such as with DllCall.
+	GUI_MUST_HAVE_HWND;
+	aRetVal = (UINT)(UINT_PTR)mHwnd;
+	return OK;
+}
+
+
+FResult GuiType::get_Title(StrRet &aRetVal)
+{
+	GUI_MUST_HAVE_HWND;
+	int length = GetWindowTextLength(mHwnd);
+	auto buf = aRetVal.Alloc(length);
+	if (!buf)
+		return FR_E_OUTOFMEM;
+	GetWindowText(mHwnd, buf, length+1);
+	return OK;
+}
+
+
+FResult GuiType::set_Title(StrArg aValue)
+{
+	GUI_MUST_HAVE_HWND;
+	SetWindowText(mHwnd, aValue);
+	return OK;
+}
+
+
+FResult GuiType::get___Item(ExprTokenType &aIndex, IObject *&aRetVal)
+{
+	GUI_MUST_HAVE_HWND; // Seems clearer than relying on the error below.
+	GuiControlType* ctrl = NULL;
+	if (TokenIsPureNumeric(aIndex) == SYM_INTEGER)
+	{
+		HWND hWnd = (HWND)(UINT_PTR)TokenToInt64(aIndex);
+		ctrl = FindControl(hWnd);
+	}
+	else
+	{
+		TCHAR buf[MAX_NUMBER_SIZE];
+		GuiIndexType u = FindControl(TokenToString(aIndex, buf));
+		if (u < mControlCount)
+			ctrl = mControl[u];
+	}
+	if (!ctrl)
+		return FError(_T("The specified control does not exist."), nullptr, ErrorPrototype::UnsetItem);
+
+	ctrl->AddRef();
+	aRetVal = ctrl;
+	return OK;
+}
+
+
+FResult GuiType::get_FocusedCtrl(IObject *&aRetVal)
+{
+	GUI_MUST_HAVE_HWND;
+	HWND hwnd = GetFocus();
+	aRetVal = hwnd ? FindControl(hwnd) : nullptr;
+	if (aRetVal)
+		aRetVal->AddRef();
+	return OK;
+}
+
+
+FResult GuiType::get_Margin(int &aRetVal, int &aMargin)
+{
+	if (aMargin == COORD_UNSPECIFIED)
+	{
+		// Avoid returning an arbitrary value such as COORD_UNSPECIFIED or -1 (Unscale(COORD_UNSPECIFIED)).
+		// Instead, set the default margins if MarginX or MarginY is queried without having first been set,
+		// prior to adding any controls.
+		SetDefaultMargins();
+	}
+	aRetVal = Unscale(aMargin);
+	return OK;
+}
+
+
+FResult GuiType::get_BackColor(ResultToken &aResultToken)
+{
+	GUI_MUST_HAVE_HWND;
+	if (mBackgroundColorWin == CLR_DEFAULT)
+		return OK; // "" is the default return value.
+	_sntprintf(_f_retval_buf, _f_retval_buf_size, _T("%06X"), bgr_to_rgb(mBackgroundColorWin));
+	aResultToken.SetValue(_f_retval_buf);
+	return OK;
+}
+
+
+FResult GuiType::set_BackColor(ExprTokenType &aValue)
+{
+	GUI_MUST_HAVE_HWND;
+	
+	COLORREF new_color;
+	if (!ColorToBGR(aValue, new_color))
+		return FValueError(ERR_INVALID_VALUE);
+	
+	// AssignColor() takes care of deleting old brush, etc.
+	AssignColor(new_color, mBackgroundColorWin, mBackgroundBrushWin);
+	
+	if (IsWindowVisible(mHwnd))
+		// Force the window to repaint so that colors take effect immediately.
+		// UpdateWindow() isn't enough sometimes/always, so do something more aggressive:
+		InvalidateRect(mHwnd, NULL, TRUE);
+	
+	return OK;
+}
+
+
+FResult GuiType::get_Name(StrRet &aRetVal)
+{
+	aRetVal.SetTemp(mName); // Can safely be nullptr.
+	return OK;
+}
+
+
+FResult GuiType::set_Name(StrArg aName)
+{
+	LPTSTR new_name = nullptr;
+	if (*aName)
+	{
+		new_name = _tcsdup(aName);
+		if (!new_name)
+			return FR_E_OUTOFMEM;
+	}
+	free(mName);
+	mName = new_name;
+	return OK;
+}
+
+
+void GuiType::MethodGetPos(int *aX, int *aY, int *aWidth, int *aHeight, RECT &aPos, HWND aOrigin)
+{
+	MapWindowPoints(aOrigin, mOwner, (LPPOINT)&aPos, 2);
+	
+	if (aX)			*aX = Unscale(aPos.left);
+	if (aY)			*aY = Unscale(aPos.top);
+	if (aWidth)		*aWidth = Unscale(aPos.right - aPos.left);
+	if (aHeight)	*aHeight = Unscale(aPos.bottom - aPos.top);
+}
+
+
+FResult GuiType::GetPos(int *aX, int *aY, int *aWidth, int *aHeight)
+{
+	GUI_MUST_HAVE_HWND;
+	RECT rect;
+	if (GetWindowRect(mHwnd, &rect))
+		MethodGetPos(aX, aY, aWidth, aHeight, rect, NULL);
+	return OK;
+}
+
+
+FResult GuiType::GetClientPos(int *aX, int *aY, int *aWidth, int *aHeight)
+{
+	GUI_MUST_HAVE_HWND;
+	RECT rect;
+	if (GetClientRect(mHwnd, &rect))
+		MethodGetPos(aX, aY, aWidth, aHeight, rect, mHwnd);
+	return OK;
+}
+
+
+FResult GuiType::Move(optl<int> aX, optl<int> aY, optl<int> aWidth, optl<int> aHeight)
+{
+	GUI_MUST_HAVE_HWND;
+	// Like WinMove, this doesn't check if the window is minimized or do any autosizing.
+	// Unlike WinMove, this does DPI scaling.
+	RECT rect;
+	GetWindowRect(mHwnd, &rect);
+	rect.right -= rect.left; // Convert to width.
+	rect.bottom -= rect.top; // Convert to height.
+	if (HWND parent = GetParent(mHwnd)) // Allow for +Parent.
+		ScreenToClient(parent, (LPPOINT)&rect); // Must do this before the loop, as coord[] already contains client coords.
+	if (aX.has_value())			rect.left = Scale(aX.value());
+	if (aY.has_value())			rect.top = Scale(aY.value());
+	if (aWidth.has_value())		rect.right = Scale(aWidth.value());
+	if (aHeight.has_value())	rect.bottom = Scale(aHeight.value());
+	MoveWindow(mHwnd, rect.left, rect.top, rect.right, rect.bottom, TRUE);
+	return OK;
+}
+
+
+bif_impl void GuiFromHwnd(UINT aHwnd, optl<BOOL> aRecurse, IObject *&aGui)
+{
+	if (aGui = aRecurse.value_or(FALSE) ? GuiType::FindGuiParent((HWND)(UINT_PTR)aHwnd) : GuiType::FindGui((HWND)(UINT_PTR)aHwnd))
 		aGui->AddRef();
 }
 
 
-bif_impl void GuiCtrlFromHwnd(UINT_PTR aHwnd, IObject *&aGuiCtrl)
+bif_impl void GuiCtrlFromHwnd(UINT aHwnd, IObject *&aGuiCtrl)
 {
-	if (GuiType* gui = GuiType::FindGuiParent((HWND)aHwnd))
-		if (aGuiCtrl = gui->FindControl((HWND)aHwnd))
+	if (GuiType* gui = GuiType::FindGuiParent((HWND)(UINT_PTR)aHwnd))
+		if (aGuiCtrl = gui->FindControl((HWND)(UINT_PTR)aHwnd))
 			aGuiCtrl->AddRef();
 }
 
 
-ObjectMember GuiControlType::sMembers[] =
+ObjectMemberMd GuiControlType::sMembers[] =
 {
-	Object_Method(Focus, 0, 0),
-	Object_Method(GetPos, 0, 4),
-	Object_Method(Move, 0, 4),
-	Object_Method(OnCommand, 2, 3),
-	Object_Method(OnEvent, 2, 3),
-	Object_Method(OnNotify, 2, 3),
-	Object_Method(Opt, 1, 1),
-	Object_Method(Redraw, 0, 0),
-	Object_Method(SetFont, 0, 2),
-
-	Object_Property_get    (ClassNN),
-	Object_Property_get_set(Enabled),
-	Object_Property_get    (Focused),
-	Object_Property_get    (Gui),
-	Object_Property_get    (Hwnd),
-	Object_Property_get_set(Name),
-	Object_Property_get_set(Text),
-	Object_Property_get    (Type),
-	Object_Property_get_set(Value),
-	Object_Property_get_set(Visible)
+	md_member(GuiControlType, Focus, CALL, md_arg_none),
+	md_member(GuiControlType, GetPos, CALL, (Out_Opt, Int32, X), (Out_Opt, Int32, Y), (Out_Opt, Int32, Width), (Out_Opt, Int32, Height)),
+	md_member(GuiControlType, Move, CALL, (In_Opt, Int32, X), (In_Opt, Int32, Y), (In_Opt, Int32, Width), (In_Opt, Int32, Height)),
+	md_member(GuiControlType, OnCommand, CALL, (In, Int32, NotifyCode), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
+	md_member(GuiControlType, OnEvent, CALL, (In, String, EventName), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
+	md_member(GuiControlType, OnNotify, CALL, (In, Int32, NotifyCode), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
+	md_member(GuiControlType, Opt, CALL, (In, String, Options)),
+	md_member(GuiControlType, Redraw, CALL, md_arg_none),
+	md_member(GuiControlType, SetFont, CALL, (In_Opt, String, Options), (In_Opt, String, FontName)),
+	
+	md_property_get	(GuiControlType, ClassNN, String),
+	md_property		(GuiControlType, Enabled, Bool32),
+	md_property_get	(GuiControlType, Focused, Bool32),
+	md_property_get	(GuiControlType, Gui, Object),
+	md_property_get	(GuiControlType, Hwnd, UInt32),
+	md_property		(GuiControlType, Name, String),
+	md_property		(GuiControlType, Text, Variant),
+	md_property_get	(GuiControlType, Type, String),
+	md_property		(GuiControlType, Value, Variant),
+	md_property		(GuiControlType, Visible, Bool32)
 };
 
 ObjectMemberMd GuiControlType::sMembersList[] =
@@ -805,170 +775,220 @@ Object *GuiControlType::GetPrototype(GuiControls aType)
 	return sPrototypes[aType];
 }
 
-ResultType GuiControlType::Invoke(IObject_Invoke_PARAMS_DECL)
-{
-	if (!hwnd)
-		return aResultToken.Error(_T("The control is destroyed."));
 
-	return Object::Invoke(IObject_Invoke_PARAMS);
+FResult GuiControlType::Focus()
+{
+	CTRL_THROW_IF_DESTROYED;
+	// MSDN: "WM_NEXTDLGCTL updates the default pushbutton border, sets the default control identifier,
+	// and automatically selects the text of an edit control (if the target window is an edit control)."
+	// (It also sets the focus.)
+	SendMessage(gui->mHwnd, WM_NEXTDLGCTL, (WPARAM)hwnd, TRUE);
+	return OK;
 }
 
 
-void GuiControlType::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+FResult GuiControlType::GetPos(int *aX, int *aY, int *aWidth, int *aHeight)
 {
-	auto member = MemberID(aID);
-	switch (member)
-	{
-		case M_Opt:
-		{
-			GuiControlOptionsType go; // Its contents are not currently used here, but they might be in the future.
-			gui->ControlInitOptions(go, *this);
-			if (!gui->ControlParseOptions(ParamIndexToOptionalString(0, _f_number_buf), go, *this, GUI_HWND_TO_INDEX(hwnd)))
-				_o_return_FAIL;
-			_o_return_empty;
-		}
+	CTRL_THROW_IF_DESTROYED;
+	
+	RECT rect;
+	GetWindowRect(hwnd, &rect);
+	MapWindowPoints(NULL, gui->mHwnd, (LPPOINT)&rect, 2);
+	
+	if (aX)			*aX = gui->Unscale(rect.left);
+	if (aY)			*aY = gui->Unscale(rect.top);
+	if (aWidth)		*aWidth = gui->Unscale(rect.right - rect.left);
+	if (aHeight)	*aHeight = gui->Unscale(rect.bottom - rect.top);
+	
+	return OK;
+}
 
-		case M_Focus:
-			// MSDN: "WM_NEXTDLGCTL updates the default pushbutton border, sets the default control identifier,
-			// and automatically selects the text of an edit control (if the target window is an edit control)."
-			// (It also sets the focus.)
-			SendMessage(gui->mHwnd, WM_NEXTDLGCTL, (WPARAM)hwnd, TRUE);
-			_o_return_empty;
 
-		case P_Focused:
-		{
-			//if (IS_INVOKE_SET) // Prior validation ensures this is never true.
-				// Not allowed because it's unclear what should happen when Focused := false,
-				// and because the side effects of Focus() don't fit with property semantics.
-			HWND focus = GetFocus();
-			// For controls like ComboBox and ActiveX that may have a focused child window,
-			// also consider the control focused if any child of the control is focused.
-			_o_return(focus == hwnd || IsChild(hwnd, focus));
-		}
+FResult GuiControlType::Move(optl<int> aX, optl<int> aY, optl<int> aWidth, optl<int> aHeight)
+{
+	CTRL_THROW_IF_DESTROYED;
+	return gui->ControlMove(*this, aX.value_or(COORD_UNSPECIFIED), aY.value_or(COORD_UNSPECIFIED), aWidth.value_or(COORD_UNSPECIFIED), aHeight.value_or(COORD_UNSPECIFIED));
+}
 
-		case M_SetFont:
-			if (!gui->ControlSetFont(*this, ParamIndexToOptionalString(0), ParamIndexToOptionalString(1)))
-				_o_return_FAIL;
-			_o_return_empty;
 
-		case M_Move:
-			int coord[4];
-			if (!gui->ParseMoveParams(coord, aResultToken, aParam, aParamCount))
-				return;
-			if (!gui->ControlMove(*this, coord[0], coord[1], coord[2], coord[3]))
-				_o_return_FAIL;
-			_o_return_empty;
+FResult GuiControlType::OnCommand(int aNotifyCode, ExprTokenType &aCallback, optl<int> aAddRemove)
+{
+	CTRL_THROW_IF_DESTROYED;
+	return gui->OnEvent(this, aNotifyCode, GUI_EVENTKIND_COMMAND, aCallback, aAddRemove);
+}
 
-		case M_Redraw:
-		{
-			RECT rect;
-			GetWindowRect(hwnd, &rect); // Limit it to only that part of the client area that the control occupies.
-			MapWindowPoints(NULL, gui->mHwnd, (LPPOINT)&rect, 2); // Convert rect to client coordinates (not the same as GetClientRect()).
-			InvalidateRect(gui->mHwnd, &rect, TRUE); // Seems safer to use TRUE, not knowing all possible overlaps, etc.
-			_o_return_empty;
-		}
 
-		case M_OnEvent:
-		case M_OnNotify:
-		case M_OnCommand:
-		{
-			UINT event_code;
-			UCHAR event_kind;
-			if (member == M_OnEvent)
-			{
-				LPTSTR event_name = ParamIndexToString(0, _f_number_buf);
-				event_code = GuiType::ConvertEvent(event_name);
-				if (!event_code || !SupportsEvent(event_code))
-					_o_throw_param(0);
-				event_kind = GUI_EVENTKIND_EVENT;
-			}
-			else
-			{
-				if (!ParamIndexIsNumeric(0))
-					_o_throw_param(0, _T("Number"));
-				event_code = ParamIndexToInt(0);
-				event_kind = member == M_OnNotify ? GUI_EVENTKIND_NOTIFY : GUI_EVENTKIND_COMMAND;
-			}
-			return gui->OnEvent(this, event_code, event_kind, aParam, aParamCount, aResultToken);
-		}
+FResult GuiControlType::OnEvent(StrArg aEventName, ExprTokenType &aCallback, optl<int> aAddRemove)
+{
+	CTRL_THROW_IF_DESTROYED;
+	UINT event_code = GuiType::ConvertEvent(aEventName);
+	if (!event_code || !SupportsEvent(event_code))
+		return FR_E_ARG(0);
+	return gui->OnEvent(this, event_code, GUI_EVENTKIND_EVENT, aCallback, aAddRemove);
+}
 
-		case P_Name:
-			if (IS_INVOKE_SET)
-			{
-				if (!gui->ControlSetName(*this, ParamIndexToString(0, _f_number_buf)))
-					_o_return_FAIL;
-				return;
-			}
-			_o_return_p(name ? name : _T(""));
 
-		case P_Type:
-			_o_return_p(GetTypeName());
+FResult GuiControlType::OnNotify(int aNotifyCode, ExprTokenType &aCallback, optl<int> aAddRemove)
+{
+	CTRL_THROW_IF_DESTROYED;
+	return gui->OnEvent(this, aNotifyCode, GUI_EVENTKIND_NOTIFY, aCallback, aAddRemove);
+}
 
-		case P_Hwnd:
-			_o_return((__int64)(UINT_PTR)hwnd);
-		
-		case P_Gui:
-			gui->AddRef();
-			_o_return(gui);
-		
-		case P_ClassNN:
-		{
-			class_and_hwnd_type cah;
-			cah.hwnd = hwnd;
-			cah.class_name = _f_retval_buf;
-			if (!GetClassName(cah.hwnd, cah.class_name, _f_retval_buf_size - 5)) // -5 to allow room for sequence number.
-				_o_throw(_T("Class name too long.")); // Short msg since so rare.
-			cah.class_count = 0;  // Init for the below.
-			cah.is_found = false; // Same.
-			EnumChildWindows(gui->mHwnd, EnumChildFindSeqNum, (LPARAM)&cah);
-			if (!cah.is_found) // Should be impossible due to FindControl() having already found it above.
-				_o_throw(_T("Cannot find control.")); // Short msg since so rare.
-			// Append the class sequence number onto the class name set the output param to be that value:
-			sntprintfcat(cah.class_name, _f_retval_buf_size, _T("%d"), cah.class_count);
-			_o_return_p(cah.class_name);
-		}
 
-		case P_Text:
-		case P_Value:
-			if (IS_INVOKE_SET)
-				return gui->ControlSetContents(*this, *aParam[0], aResultToken, member == P_Text);
-			else
-				return gui->ControlGetContents(aResultToken, *this
-					, member == P_Text ? GuiType::Text_Mode : GuiType::Value_Mode);
+FResult GuiControlType::Opt(StrArg aOptions)
+{
+	CTRL_THROW_IF_DESTROYED;
+	GuiControlOptionsType go; // Its contents are not currently used here, but they might be in the future.
+	gui->ControlInitOptions(go, *this);
+	if (!gui->ControlParseOptions(aOptions, go, *this, GUI_HWND_TO_INDEX(hwnd)))
+		return FR_FAIL;
+	return OK;
+}
 
-		case M_GetPos:
-		{
-			RECT rect;
-			GetWindowRect(hwnd, &rect);
-			MapWindowPoints(NULL, gui->mHwnd, (LPPOINT)&rect, 2);
-			return gui->MethodGetPos(aResultToken, aParam, aParamCount, rect);
-		}
 
-		case P_Enabled:
-		{
-			if (IS_INVOKE_SET)
-			{
-				gui->ControlSetEnabled(*this, (bool)ParamIndexToBOOL(0));
-				return;
-			}
-			_o_return(IsWindowEnabled(hwnd) ? 1 : 0);
-		}
+FResult GuiControlType::Redraw()
+{
+	CTRL_THROW_IF_DESTROYED;
+	RECT rect;
+	GetWindowRect(hwnd, &rect); // Limit it to only that part of the client area that the control occupies.
+	MapWindowPoints(NULL, gui->mHwnd, (LPPOINT)&rect, 2); // Convert rect to client coordinates (not the same as GetClientRect()).
+	InvalidateRect(gui->mHwnd, &rect, TRUE); // Seems safer to use TRUE, not knowing all possible overlaps, etc.
+	return OK;
+}
 
-		case P_Visible:
-		{
-			if (IS_INVOKE_SET)
-			{
-				gui->ControlSetVisible(*this, (bool)ParamIndexToBOOL(0));
-				return;
-			}
-			_o_return(IsWindowVisible(hwnd) ? 1 : 0);
-		}
-	}
+
+FResult GuiControlType::SetFont(optl<StrArg> aOptions, optl<StrArg> aFontName)
+{
+	CTRL_THROW_IF_DESTROYED;
+	return gui->ControlSetFont(*this, aOptions.value_or_empty(), aFontName.value_or_empty()) ? OK : FR_FAIL;
+}
+
+
+FResult GuiControlType::get_ClassNN(StrRet &aRetVal)
+{
+	CTRL_THROW_IF_DESTROYED;
+	TCHAR class_nn[WINDOW_CLASS_NN_SIZE];
+	auto fr = ControlGetClassNN(gui->mHwnd, hwnd, class_nn, _countof(class_nn));
+	return fr != OK ? fr : aRetVal.Copy(class_nn) ? OK : FR_E_OUTOFMEM;
+}
+
+
+FResult GuiControlType::get_Enabled(BOOL &aRetVal)
+{
+	CTRL_THROW_IF_DESTROYED;
+	aRetVal = IsWindowEnabled(hwnd) ? 1 : 0;
+	return OK;
+}
+
+
+FResult GuiControlType::set_Enabled(BOOL aValue)
+{
+	CTRL_THROW_IF_DESTROYED;
+	gui->ControlSetEnabled(*this, aValue);
+	return OK;
+}
+
+
+FResult GuiControlType::get_Focused(BOOL &aRetVal)
+{
+	CTRL_THROW_IF_DESTROYED;
+	HWND focus = GetFocus();
+	// For controls like ComboBox and ActiveX that may have a focused child window,
+	// also co nsider the control focused if any child of the control is focused.
+	aRetVal = (focus == hwnd || IsChild(hwnd, focus));
+	return OK;
+}
+
+
+FResult GuiControlType::get_Gui(IObject *&aRetVal)
+{
+	CTRL_THROW_IF_DESTROYED;
+	gui->AddRef();
+	aRetVal = gui;
+	return OK;
+}
+
+
+FResult GuiControlType::get_Hwnd(UINT &aRetVal)
+{
+	CTRL_THROW_IF_DESTROYED;
+	aRetVal = (UINT)(UINT_PTR)hwnd;
+	return OK;
+}
+
+
+FResult GuiControlType::get_Name(StrRet &aRetVal)
+{
+	aRetVal.SetTemp(name); // Can safely be nullptr.
+	return OK;
+}
+
+
+FResult GuiControlType::set_Name(StrArg aValue)
+{
+	CTRL_THROW_IF_DESTROYED;
+	return gui->ControlSetName(*this, aValue);
+}
+
+
+FResult GuiControlType::get_Text(ResultToken &aResultToken)
+{
+	CTRL_THROW_IF_DESTROYED;
+	gui->ControlGetContents(aResultToken, *this, GuiType::Text_Mode);
+	return aResultToken.Exited() ? FR_FAIL : OK;
+}
+
+
+FResult GuiControlType::set_Text(ExprTokenType &aValue)
+{
+	CTRL_THROW_IF_DESTROYED;
+	return gui->ControlSetContents(*this, aValue, true);
+}
+
+
+FResult GuiControlType::get_Type(StrRet &aRetVal)
+{
+	aRetVal.SetStatic(GetTypeName());
+	return OK;
+}
+
+
+FResult GuiControlType::get_Value(ResultToken &aResultToken)
+{
+	CTRL_THROW_IF_DESTROYED;
+	gui->ControlGetContents(aResultToken, *this, GuiType::Value_Mode);
+	return aResultToken.Exited() ? FR_FAIL : OK;
+}
+
+
+FResult GuiControlType::set_Value(ExprTokenType &aValue)
+{
+	CTRL_THROW_IF_DESTROYED;
+	return gui->ControlSetContents(*this, aValue, false);
+}
+
+
+FResult GuiControlType::get_Visible(BOOL &aRetVal)
+{
+	CTRL_THROW_IF_DESTROYED;
+	// Return the requested visibility state, not the actual state, which would
+	// be affected by the parent window's visiblity and currently selected tab.
+	aRetVal = (attrib & GUI_CONTROL_ATTRIB_EXPLICITLY_HIDDEN) ? 0 : 1;
+	return OK;
+}
+
+
+FResult GuiControlType::set_Visible(BOOL aValue)
+{
+	CTRL_THROW_IF_DESTROYED;
+	gui->ControlSetVisible(*this, aValue);
+	return OK;
 }
 
 
 FResult GuiControlType::Tab_UseTab(ExprTokenType *aTab, optl<BOOL> aExact)
 {
+	CTRL_THROW_IF_DESTROYED;
 	BOOL whole_match = aExact.value_or(FALSE);
 	int index; // int vs TabControlIndexType for detection of negative/out-of-range values.
 	if (!aTab)
@@ -1025,6 +1045,7 @@ FResult GuiControlType::Tab_UseTab(ExprTokenType *aTab, optl<BOOL> aExact)
 
 FResult GuiControlType::List_Add(ExprTokenType &aItems)
 {
+	CTRL_THROW_IF_DESTROYED;
 	auto obj = TokenToArray(aItems);
 	if (!obj)
 		return FParamError(0, &aItems, _T("Array"));
@@ -1042,6 +1063,7 @@ FResult GuiControlType::List_Add(ExprTokenType &aItems)
 
 FResult GuiControlType::List_Delete(optl<int> aIndex)
 {
+	CTRL_THROW_IF_DESTROYED;
 	UINT msg_one;
 	UINT msg_all;
 	switch (type)
@@ -1095,14 +1117,28 @@ GuiType *GuiType::FindGuiParent(HWND aHwnd)
 	return NULL;
 }
 
-void GuiType::SetMenu(ResultToken &aResultToken, ExprTokenType &aParam)
+
+FResult GuiType::get_MenuBar(ResultToken &aResultToken)
 {
+	GUI_MUST_HAVE_HWND;
+	if (mMenu)
+	{
+		mMenu->AddRef();
+		aResultToken.Return(mMenu);
+	}
+	return OK;
+}
+
+
+FResult GuiType::set_MenuBar(ExprTokenType &aParam)
+{
+	GUI_MUST_HAVE_HWND;
 	UserMenu *menu = NULL;
 	if (!TokenIsEmptyString(aParam))
 	{
 		menu = dynamic_cast<UserMenu *>(TokenToObject(aParam));
 		if (!menu || menu->mMenuType != MENU_TYPE_BAR)
-			_o_throw_type(_T("MenuBar"), aParam);
+			return FTypeError(_T("MenuBar"), aParam);
 		menu->CreateHandle(); // Ensure the menu bar physically exists.
 		menu->AddRef();
 	}
@@ -1114,16 +1150,14 @@ void GuiType::SetMenu(ResultToken &aResultToken, ExprTokenType &aParam)
 		UpdateAccelerators(*menu);
 	else
 		RemoveAccelerators();
+	return OK;
 }
 
 
-ResultType GuiType::ControlSetName(GuiControlType &aControl, LPTSTR aName)
+FResult GuiType::ControlSetName(GuiControlType &aControl, LPCTSTR aName)
 {
-	if (aName && !*aName)
-	{
-		aName = NULL;
-	}
-	else if (aName)
+	LPTSTR new_name = nullptr;
+	if (aName && *aName)
 	{
 		// Make sure the name isn't already taken.
 		for (GuiIndexType u = 0; u < mControlCount; ++u)
@@ -1131,36 +1165,17 @@ ResultType GuiType::ControlSetName(GuiControlType &aControl, LPTSTR aName)
 			{
 				if (mControl[u] == &aControl) // aControl already has this name, but upper- vs lower-case may differ.
 					break;
-				return g_script->RuntimeError(_T("A control with this name already exists."), aName);
+				return FError(_T("A control with this name already exists."), aName);
 			}
 
-		aName = _tcsdup(aName);
-		if (!aName)
-			return MemoryError();
+		new_name = _tcsdup(aName);
+		if (!new_name)
+			return FR_E_OUTOFMEM;
 	}
 	if (aControl.name)
 		free(aControl.name);
-	aControl.name = aName;
+	aControl.name = new_name;
 	return OK;
-}
-
-
-void GuiType::MethodGetPos(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, RECT &aPos)
-{
-	aPos.right -= aPos.left; // Convert to width.
-	aPos.bottom -= aPos.top; // Convert to height.
-
-	for (int i = 0; i < 4 && i < aParamCount; ++i)
-	{
-		if (aParam[i]->symbol == SYM_MISSING)
-			continue;
-		Var *var = ParamIndexToOutputVar(i);
-		if (!var)
-			_o_throw(ERR_PARAM_INVALID);
-		var->Assign(Unscale(((int *)&aPos)[i]));
-	}
-
-	_o_return_empty;
 }
 
 
@@ -1247,24 +1262,7 @@ void GuiType::ControlSetVisible(GuiControlType &aControl, bool aVisible)
 }
 
 
-ResultType GuiType::ParseMoveParams(int aCoord[4], ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
-{
-	ResultType result = OK;
-	for (int i = 0; i < 4; ++i)
-	{
-		aCoord[i] = COORD_UNSPECIFIED; // Set default (also used in case of error).
-		if (ParamIndexIsOmitted(i))
-			continue;
-		else if (!ParamIndexIsNumeric(i))
-			result = result ? aResultToken.ParamError(i, aParam[i], _T("Number")) : FAIL; // But continue so all of aCoord is initialized.
-		else
-			aCoord[i] = ParamIndexToInt(i);
-	}
-	return result;
-}
-
-
-ResultType GuiType::ControlMove(GuiControlType &aControl, int xpos, int ypos, int width, int height)
+FResult GuiType::ControlMove(GuiControlType &aControl, int xpos, int ypos, int width, int height)
 {
 	RECT rect;
 	GetWindowRect(aControl.hwnd, &rect); // Failure seems too rare to check for.
@@ -1279,7 +1277,7 @@ ResultType GuiType::ControlMove(GuiControlType &aControl, int xpos, int ypos, in
 		, width == COORD_UNSPECIFIED ? rect.right - rect.left : Scale(width)
 		, height == COORD_UNSPECIFIED ? rect.bottom - rect.top : Scale(height)
 		, TRUE))  // Do repaint.
-		return g_script->Win32Error();
+		return FR_E_WIN32;
 
 	// Note that GUI_CONTROL_UPDOWN has no special handling here.  This is because unlike slider buddies,
 	// whose only purpose is to label the control, an up-down's is also content-linked to it, so the
@@ -1349,7 +1347,7 @@ ResultType GuiType::ControlMove(GuiControlType &aControl, int xpos, int ypos, in
 }
 
 
-ResultType GuiType::ControlSetFont(GuiControlType &aControl, LPTSTR aOptions, LPTSTR aFontName)
+ResultType GuiType::ControlSetFont(GuiControlType &aControl, LPCTSTR aOptions, LPCTSTR aFontName)
 {
 	if (!aControl.UsesFontAndTextColor()) // Control has no use for a font.
 		return g_script->RuntimeError(ERR_GUI_NOT_FOR_THIS_TYPE);
@@ -1556,15 +1554,19 @@ error:
 
 FResult GuiControlType::List_Choose(ExprTokenType &aValue)
 {
+	CTRL_THROW_IF_DESTROYED;
 	return gui->ControlChoose(*this, aValue) ? OK : FR_FAIL;
 }
 
 
-void GuiType::ControlSetContents(GuiControlType &aControl, ExprTokenType &aValue, ResultToken &aResultToken, bool aIsText)
+FResult GuiType::ControlSetContents(GuiControlType &aControl, ExprTokenType &aValue, bool aIsText)
 // aContents: The content as a string.
 // aResultToken: Used only to set an exit result in the event of an error.
 {
-	LPTSTR aContents = TokenToString(aValue, aResultToken.buf);
+	if (TokenToObject(aValue))
+		return FR_E_ARG(0); // Generic error because unsure which type is expected.
+	TCHAR buf[MAX_NUMBER_SIZE];
+	LPTSTR aContents = TokenToString(aValue, buf);
 	// Control types for which Text and Value both have special handling:
 	switch (aControl.type)
 	{
@@ -1572,16 +1574,16 @@ void GuiType::ControlSetContents(GuiControlType &aControl, ExprTokenType &aValue
 	case GUI_CONTROL_COMBOBOX:
 	case GUI_CONTROL_LISTBOX:
 	case GUI_CONTROL_TAB:
-		return ControlSetChoice(aControl, aContents, aResultToken, aIsText);
+		return ControlSetChoice(aControl, aContents, aIsText);
 
 	case GUI_CONTROL_EDIT:
-		return ControlSetEdit(aControl, aContents, aResultToken, aIsText);
+		return ControlSetEdit(aControl, aContents, aIsText);
 
 	case GUI_CONTROL_DATETIME:
 		if (aIsText)
-			_o_throw(ERR_GUI_NOT_FOR_THIS_TYPE); // Let the user know the control doesn't support this.
+			return FError(ERR_GUI_NOT_FOR_THIS_TYPE); // Let the user know the control doesn't support this.
 		else
-			return ControlSetDateTime(aControl, aContents, aResultToken);
+			return ControlSetDateTime(aControl, aContents);
 
 	case GUI_CONTROL_TEXT:
 		// It seems sensible to treat the caption text of a Text control as its "value",
@@ -1598,14 +1600,14 @@ void GuiType::ControlSetContents(GuiControlType &aControl, ExprTokenType &aValue
 		SetWindowText(aControl.hwnd, aContents);
 		if (aControl.background_color == CLR_TRANSPARENT) // +BackgroundTrans
 			ControlRedraw(aControl);
-		return;
+		return OK;
 	}
 	// Otherwise, this is the Value property.
 	switch (aControl.type)
 	{
-	case GUI_CONTROL_PIC: return ControlSetPic(aControl, aContents, aResultToken);
-	case GUI_CONTROL_MONTHCAL: return ControlSetMonthCal(aControl, aContents, aResultToken);
-	case GUI_CONTROL_HOTKEY: return ControlSetHotkey(aControl, aContents, aResultToken);
+	case GUI_CONTROL_PIC: return ControlSetPic(aControl, aContents);
+	case GUI_CONTROL_MONTHCAL: return ControlSetMonthCal(aControl, aContents);
+	case GUI_CONTROL_HOTKEY: return ControlSetHotkey(aControl, aContents);
 
 	case GUI_CONTROL_RADIO: // Same as below.
 	case GUI_CONTROL_CHECKBOX:
@@ -1614,15 +1616,15 @@ void GuiType::ControlSetContents(GuiControlType &aControl, ExprTokenType &aValue
 	case GUI_CONTROL_PROGRESS:
 	{
 		if (!TokenIsNumeric(aValue))
-			_o_throw_type(_T("Number"), aValue);
+			return FTypeError(_T("Number"), aValue);
 		int value = (int)TokenToInt64(aValue);
 		switch (aControl.type)
 		{
-		case GUI_CONTROL_UPDOWN: return ControlSetUpDown(aControl, value, aResultToken);
-		case GUI_CONTROL_SLIDER: return ControlSetSlider(aControl, value, aResultToken);
-		case GUI_CONTROL_PROGRESS: return ControlSetProgress(aControl, value, aResultToken);
+		case GUI_CONTROL_UPDOWN: return ControlSetUpDown(aControl, value);
+		case GUI_CONTROL_SLIDER: return ControlSetSlider(aControl, value);
+		case GUI_CONTROL_PROGRESS: return ControlSetProgress(aControl, value);
 		case GUI_CONTROL_RADIO: // Same as below.
-		case GUI_CONTROL_CHECKBOX: return ControlSetCheck(aControl, value, aResultToken);
+		case GUI_CONTROL_CHECKBOX: return ControlSetCheck(aControl, value);
 		}
 	}
 
@@ -1644,12 +1646,12 @@ void GuiType::ControlSetContents(GuiControlType &aControl, ExprTokenType &aValue
 	case GUI_CONTROL_CUSTOM: // Don't know what this control's "value" is or how to set it.
 	case GUI_CONTROL_ACTIVEX: // Assigning a value doesn't make sense.  SetWindowText() does nothing.
 	default: // Should help code size by allowing the compiler to omit checks for the above cases.
-		_o_throw(ERR_INVALID_USAGE);
+		return FError(ERR_INVALID_USAGE);
 	}
 }
 
 
-void GuiType::ControlSetPic(GuiControlType &aControl, LPTSTR aContents, ResultToken &aResultToken)
+FResult GuiType::ControlSetPic(GuiControlType &aControl, LPTSTR aContents)
 {
 	// Update: The below doesn't work, so it will be documented that a picture control
 	// should be always be referred to by its original filename even if the picture changes.
@@ -1719,28 +1721,30 @@ void GuiType::ControlSetPic(GuiControlType &aControl, LPTSTR aContents, ResultTo
 
 	// See comments in ControlLoadPicture():
 	if (!ControlLoadPicture(aControl, aContents, width, height, icon_number))
-		_o_throw_value(ERR_INVALID_VALUE, aContents); // A bit vague but probably correct.
+		return FValueError(ERR_INVALID_VALUE, aContents); // A bit vague but probably correct.
 
 	// Redraw is usually only needed for pictures in a tab control, but is sometimes
 	// needed outside of that, for .gif and perhaps others.  So redraw unconditionally:
 	ControlRedraw(aControl);
+	return OK;
 }
 
 
-void GuiType::ControlSetCheck(GuiControlType &aControl, int checked, ResultToken &aResultToken)
+FResult GuiType::ControlSetCheck(GuiControlType &aControl, int checked)
 {
 	if (  !(checked == 0 || checked == 1 || (aControl.type == GUI_CONTROL_CHECKBOX && checked == -1))  )
-		_o_throw_value(ERR_INVALID_VALUE);
+		return FValueError(ERR_INVALID_VALUE);
 	if (checked == -1)
 		checked = BST_INDETERMINATE;
 	//else the "checked" var is already set correctly.
 	if (aControl.type == GUI_CONTROL_RADIO)
 	{
 		ControlCheckRadioButton(aControl, GUI_HWND_TO_INDEX(aControl.hwnd), checked);
-		return;
+		return OK;
 	}
 	// Otherwise, we're operating upon a checkbox.
 	SendMessage(aControl.hwnd, BM_SETCHECK, checked, 0);
+	return OK;
 }
 
 
@@ -1763,7 +1767,7 @@ void GuiType::ControlGetCheck(ResultToken &aResultToken, GuiControlType &aContro
 }
 
 
-void GuiType::ControlSetChoice(GuiControlType &aControl, LPTSTR aContents, ResultToken &aResultToken, bool aIsText)
+FResult GuiType::ControlSetChoice(GuiControlType &aControl, LPTSTR aContents, bool aIsText)
 {
 	ExprTokenType choice;
 	if (aIsText)
@@ -1777,20 +1781,18 @@ void GuiType::ControlSetChoice(GuiControlType &aControl, LPTSTR aContents, Resul
 			// previous selection.  By contrast, a user typing in the box always sets it to -1.
 			SendMessage(aControl.hwnd, CB_SETCURSEL, -1, 0);
 			SetWindowText(aControl.hwnd, aContents);
-			return;
+			return OK;
 		}
 		choice.symbol = SYM_STRING;
 		choice.marker = aContents;
 	}
 	else // (!aIsText)
 	{
-		if (!IsNumeric(aContents, FALSE, FALSE))
-			_o_throw(ERR_INVALID_VALUE, ErrorPrototype::Type);
+		if (!ParseInteger(aContents, choice.value_int64))
+			return FError(ERR_INVALID_VALUE, nullptr, ErrorPrototype::Type);
 		choice.symbol = SYM_INTEGER;
-		choice.value_int64 = ATOI(aContents);
 	}
-	if (!ControlChoose(aControl, choice, TRUE)) // Pass TRUE to find an exact (not partial) match.
-		_o_return_FAIL;
+	return ControlChoose(aControl, choice, TRUE) ? OK : FR_FAIL; // Pass TRUE to find an exact (not partial) match.
 }
 
 
@@ -1968,7 +1970,7 @@ void GuiType::ControlGetListBox(ResultToken &aResultToken, GuiControlType &aCont
 }
 
 
-void GuiType::ControlSetEdit(GuiControlType &aControl, LPTSTR aContents, ResultToken &aResultToken, bool aIsText)
+FResult GuiType::ControlSetEdit(GuiControlType &aControl, LPTSTR aContents, bool aIsText)
 {
 	// Auto-translate LF to CRLF if this is the "Value" property of a multi-line Edit control.
 	// Note that TranslateLFtoCRLF() will return the original buffer we gave it if no translation
@@ -1977,7 +1979,7 @@ void GuiType::ControlSetEdit(GuiControlType &aControl, LPTSTR aContents, ResultT
 	LPTSTR malloc_buf = (!aIsText && (GetWindowLong(aControl.hwnd, GWL_STYLE) & ES_MULTILINE))
 		? TranslateLFtoCRLF(aContents) : aContents; // Automatic translation, as documented.
 	if (!malloc_buf)
-		_o_throw_oom; // Seems better than silently producing different results when memory is low.
+		return FR_E_OUTOFMEM;
 	// Users probably don't want or expect the control's event handler to be triggered by this
 	// action, so suppress it.  This makes single-line Edits consistent with all other controls.
 	aControl.attrib |= GUI_CONTROL_ATTRIB_SUPPRESS_EVENTS; // Disable events.
@@ -1988,6 +1990,7 @@ void GuiType::ControlSetEdit(GuiControlType &aControl, LPTSTR aContents, ResultT
 	aControl.attrib &= ~GUI_CONTROL_ATTRIB_SUPPRESS_EVENTS; // Enable events.
 	if (malloc_buf != aContents)
 		free(malloc_buf);
+	return OK;
 }
 
 
@@ -2008,7 +2011,7 @@ void GuiType::ControlGetEdit(ResultToken &aResultToken, GuiControlType &aControl
 }
 
 
-void GuiType::ControlSetDateTime(GuiControlType &aControl, LPTSTR aContents, ResultToken &aResultToken)
+FResult GuiType::ControlSetDateTime(GuiControlType &aControl, LPTSTR aContents)
 {
 	SYSTEMTIME st;
 	if (*aContents)
@@ -2016,7 +2019,7 @@ void GuiType::ControlSetDateTime(GuiControlType &aControl, LPTSTR aContents, Res
 		if (YYYYMMDDToSystemTime(aContents, st, true))
 			DateTime_SetSystemtime(aControl.hwnd, GDT_VALID, &st);
 		else
-			_o_throw_value(ERR_INVALID_VALUE, aContents);
+			return FValueError(ERR_INVALID_VALUE, aContents);
 	}
 	else // User wants there to be no date selection.
 	{
@@ -2026,11 +2029,13 @@ void GuiType::ControlSetDateTime(GuiControlType &aControl, LPTSTR aContents, Res
 		//SetWindowLong(aControl.hwnd, GWL_STYLE, GetWindowLong(aControl.hwnd, GWL_STYLE) | DTS_SHOWNONE);
 		DateTime_SetSystemtime(aControl.hwnd, GDT_NONE, &st);  // Contents of st are ignored in this mode.
 	}
+	return OK;
 }
 
 
 FResult GuiControlType::DT_SetFormat(optl<StrArg> aFormat)
 {
+	CTRL_THROW_IF_DESTROYED;
 	bool use_custom_format = false; // Set default.
 	// Reset style to "pure" so that new style (or custom format) can take effect.
 	DWORD style = GetWindowLong(hwnd, GWL_STYLE) // DTS_SHORTDATEFORMAT==0 so can be omitted below.
@@ -2071,12 +2076,12 @@ void GuiType::ControlGetDateTime(ResultToken &aResultToken, GuiControlType &aCon
 }
 
 
-void GuiType::ControlSetMonthCal(GuiControlType &aControl, LPTSTR aContents, ResultToken &aResultToken)
+FResult GuiType::ControlSetMonthCal(GuiControlType &aControl, LPTSTR aContents)
 {
 	SYSTEMTIME st[2];
 	DWORD gdtr = YYYYMMDDToSystemTime2(aContents, st);
 	if (!gdtr) // aContents is empty or invalid (it's not meaningful to set an empty value).
-		_o_throw_value(ERR_INVALID_VALUE, aContents);
+		return FValueError(ERR_INVALID_VALUE, aContents);
 	if (GetWindowLong(aControl.hwnd, GWL_STYLE) & MCS_MULTISELECT) // Must use range-selection even if selection is only one date.
 	{
 		if (gdtr == GDTR_MIN) // No maximum is present, so set maximum to minimum.
@@ -2087,6 +2092,7 @@ void GuiType::ControlSetMonthCal(GuiControlType &aControl, LPTSTR aContents, Res
 	else
 		MonthCal_SetCurSel(aControl.hwnd, st);
 	ControlRedraw(aControl, true); // Confirmed necessary.
+	return OK;
 }
 
 
@@ -2117,9 +2123,10 @@ void GuiType::ControlGetMonthCal(ResultToken &aResultToken, GuiControlType &aCon
 }
 
 
-void GuiType::ControlSetHotkey(GuiControlType &aControl, LPTSTR aContents, ResultToken &aResultToken)
+FResult GuiType::ControlSetHotkey(GuiControlType &aControl, LPTSTR aContents)
 {
 	SendMessage(aControl.hwnd, HKM_SETHOTKEY, TextToHotkey(aContents), 0); // This will set it to "None" if aContents is blank.
+	return OK;
 }
 
 
@@ -2133,11 +2140,12 @@ void GuiType::ControlGetHotkey(ResultToken &aResultToken, GuiControlType &aContr
 }
 
 
-void GuiType::ControlSetUpDown(GuiControlType &aControl, int new_pos, ResultToken &aResultToken)
+FResult GuiType::ControlSetUpDown(GuiControlType &aControl, int new_pos)
 {
 	// MSDN: "If the parameter is outside the control's specified range, nPos will be set to the nearest
 	// valid value."
 	SendMessage(aControl.hwnd, UDM_SETPOS32, 0, new_pos);
+	return OK;
 }
 
 
@@ -2151,12 +2159,13 @@ void GuiType::ControlGetUpDown(ResultToken &aResultToken, GuiControlType &aContr
 }
 
 
-void GuiType::ControlSetSlider(GuiControlType &aControl, int aValue, ResultToken &aResultToken)
+FResult GuiType::ControlSetSlider(GuiControlType &aControl, int aValue)
 {
 	// Confirmed this fact from MSDN: That the control automatically deals with out-of-range values
 	// by setting slider to min or max:
 	SendMessage(aControl.hwnd, TBM_SETPOS, TRUE, ControlInvertSliderIfNeeded(aControl, aValue));
 	// Above msg has no return value.
+	return OK;
 }
 
 
@@ -2169,11 +2178,12 @@ void GuiType::ControlGetSlider(ResultToken &aResultToken, GuiControlType &aContr
 }
 
 
-void GuiType::ControlSetProgress(GuiControlType &aControl, int aValue, ResultToken &aResultToken)
+FResult GuiType::ControlSetProgress(GuiControlType &aControl, int aValue)
 {
 	// Confirmed through testing (PBM_DELTAPOS was also tested): The control automatically deals
 	// with out-of-range values by setting bar to min or max.  
 	SendMessage(aControl.hwnd, PBM_SETPOS, aValue, 0);
+	return OK;
 }
 
 
@@ -2268,12 +2278,12 @@ bool GuiType::Delete() // IObject::Delete()
 
 
 
-void GuiType::Destroy()
+FResult GuiType::Destroy()
 // Destroys the window and performs related cleanup which is only necessary for
 // a successfully constructed Gui, then calls Dispose() for the remaining cleanup.
 {
 	if (!mHwnd)
-		return; // We have already been destroyed.
+		return OK; // We have already been destroyed.
 
 	if (mVScroll)
 	{
@@ -2360,6 +2370,7 @@ void GuiType::Destroy()
 	// HotKeyIt: call only if we are not already exiting -> g_hWnd == NULL
 	if (g_hWnd)
 		g_script->ExitIfNotPersistent(EXIT_CLOSE);
+	return OK;
 }
 
 
@@ -2405,7 +2416,6 @@ void GuiType::Dispose()
 
 	RemoveAccelerators();
 	free(mControl); // Free the control array, which was previously malloc'd.
-	free(mName);
 }
 
 
@@ -2462,10 +2472,10 @@ void GuiType::DestroyIconsIfUnused(HICON ahIcon, HICON ahIconSmall)
 
 
 
-ResultType GuiType::Create(LPTSTR aTitle)
+FResult GuiType::Create(LPCTSTR aTitle)
 {
 	if (mHwnd) // It already exists
-		return FAIL; // Should be impossible since mHwnd is checked by caller.
+		return FR_E_FAILED; // Should be impossible since mHwnd is checked by caller.
 
 	WNDCLASSEX awc = { 0 };
 	thread_local static WNDCLASSEX wc = { 0 };
@@ -2487,21 +2497,16 @@ ResultType GuiType::Create(LPTSTR aTitle)
 		wc.hCursor = LoadCursor((HINSTANCE) NULL, IDC_ARROW);
 		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
 		wc.cbWndExtra = DLGWINDOWEXTRA;  // So that it will be the type that uses DefDlgProc() vs. DefWindowProc().
-#ifdef _USRDLL  //Ignore errors since mostly AutoHotkey.exe alredy registered the class
 		sGuiWinClass = RegisterClassEx(&wc);
-#else
-		sGuiWinClass = RegisterClassEx(&wc);
-		// HotKeyIt: 
-		//		If above fails, we assume another thread already registered the class and will set it after window has been created.
-		//		Otherwise CreateWindowEx will fail with appropriate error message.
-		//if (!sGuiWinClass)
-			//return g_script->Win32Error();
+#ifndef _USRDLL  //Ignore errors since mostly AutoHotkey.exe alredy registered the class
+		if (!sGuiWinClass)
+			return FR_E_WIN32;
 #endif
 	}
 
 	if (   !(mHwnd = CreateWindowEx(mExStyle, g_WindowClassGUI, aTitle
 		, mStyle, 0, 0, 0, 0, mOwner, NULL, g_hInstance, NULL))   )
-		return g_script->Win32Error();
+		return FR_E_WIN32;
 
 	if (!sGuiWinClass)
 		sGuiWinClass = (ATOM)GetClassLong(mHwnd, GCW_ATOM);
@@ -2542,29 +2547,50 @@ ResultType GuiType::Create(LPTSTR aTitle)
 }
 
 
-void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
-	, ExprTokenType *aParam[], int aParamCount, ResultToken &aResultToken)
+FResult GuiType::OnEvent(StrArg aEventName, ExprTokenType &aCallback, optl<int> aAddRemove)
 {
-	// Caller has already converted aParam[0] to aEvent and validated it,
-	// as well as verifying aParamCount >= 2.
-	int max_threads = ParamIndexToOptionalInt(2, 1);
+	GUI_MUST_HAVE_HWND;
+	
+	GuiEventType evt = ConvertEvent(aEventName);
+	if (evt < GUI_EVENT_WINDOW_FIRST || evt > GUI_EVENT_WINDOW_LAST)
+		return FR_E_ARG(0);
+	
+	return OnEvent(nullptr, evt, GUI_EVENTKIND_EVENT, aCallback, aAddRemove);
+}
+
+
+FResult GuiType::OnMessage(UINT aNumber, ExprTokenType &aCallback, optl<int> aAddRemove)
+{
+	GUI_MUST_HAVE_HWND;
+	
+	return OnEvent(nullptr, aNumber, GUI_EVENTKIND_MESSAGE, aCallback, aAddRemove);
+}
+
+
+FResult GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
+	, ExprTokenType &aCallback, optl<int> aAddRemove)
+{
+	int max_threads = 1;
+	if (aAddRemove.has_value())
+		max_threads = aAddRemove.value();
 	if (max_threads < -1 || max_threads > 1)
 		// An event can currently only run one thread at a time.  By contrast, OnMessage
 		// applies the thread limit per handler, not per message.  It's hard to say which
 		// approach is better.
-		_o_throw_param(2);
+		return FR_E_ARG(2);
 
 	TCHAR nbuf[MAX_NUMBER_SIZE];
-	IObject *func = ParamIndexToObject(1);
-	LPTSTR name = func ? nullptr : ParamIndexToString(1, nbuf);
+	IObject *func = TokenToObject(aCallback);
+	LPTSTR name = func ? nullptr : TokenToString(aCallback, nbuf);
 	if (!func && !mEventSink)
-		_o_throw_param(1);
-	return OnEvent(aControl, aEvent, aEventKind, func, name, max_threads, aResultToken);
+		return FR_E_ARG(1);
+	
+	return OnEvent(aControl, aEvent, aEventKind, func, name, max_threads);
 }
 
 
-void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
-	, IObject *aFunc, LPTSTR aMethodName, int aMaxThreads, ResultToken &aResultToken)
+FResult GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
+	, IObject *aFunc, LPTSTR aMethodName, int aMaxThreads)
 {
 	MsgMonitorList &handlers = aControl ? aControl->events : mEvents;
 	MsgMonitorStruct *mon;
@@ -2577,7 +2603,7 @@ void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 		if (mon)
 			handlers.Delete(mon);
 		ApplyEventStyles(aControl, aEvent, false);
-		_o_return_empty;
+		return OK;
 	}
 	bool append = aMaxThreads >= 0;
 	if (!append) // Negative values mean "call it last".
@@ -2612,21 +2638,22 @@ void GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 					break;
 				}
 			}
-			if (!ValidateFunctor(aFunc, param_count, aResultToken))
-				return;
+			auto fr = ValidateFunctor(aFunc, param_count);
+			if (fr != OK)
+				return fr;
 			// Add the callback.
 			mon = handlers.Add(aEvent, aFunc, append);
 		}
 		else
 			mon = handlers.Add(aEvent, aMethodName, append);
 		if (!mon)
-			_o_throw_oom;
+			return FR_E_OUTOFMEM;
 	}
 	mon->instance_count = 0;
 	mon->max_instances = aMaxThreads;
 	mon->msg_type = aEventKind;
 	ApplyEventStyles(aControl, aEvent, true);
-	_o_return_empty;
+	return OK;
 }
 
 
@@ -2720,7 +2747,7 @@ LPTSTR GuiType::ConvertEvent(GuiEventType evt)
 	return sBuf;
 }
 
-GuiEventType GuiType::ConvertEvent(LPTSTR evt)
+GuiEventType GuiType::ConvertEvent(LPCTSTR evt)
 {
 	for (GuiEventType i = 0; i < _countof(sEventNames); ++i)
 		if (!_tcsicmp(sEventNames[i], evt))
@@ -2748,23 +2775,6 @@ IObject* GuiType::CreateDropArray(HDROP hDrop)
 		// expected, or for it to raise ERR_OUTOFMEM.
 	}
 	return arr;
-}
-
-
-
-ResultType GuiType::SetName(LPTSTR aName)
-{
-	if (*aName)
-	{
-		aName = _tcsdup(aName);
-		if (!aName)
-			return MemoryError();
-	}
-	else
-		aName = nullptr;
-	free(mName);
-	mName = aName;
-	return OK;
 }
 
 
@@ -2800,7 +2810,7 @@ void GuiType::UpdateMenuBars(HMENU aMenu)
 
 
 
-ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR aText, GuiControlType*& apControl, Array *aObj)
+ResultType GuiType::AddControl(GuiControls aControlType, LPCTSTR aOptions, LPCTSTR aText, GuiControlType*& apControl, Array *aObj)
 // Caller must have ensured that mHwnd is non-NULL (i.e. that the parent window already exists).
 {
 	apControl = NULL; // Initialize return pointer.
@@ -3595,13 +3605,14 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 
 				LPTSTR aTextCopy = new TCHAR[_tcslen(aText) + 1];
 
-				TCHAR *src, *dst;
+				LPCTSTR src;
+				LPTSTR dst;
 				for (src = aText, dst = aTextCopy; *src; ++src)
 				{
 					if (*src == '<' && ctoupper(src[1]) == 'A')
 					{
-						TCHAR *linkText = NULL;
-						TCHAR *cp = omit_leading_whitespace(src + 2);
+						LPCTSTR linkText = NULL;
+						LPCTSTR cp = omit_leading_whitespace(src + 2);
 
 						// It is important to note that while the SysLink control's syntax is similar to HTML,
 						// it is not HTML.  Some valid HTML won't work, and some invalid HTML will.  Testing
@@ -3638,7 +3649,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 						if (linkText)
 						{
 							// Testing indicates that spaces in the end tag are not tolerated:
-							if (LPTSTR endTag = tcscasestr(linkText, _T("</a>")))
+							if (auto endTag = tcscasestr(linkText, _T("</a>")))
 							{
 								// Copy the link text and skip over the end tag.
 								for (cp = linkText; cp < endTag; *dst++ = *cp++);
@@ -3876,7 +3887,6 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 	bool retrieve_dimensions = false;       //
 	int item_height, min_list_height;
 	RECT rect;
-	LPTSTR malloc_buf;
 	HMENU control_id = (HMENU)(size_t)GUI_INDEX_TO_ID(mControlCount); // Cast to size_t avoids compiler warning.
 	HWND parent_hwnd = mHwnd;
 
@@ -4334,6 +4344,7 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 	break;
 
 	case GUI_CONTROL_EDIT:
+	{
 		if (!(style & ES_MULTILINE)) // ES_MULTILINE was not explicitly or automatically specified.
 		{
 			if (opt.limit < 0) // This is the signal to limit input length to visible width of field.
@@ -4351,8 +4362,8 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 		// Note that TranslateLFtoCRLF() will return the original buffer we gave it if no translation
 		// is needed.  Otherwise, it will return a new buffer which we are responsible for freeing
 		// when done (or NULL if it failed to allocate the memory).
-		malloc_buf = (*aText && (style & ES_MULTILINE)) ? TranslateLFtoCRLF(aText) : aText;
-		if (control.hwnd = CreateWindowEx(exstyle, _T("Edit"), malloc_buf ? malloc_buf : aText, style  // malloc_buf is checked again in case mem alloc failed.
+		auto malloc_buf = (*aText && (style & ES_MULTILINE)) ? TranslateLFtoCRLF(aText) : nullptr;
+		if (control.hwnd = CreateWindowEx(exstyle, _T("Edit"), malloc_buf ? malloc_buf : aText, style
 			, opt.x - (mHScroll && mHScroll->nPos ? mHScroll->nPos : 0), opt.y - (mVScroll && mVScroll->nPos ? mVScroll->nPos : 0), opt.width, opt.height, parent_hwnd, control_id, g_hInstance, NULL))
 		{
 			// As documented in MSDN, setting a password char will have no effect for multi-line edits
@@ -4372,9 +4383,10 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 			if (opt.tabstop_count)
 				SendMessage(control.hwnd, EM_SETTABSTOPS, opt.tabstop_count, (LPARAM)opt.tabstop);
 		}
-		if (malloc_buf && malloc_buf != aText)
+		if (malloc_buf != aText)
 			free(malloc_buf);
 		break;
+	}
 
 	case GUI_CONTROL_DATETIME:
 	{
@@ -5039,13 +5051,26 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPTSTR aOptions, LPTSTR
 
 
 
-ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, ToggleValueType &aOwnDialogs)
+FResult GuiType::Opt(StrArg aOptions)
+{
+	GUI_MUST_HAVE_HWND;
+	bool set_last_found_window = false;
+	ToggleValueType own_dialogs = TOGGLE_INVALID;
+	if (!ParseOptions(aOptions, set_last_found_window, own_dialogs))
+		return FR_FAIL; // Above already displayed an error message.
+	if (set_last_found_window)
+		g->hWndLastUsed = mHwnd;
+	SetOwnDialogs(own_dialogs);
+	return OK;
+}
+
+
+
+ResultType GuiType::ParseOptions(LPCTSTR aOptions, bool &aSetLastFoundWindow, ToggleValueType &aOwnDialogs)
 // This function is similar to ControlParseOptions() further below, so should be maintained alongside it.
 // Caller must have already initialized aSetLastFoundWindow/, bool &aOwnDialogs with desired starting values.
 // Caller must ensure that aOptions is a modifiable string, since this method temporarily alters it.
 {
-	LONG nc_width, nc_height;
-
 	if (mHwnd)
 	{
 		// Since window already exists, its mStyle and mExStyle members might be out-of-date due to
@@ -5061,8 +5086,9 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 	DWORD style_orig = mStyle;
 	DWORD exstyle_orig = mExStyle;
 
-	LPTSTR pos_of_the_x, next_option, option_end;
-	TCHAR orig_char;
+	TCHAR option[MAX_NUMBER_SIZE + 1]; // Enough for any single option word or number, with room to avoid issues due to truncation.
+	LPCTSTR next_option, option_end;
+	DWORD option_dword;
 	bool adding; // Whether this option is being added (+) or removed (-).
 
 	for (next_option = aOptions; *next_option; next_option = omit_leading_whitespace(option_end))
@@ -5090,40 +5116,34 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 		if (!*next_option) // In case the entire option string ends in a naked + or -.
 			break;
 		// Find the end of this option item:
-		if (   !(option_end = StrChrAny(next_option, _T(" \t")))   )  // Space or tab.
-			option_end = next_option + _tcslen(next_option); // Set to position of zero terminator instead.
+		for (option_end = next_option; *option_end && !IS_SPACE_OR_TAB(*option_end); ++option_end);
 		if (option_end == next_option)
 			continue; // i.e. the string contains a + or - with a space or tab after it, which is intentionally ignored.
-
-		// Temporarily terminate to help eliminate ambiguity for words contained inside other words,
-		// such as "Checked" inside of "CheckedGray":
-		orig_char = *option_end;
-		*option_end = '\0';
-
+		
+		// Make a null-terminated copy to simplify comparisons below.
+		tcslcpy(option, next_option, min((option_end - next_option) + 1, _countof(option)));
+		
 		// Attributes and option words:
 
 		bool set_owner;
-		if ((set_owner = !_tcsnicmp(next_option, _T("Owner"), 5))
-			  || !_tcsnicmp(next_option, _T("Parent"), 6))
+		if ((set_owner = !_tcsnicmp(option, _T("Owner"), 5))
+			  || !_tcsnicmp(option, _T("Parent"), 6))
 		{
 			if (!adding)
 				mOwner = NULL;
 			else
 			{
-				LPTSTR name = next_option + 5 + !set_owner; // 6 for "Parent"
+				auto name = option + 5 + !set_owner; // 6 for "Parent"
 				if (*name || !set_owner) // i.e. "+Parent" on its own is invalid (and should not default to g_hWnd).
 				{
 					HWND new_owner = NULL;
-					if (IsNumeric(name, TRUE, FALSE) == PURE_INTEGER) // Allow negatives, for flexibility.
-					{
-						HWND hwnd = (HWND)ATOI64(name);
-						if (IsWindow(hwnd))
-							new_owner = hwnd;
-					}
+					UINT hwnd_uint;
+					if (ParseInteger(name, hwnd_uint))
+						if (IsWindow((HWND)(UINT_PTR)hwnd_uint))
+							new_owner = (HWND)(UINT_PTR)hwnd_uint;
 					if (!new_owner || new_owner == mHwnd) // Window can't own itself!
 					{
-						*option_end = orig_char; // Must restore caller's string.
-						if (!g_script->RuntimeError(_T("Invalid or nonexistent owner or parent window."), next_option))
+						if (!ValueError(_T("Invalid or nonexistent owner or parent window."), option, FAIL_OR_OK))
 							return FAIL;
 						// Otherwise, user wants to continue.
 					}
@@ -5170,7 +5190,7 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 			}
 		}
 
-		else if (!_tcsicmp(next_option, _T("AlwaysOnTop")))
+		else if (!_tcsicmp(option, _T("AlwaysOnTop")))
 		{
 			// If the window already exists, SetWindowLong() isn't enough.  Must use SetWindowPos()
 			// to make it take effect.
@@ -5190,9 +5210,9 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 			if (adding) mExStyle |= WS_EX_TOPMOST; else mExStyle &= ~WS_EX_TOPMOST;
 		}
 
-		else if (!_tcsicmp(next_option, _T("Border")))
+		else if (!_tcsicmp(option, _T("Border")))
 			if (adding) mStyle |= WS_BORDER; else mStyle &= ~WS_BORDER;
-		else if (!_tcsicmp(next_option, _T("Scroll")))
+		else if (!_tcsicmp(option, _T("Scroll")))
 		{
 			if (adding)
 				mStyle |= WS_VSCROLL, mStyle |= WS_HSCROLL;
@@ -5203,7 +5223,7 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 				mStyle &= ~WS_VSCROLL, mStyle &= ~WS_HSCROLL;
 			}
 		}
-		else if (!_tcsicmp(next_option, _T("HScroll")))
+		else if (!_tcsicmp(option, _T("HScroll")))
 		{
 			if (adding)
 				mStyle |= WS_HSCROLL;
@@ -5214,7 +5234,7 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 					ScrollWindow(mHwnd, mHScroll->nPos - mHScroll->nMin, 0, NULL, NULL);
 			}
 		}
-		else if (!_tcsicmp(next_option, _T("VScroll")))
+		else if (!_tcsicmp(option, _T("VScroll")))
 		{
 			if (adding)
 				mStyle |= WS_VSCROLL;
@@ -5225,10 +5245,10 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 					ScrollWindow(mHwnd, 0, mVScroll->nPos - mVScroll->nMin, NULL, NULL);
 			}
 		}
-		else if (!_tcsicmp(next_option, _T("Caption")))
+		else if (!_tcsicmp(option, _T("Caption")))
 			if (adding) mStyle |= WS_CAPTION; else mStyle = mStyle & ~WS_CAPTION;
 
-		else if (!_tcsicmp(next_option, _T("Disabled")))
+		else if (!_tcsicmp(option, _T("Disabled")))
 		{
 			if (mHwnd)
 			{
@@ -5245,45 +5265,22 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 			if (adding) mStyle |= WS_DISABLED; else mStyle &= ~WS_DISABLED;
 		}
 		
-		else if (!_tcsicmp(next_option, _T("LastFound")))
+		else if (!_tcsicmp(option, _T("LastFound")))
 			aSetLastFoundWindow = true; // Regardless of whether "adding" is true or false.
 
-		else if (!_tcsicmp(next_option, _T("MaximizeBox"))) // See above comment.
+		else if (!_tcsicmp(option, _T("MaximizeBox"))) // See above comment.
 			if (adding) mStyle |= WS_MAXIMIZEBOX|WS_SYSMENU; else mStyle &= ~WS_MAXIMIZEBOX;
 
-		else if (!_tcsicmp(next_option, _T("MinimizeBox")))
+		else if (!_tcsicmp(option, _T("MinimizeBox")))
 			// WS_MINIMIZEBOX requires WS_SYSMENU to take effect.  It can be explicitly omitted
 			// via "+MinimizeBox -SysMenu" if that functionality is ever needed.
 			if (adding) mStyle |= WS_MINIMIZEBOX|WS_SYSMENU; else mStyle &= ~WS_MINIMIZEBOX;
 
-		else if (!_tcsnicmp(next_option, _T("MinSize"), 7)) // v1.0.44.13: Added for use with WM_GETMINMAXINFO.
+		else if (!_tcsnicmp(option, _T("MinSize"), 7)) // v1.0.44.13: Added for use with WM_GETMINMAXINFO.
 		{
-			next_option += 7;
 			if (adding)
 			{
-				if (*next_option)
-				{
-					// The following will retrieve zeros if window hasn't yet been shown for the first time,
-					// in which case the first showing will do the NC adjustment for us.  The overall approach
-					// used here was chose to avoid any chance for Min/MaxSize to be adjusted more than once
-					// to convert client size to entire-size, which would be wrong since the adjustment must be
-					// applied only once.  Examples of such situations are when one of the coordinates is omitted,
-					// or when +MinSize is specified prior to the first "Gui Show" but +MaxSize is specified after.
-					GetNonClientArea(nc_width, nc_height);
-					// _ttoi() vs. ATOI() is used below to avoid ambiguity of "x" being hex 0x vs. a delimiter.
-					if ((pos_of_the_x = StrChrAny(next_option, _T("Xx"))) && pos_of_the_x[1]) // Kept simple due to rarity of transgressions and their being inconsequential.
-						mMinHeight = Scale(_ttoi(pos_of_the_x + 1)) + nc_height;
-					//else it's "MinSize333" or "MinSize333x", so leave height unchanged as documented.
-					if (pos_of_the_x != next_option) // There's no 'x' or it lies to the right of next_option.
-						mMinWidth = Scale(_ttoi(next_option)) + nc_width; // _ttoi() automatically stops converting when it reaches non-numeric character.
-					//else it's "MinSizeX333", so leave width unchanged as documented.
-				}
-				else // Since no width or height was specified:
-					// Use the window's current size. But if window hasn't yet been shown for the
-					// first time, this will set the values to COORD_CENTERED, which tells the
-					// first-show routine to get the total width/height upon first showing (since
-					// that's where the window's initial size is determined).
-					GetTotalWidthAndHeight(mMinWidth, mMinHeight);
+				ParseMinMaxSizeOption(option + 7, mMinWidth, mMinHeight);
 			}
 			else // "-MinSize", so tell the WM_GETMINMAXINFO handler to use system defaults.
 			{
@@ -5292,22 +5289,11 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 			}
 		}
 
-		else if (!_tcsnicmp(next_option, _T("MaxSize"), 7)) // v1.0.44.13: Added for use with WM_GETMINMAXINFO.
+		else if (!_tcsnicmp(option, _T("MaxSize"), 7)) // v1.0.44.13: Added for use with WM_GETMINMAXINFO.
 		{
-			// SEE "MinSize" section above for more comments because the section below is nearly identical to it.
-			next_option += 7;
 			if (adding)
 			{
-				if (*next_option)
-				{
-					GetNonClientArea(nc_width, nc_height);
-					if ((pos_of_the_x = StrChrAny(next_option, _T("Xx"))) && pos_of_the_x[1]) // Kept simple due to rarity of transgressions and their being inconsequential.
-						mMaxHeight = Scale(_ttoi(pos_of_the_x + 1)) + nc_height;
-					if (pos_of_the_x != next_option) // There's no 'x' or it lies to the right of next_option.
-						mMaxWidth = Scale(_ttoi(next_option)) + nc_width; // _ttoi() automatically stops converting when it reaches non-numeric character.
-				}
-				else // No width or height was specified. See comment in "MinSize" for details about this.
-					GetTotalWidthAndHeight(mMaxWidth, mMaxHeight); // If window hasn't yet been shown for the first time, this will set them to COORD_CENTERED, which tells the first-show routine to get the total width/height.
+				ParseMinMaxSizeOption(option + 7, mMaxWidth, mMaxHeight);
 			}
 			else // "-MaxSize", so tell the WM_GETMINMAXINFO handler to use system defaults.
 			{
@@ -5316,66 +5302,54 @@ ResultType GuiType::ParseOptions(LPTSTR aOptions, bool &aSetLastFoundWindow, Tog
 			}
 		}
 
-		else if (!_tcsicmp(next_option, _T("OwnDialogs")))
+		else if (!_tcsicmp(option, _T("OwnDialogs")))
 			aOwnDialogs = (adding ? TOGGLED_ON : TOGGLED_OFF);
 
-		else if (!_tcsicmp(next_option, _T("Resize"))) // Minus removes either or both.
+		else if (!_tcsicmp(option, _T("Resize"))) // Minus removes either or both.
 			if (adding) mStyle |= WS_SIZEBOX|WS_MAXIMIZEBOX; else mStyle &= ~(WS_SIZEBOX|WS_MAXIMIZEBOX);
 
-		else if (!_tcsicmp(next_option, _T("SysMenu")))
+		else if (!_tcsicmp(option, _T("SysMenu")))
 			if (adding) mStyle |= WS_SYSMENU; else mStyle &= ~WS_SYSMENU;
 
-		else if (!_tcsicmp(next_option, _T("Theme")))
+		else if (!_tcsicmp(option, _T("Theme")))
 			mUseTheme = adding;
 			// But don't apply/remove theme from parent window because that is usually undesirable.
 			// This is because even old apps running on XP still have the new parent window theme,
 			// at least for their title bar and title bar buttons (except console apps, maybe).
 
-		else if (!_tcsicmp(next_option, _T("ToolWindow")))
+		else if (!_tcsicmp(option, _T("ToolWindow")))
 			// WS_EX_TOOLWINDOW provides narrower title bar, omits task bar button, and omits
 			// entry in the alt-tab menu.
 			if (adding) mExStyle |= WS_EX_TOOLWINDOW; else mExStyle &= ~WS_EX_TOOLWINDOW;
 
-		else if (!_tcsicmp(next_option, _T("DPIScale")))
+		else if (!_tcsicmp(option, _T("DPIScale")))
 			mUsesDPIScaling = adding;
 
 		// This one should be near the bottom since "E" is fairly vague and might be contained at the start
 		// of future option words such as Edge, Exit, etc.
-		else if (ctoupper(*next_option) == 'E') // Extended style
+		else if (ctoupper(*option) == 'E' && ParsePositiveInteger(option + 1, option_dword)) // Extended style
 		{
-			++next_option; // Skip over the E itself.
-			if (IsNumeric(next_option, false, false)) // Disallow whitespace in case option string ends in naked "E".
-			{
-				// Pure numbers are assumed to be style additions or removals:
-				DWORD given_exstyle = ATOU(next_option); // ATOU() for unsigned.
-				if (adding)
-					mExStyle |= given_exstyle;
-				else
-					mExStyle &= ~given_exstyle;
-			}
+			if (adding)
+				mExStyle |= option_dword;
+			else
+				mExStyle &= ~option_dword;
 		}
 
-		else // Handle things that are more general than the above, such as single letter options and pure numbers:
+		else if (ParsePositiveInteger(option, option_dword)) // Above has already verified that *option can't be whitespace.
 		{
-			if (IsNumeric(next_option)) // Above has already verified that *next_option can't be whitespace.
-			{
-				// Pure numbers are assumed to be style additions or removals:
-				DWORD given_style = ATOU(next_option); // ATOU() for unsigned.
-				if (adding)
-					mStyle |= given_style;
-				else
-					mStyle &= ~given_style;
-			}
-			else // v1.1.04: Validate Gui options.
-			{
-				*option_end = orig_char; // Must restore caller's string.
-				if (!ValueError(ERR_INVALID_OPTION, next_option, FAIL_OR_OK))
-					return FAIL;
-				// Otherwise, user wants to continue.
-			}
+			// Pure numbers are assumed to be style additions or removals:
+			if (adding)
+				mStyle |= option_dword;
+			else
+				mStyle &= ~option_dword;
 		}
 
-		*option_end = orig_char; // Undo the temporary termination because the caller needs aOptions to be unaltered.
+		else // v1.1.04: Validate Gui options.
+		{
+			if (!ValueError(ERR_INVALID_OPTION, option, FAIL_OR_OK))
+				return FAIL;
+			// Otherwise, user wants to continue.
+		}
 
 	} // for() each item in option list
 
@@ -5475,16 +5449,46 @@ void GuiType::GetTotalWidthAndHeight(LONG &aWidth, LONG &aHeight)
 
 
 
-ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &aOpt, GuiControlType &aControl
+void GuiType::ParseMinMaxSizeOption(LPCTSTR option_value, LONG &aWidth, LONG &aHeight)
+{
+	if (*option_value)
+	{
+		// The following will retrieve zeros if window hasn't yet been shown for the first time,
+		// in which case the first showing will do the NC adjustment for us.  The overall approach
+		// used here was chose to avoid any chance for Min/MaxSize to be adjusted more than once
+		// to convert client size to entire-size, which would be wrong since the adjustment must be
+		// applied only once.  Examples of such situations are when one of the coordinates is omitted,
+		// or when +MinSize is specified prior to the first "Gui Show" but +MaxSize is specified after.
+		LONG nc_width, nc_height;
+		GetNonClientArea(nc_width, nc_height);
+		// _ttoi() vs. ATOI() is used below to avoid ambiguity of "x" being hex 0x vs. a delimiter.
+		auto pos_of_the_x = StrChrAny(option_value, _T("Xx"));
+		if (pos_of_the_x && pos_of_the_x[1]) // Kept simple due to rarity of transgressions and their being inconsequential.
+			aHeight = Scale(_ttoi(pos_of_the_x + 1)) + nc_height;
+		//else it's "MinSize333" or "MinSize333x", so leave height unchanged as documented.
+		if (pos_of_the_x != option_value) // There's no 'x' or it lies to the right of option_value.
+			aWidth = Scale(_ttoi(option_value)) + nc_width; // _ttoi() automatically stops converting when it reaches non-numeric character.
+		//else it's "MinSizeX333", so leave width unchanged as documented.
+	}
+	else // Since no width or height was specified:
+		// Use the window's current size. But if window hasn't yet been shown for the
+		// first time, this will set the values to COORD_CENTERED, which tells the
+		// first-show routine to get the total width/height upon first showing (since
+		// that's where the window's initial size is determined).
+		GetTotalWidthAndHeight(aWidth, aHeight);
+}
+
+
+
+ResultType GuiType::ControlParseOptions(LPCTSTR aOptions, GuiControlOptionsType &aOpt, GuiControlType &aControl
 	, GuiIndexType aControlIndex)
 // Caller must have already initialized aOpt with zeroes or any other desired starting values.
 // Caller must ensure that aOptions is a modifiable string, since this method temporarily alters it.
 {
-	// If control type uses aControl's union for something other than color, communicate the chosen color
-	// back through a means that doesn't corrupt the union:
-	LPTSTR next_option, option_end;
-	LPTSTR error_message; // Used by "return_error:" when aControl.hwnd == NULL.
-	TCHAR orig_char;
+	TCHAR option[MAX_NUMBER_SIZE + 1]; // Enough for any single option word or number, with room to avoid issues due to truncation.
+	LPCTSTR next_option, option_end;
+	LPCTSTR error_message; // Used by "return_error:" when aControl.hwnd == NULL.
+	DWORD option_dword;
 	bool adding; // Whether this option is being added (+) or removed (-).
 	GuiControlType *tab_control;
 	RECT rect;
@@ -5516,20 +5520,17 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 		if (!*next_option) // In case the entire option string ends in a naked + or -.
 			break;
 		// Find the end of this option item:
-		if (   !(option_end = StrChrAny(next_option, _T(" \t")))   )  // Space or tab.
-			option_end = next_option + _tcslen(next_option); // Set to position of zero terminator instead.
+		for (option_end = next_option; *option_end && !IS_SPACE_OR_TAB(*option_end); ++option_end);
 		if (option_end == next_option)
 			continue; // i.e. the string contains a + or - with a space or tab after it, which is intentionally ignored.
-
-		// Temporarily terminate to help eliminate ambiguity for words contained inside other words,
-		// such as "Checked" inside of "CheckedGray":
-		orig_char = *option_end;
-		*option_end = '\0';
+		
+		// Make a null-terminated copy to simplify comparisons below.
+		tcslcpy(option, next_option, min((option_end - next_option) + 1, _countof(option)));
 
 		// Attributes:
-		if (!_tcsicmp(next_option, _T("Section"))) // Adding and removing are treated the same in this case.
+		if (!_tcsicmp(option, _T("Section"))) // Adding and removing are treated the same in this case.
 			aOpt.start_new_section = true;    // Ignored by caller when control already exists.
-		else if (!_tcsicmp(next_option, _T("AltSubmit")) && aControl.type != GUI_CONTROL_EDIT)
+		else if (!_tcsicmp(option, _T("AltSubmit")) && aControl.type != GUI_CONTROL_EDIT)
 		{
 			// v1.0.44: Don't allow control's AltSubmit bit to be set unless it's valid option for
 			// that type.  This protects the GUI_CONTROL_ATTRIB_ALTSUBMIT bit from being corrupted
@@ -5556,10 +5557,10 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 		}
 
 		// Content of control (these are currently only effective if the control is being newly created):
-		else if (!_tcsnicmp(next_option, _T("Checked"), 7)) // Caller knows to ignore if inapplicable. Applicable for ListView too.
+		else if (!_tcsnicmp(option, _T("Checked"), 7)) // Caller knows to ignore if inapplicable. Applicable for ListView too.
 		{
-			next_option += 7;
-			if (!_tcsicmp(next_option, _T("Gray"))) // Radios can't have the 3rd/gray state, but for simplicity it's permitted.
+			auto option_value = option + 7;
+			if (!_tcsicmp(option_value, _T("Gray"))) // Radios can't have the 3rd/gray state, but for simplicity it's permitted.
 				if (adding) aOpt.checked = BST_INDETERMINATE; else aOpt.checked = BST_UNCHECKED;
 			else
 			{
@@ -5576,9 +5577,9 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 					// else
 					//    Enable =
 					// Gui Add, checkbox, %Enable%, My checkbox.
-					if (*next_option) // There's more after the word, namely a 1, 0, or -1.
+					if (*option_value) // There's more after the word, namely a 1, 0, or -1.
 					{
-						aOpt.checked = ATOI(next_option);
+						aOpt.checked = ATOI(option_value);
 						if (aOpt.checked == -1)
 							aOpt.checked = BST_INDETERMINATE;
 					}
@@ -5587,21 +5588,21 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				}
 			} // Non-checkedGRAY
 		} // Checked.
-		else if (!_tcsnicmp(next_option, _T("Choose"), 6))
+		else if (!_tcsnicmp(option, _T("Choose"), 6))
 		{
 			// "CHOOSE" provides an easier way to conditionally select a different item at the time
 			// the control is added.  Example: gui, add, ListBox, vMyList Choose%choice%, %MyItemList%
 			// Caller should ignore aOpt.choice if it isn't applicable for this control type.
 			if (adding)
 			{
-				next_option += 6;
+				auto option_value = option + 6;
 				switch (aControl.type)
 				{
 				case GUI_CONTROL_DATETIME:
-					if (!_tcsicmp(next_option, _T("None")))
+					if (!_tcsicmp(option_value, _T("None")))
 						aOpt.choice = 2; // Special flag value to indicate "none".
 					else // See if it's a valid date-time.
-						if (YYYYMMDDToSystemTime(next_option, aOpt.sys_time[0], true)) // Date string is valid.
+						if (YYYYMMDDToSystemTime(option_value, aOpt.sys_time[0], true)) // Date string is valid.
 							aOpt.choice = 1; // Overwrite 0 to flag sys_time as both present and valid.
 						else
 						{
@@ -5610,7 +5611,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 						}
 					break;
 				default:
-					aOpt.choice = ATOI(next_option);
+					aOpt.choice = ATOI(option_value);
 					if (aOpt.choice < 1) // Invalid: number should be 1 or greater.
 						aOpt.choice = 0; // Flag it as invalid.
 				}
@@ -5619,11 +5620,11 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 		}
 
 		// Styles (general):
-		else if (!_tcsicmp(next_option, _T("Border")))
+		else if (!_tcsicmp(option, _T("Border")))
 			if (adding) aOpt.style_add |= WS_BORDER; else aOpt.style_remove |= WS_BORDER;
-		else if (!_tcsicmp(next_option, _T("VScroll"))) // Seems harmless in this case not to check aControl.type to ensure it's an input-capable control.
+		else if (!_tcsicmp(option, _T("VScroll"))) // Seems harmless in this case not to check aControl.type to ensure it's an input-capable control.
 			if (adding) aOpt.style_add |= WS_VSCROLL; else aOpt.style_remove |= WS_VSCROLL;
-		else if (!_tcsnicmp(next_option, _T("HScroll"), 7)) // Seems harmless in this case not to check aControl.type to ensure it's an input-capable control.
+		else if (!_tcsnicmp(option, _T("HScroll"), 7)) // Seems harmless in this case not to check aControl.type to ensure it's an input-capable control.
 		{
 			if (aControl.type == GUI_CONTROL_TREEVIEW)
 				// Testing shows that Tree doesn't seem to fully support removal of hscroll bar after creation.
@@ -5634,21 +5635,21 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 					// MSDN: "To respond to the LB_SETHORIZONTALEXTENT message, the list box must have
 					// been defined with the WS_HSCROLL style."
 					aOpt.style_add |= WS_HSCROLL;
-					next_option += 7;
-					aOpt.hscroll_pixels = *next_option ? ATOI(next_option) : -1;  // -1 signals it to use a default based on control's width.
+					auto option_value = option + 7;
+					aOpt.hscroll_pixels = *option_value ? ATOI(option_value) : -1;  // -1 signals it to use a default based on control's width.
 				}
 				else
 					aOpt.style_remove |= WS_HSCROLL;
 		}
-		else if (!_tcsicmp(next_option, _T("Tabstop"))) // Seems harmless in this case not to check aControl.type to ensure it's an input-capable control.
+		else if (!_tcsicmp(option, _T("Tabstop"))) // Seems harmless in this case not to check aControl.type to ensure it's an input-capable control.
 			if (adding) aOpt.style_add |= WS_TABSTOP; else aOpt.style_remove |= WS_TABSTOP;
-		else if (!_tcsicmp(next_option, _T("NoTab"))) // Supported for backward compatibility and it might be more ergonomic for "Gui Add".
+		else if (!_tcsicmp(option, _T("NoTab"))) // Supported for backward compatibility and it might be more ergonomic for "Gui Add".
 			if (adding) aOpt.style_remove |= WS_TABSTOP; else aOpt.style_add |= WS_TABSTOP;
-		else if (!_tcsicmp(next_option, _T("group")))
+		else if (!_tcsicmp(option, _T("group")))
 			if (adding) aOpt.style_add |= WS_GROUP; else aOpt.style_remove |= WS_GROUP;
-		else if (!_tcsicmp(next_option, _T("Redraw")))  // Seems a little more intuitive/memorable than "Draw".
+		else if (!_tcsicmp(option, _T("Redraw")))  // Seems a little more intuitive/memorable than "Draw".
 			aOpt.redraw = adding ? CONDITION_TRUE : CONDITION_FALSE; // Otherwise leave it at its default of 0.
-		else if (!_tcsnicmp(next_option, _T("Disabled"), 8))
+		else if (!_tcsnicmp(option, _T("Disabled"), 8))
 		{
 			// As of v1.0.26, Checked/Hidden/Disabled can be followed by an optional 1/0/-1 so that
 			// there is a way for a script to set the starting state by reading from an INI or registry
@@ -5659,7 +5660,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			// else
 			//    Enable =
 			// Gui Add, checkbox, %Enable%, My checkbox.
-			if (next_option[8] && !ATOI(next_option + 8)) // If it's Disabled0, invert the mode to become "enabled".
+			if (option[8] && !ATOI(option + 8)) // If it's Disabled0, invert the mode to become "enabled".
 				adding = !adding;
 			if (aControl.hwnd) // More correct to call EnableWindow and let it set the style.  Do not set the style explicitly in this case since that might break it.
 				EnableWindow(aControl.hwnd, adding ? FALSE : TRUE);
@@ -5671,7 +5672,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			else
 				aControl.attrib &= ~GUI_CONTROL_ATTRIB_EXPLICITLY_DISABLED;
 		}
-		else if (!_tcsnicmp(next_option, _T("Hidden"), 6))
+		else if (!_tcsnicmp(option, _T("Hidden"), 6))
 		{
 			// As of v1.0.26, Checked/Hidden/Disabled can be followed by an optional 1/0/-1 so that
 			// there is a way for a script to set the starting state by reading from an INI or registry
@@ -5682,7 +5683,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			// else
 			//    Enable =
 			// Gui Add, checkbox, %Enable%, My checkbox.
-			if (next_option[6] && !ATOI(next_option + 6)) // If it's Hidden0, invert the mode to become "show".
+			if (option[6] && !ATOI(option + 6)) // If it's Hidden0, invert the mode to become "show".
 				adding = !adding;
 			if (aControl.hwnd) // More correct to call ShowWindow() and let it set the style.  Do not set the style explicitly in this case since that might break it.
 				ShowWindow(aControl.hwnd, adding ? SW_HIDE : SW_SHOWNOACTIVATE);
@@ -5694,7 +5695,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			else
 				aControl.attrib &= ~GUI_CONTROL_ATTRIB_EXPLICITLY_HIDDEN;
 		}
-		else if (!_tcsicmp(next_option, _T("Wrap")))
+		else if (!_tcsicmp(option, _T("Wrap")))
 		{
 			switch(aControl.type)
 			{
@@ -5733,9 +5734,9 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			//case GUI_CONTROL_LINK:
 			}
 		}
-		else if (!_tcsnicmp(next_option, _T("Background"), 10))
+		else if (!_tcsnicmp(option, _T("Background"), 10))
 		{
-			auto option_value = next_option + 10;
+			auto option_value = option + 10;
 
 			// Reset background properties to simplify the next section.
 			aControl.background_color = CLR_INVALID;
@@ -5767,17 +5768,10 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 						error_message = ERR_GUI_NOT_FOR_THIS_TYPE;
 						goto return_error;
 					}
-					aOpt.color_bk = ColorNameToBGR(option_value);
-					if (aOpt.color_bk == CLR_NONE) // A matching color name was not found, so check for hex format.
+					if (!ColorToBGR(option_value, aOpt.color_bk))
 					{
-						// It seems _tcstol() automatically handles the optional leading "0x" if present:
-						LPTSTR end_ptr;
-						aOpt.color_bk = rgb_to_bgr(_tcstol(option_value, &end_ptr, 16));
-						if (*end_ptr)
-						{
-							error_message = ERR_INVALID_OPTION;
-							goto return_error;
-						}
+						error_message = ERR_INVALID_OPTION;
+						goto return_error;
 					}
 					if (aOpt.color_bk != CLR_DEFAULT && aControl.RequiresBackgroundBrush())
 					{
@@ -5794,67 +5788,60 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				aOpt.color_bk = CLR_DEFAULT;
 			}
 		} // Option "Background".
-		else if (!_tcsicmp(next_option, _T("group"))) // This overlaps with g-label, but seems well worth it in this case.
+		else if (!_tcsicmp(option, _T("group"))) // This overlaps with g-label, but seems well worth it in this case.
 			if (adding) aOpt.style_add |= WS_GROUP; else aOpt.style_remove |= WS_GROUP;
-		else if (!_tcsicmp(next_option, _T("Theme")))
+		else if (!_tcsicmp(option, _T("Theme")))
 			aOpt.use_theme = adding;
 
 		// Picture / ListView
-		else if (!_tcsnicmp(next_option, _T("Icon"), 4)) // Caller should ignore aOpt.icon_number if it isn't applicable for this control type.
+		else if (!_tcsnicmp(option, _T("Icon"), 4)) // Caller should ignore aOpt.icon_number if it isn't applicable for this control type.
 		{
-			next_option += 4;
+			auto option_value = option + 4;
 			if (aControl.type == GUI_CONTROL_LISTVIEW) // Unconditional regardless of the value of "adding".
-				aOpt.listview_view = _tcsicmp(next_option, _T("Small")) ? LV_VIEW_ICON : LV_VIEW_SMALLICON;
+				aOpt.listview_view = _tcsicmp(option_value, _T("Small")) ? LV_VIEW_ICON : LV_VIEW_SMALLICON;
 			else
 				if (adding)
-					aOpt.icon_number = ATOI(next_option);
+					aOpt.icon_number = ATOI(option_value);
 				//else do nothing (not currently implemented)
 		}
-		else if (!_tcsicmp(next_option, _T("Report")))
+		else if (!_tcsicmp(option, _T("Report")))
 			aOpt.listview_view = LV_VIEW_DETAILS; // Unconditional regardless of the value of "adding".
-		else if (!_tcsicmp(next_option, _T("List")))
+		else if (!_tcsicmp(option, _T("List")))
 			aOpt.listview_view = LV_VIEW_LIST; // Unconditional regardless of the value of "adding".
-		else if (!_tcsicmp(next_option, _T("Tile"))) // Fortunately, subsequent changes to the control's style do not pop it out of Tile mode. It's apparently smart enough to do that only when the LVS_TYPEMASK bits change.
+		else if (!_tcsicmp(option, _T("Tile"))) // Fortunately, subsequent changes to the control's style do not pop it out of Tile mode. It's apparently smart enough to do that only when the LVS_TYPEMASK bits change.
 			aOpt.listview_view = LV_VIEW_TILE;
-		else if (aControl.type == GUI_CONTROL_LISTVIEW && !_tcsicmp(next_option, _T("Hdr")))
+		else if (aControl.type == GUI_CONTROL_LISTVIEW && !_tcsicmp(option, _T("Hdr")))
 			if (adding) aOpt.style_remove |= LVS_NOCOLUMNHEADER; else aOpt.style_add |= LVS_NOCOLUMNHEADER;
-		else if (aControl.type == GUI_CONTROL_LISTVIEW && !_tcsnicmp(next_option, _T("NoSort"), 6))
+		else if (aControl.type == GUI_CONTROL_LISTVIEW && !_tcsnicmp(option, _T("NoSort"), 6))
 		{
-			if (!_tcsicmp(next_option + 6, _T("Hdr"))) // Prevents the header from being clickable like a set of buttons.
+			if (!_tcsicmp(option + 6, _T("Hdr"))) // Prevents the header from being clickable like a set of buttons.
 				if (adding) aOpt.style_add |= LVS_NOSORTHEADER; else aOpt.style_remove |= LVS_NOSORTHEADER; // Testing shows it can't be changed after the control is created.
 			else // Header is still clickable (unless above is *also* specified), but has no automatic sorting.
 				aOpt.listview_no_auto_sort = adding;
 		}
-		else if (aControl.type == GUI_CONTROL_LISTVIEW && !_tcsicmp(next_option, _T("Grid")))
+		else if (aControl.type == GUI_CONTROL_LISTVIEW && !_tcsicmp(option, _T("Grid")))
 			if (adding) aOpt.listview_style |= LVS_EX_GRIDLINES; else aOpt.listview_style &= ~LVS_EX_GRIDLINES;
-		else if (!_tcsnicmp(next_option, _T("Count"), 5)) // Script should only provide the option for ListViews.
-			aOpt.limit = ATOI(next_option + 5); // For simplicity, the value of "adding" is ignored.
-		else if (!_tcsnicmp(next_option, _T("LV"), 2))
-		{
-			next_option += 2;
-			if (IsNumeric(next_option, false, false)) // Disallow whitespace in case option string ends in naked "LV".
-			{
-				DWORD given_lvstyle = ATOU(next_option); // ATOU() for unsigned.
-				if (adding) aOpt.listview_style |= given_lvstyle; else aOpt.listview_style &= ~given_lvstyle;
-			}
-		}
-		else if (!_tcsnicmp(next_option, _T("ImageList"), 9))
+		else if (!_tcsnicmp(option, _T("Count"), 5)) // Script should only provide the option for ListViews.
+			aOpt.limit = ATOI(option + 5); // For simplicity, the value of "adding" is ignored.
+		else if (!_tcsnicmp(option, _T("LV"), 2) && ParsePositiveInteger(option + 2, option_dword))
+			if (adding) aOpt.listview_style |= option_dword; else aOpt.listview_style &= ~option_dword;
+		else if (!_tcsnicmp(option, _T("ImageList"), 9))
 		{
 			if (adding)
-				aOpt.himagelist = (HIMAGELIST)(size_t)ATOU(next_option + 9);
+				aOpt.himagelist = (HIMAGELIST)(size_t)ATOU(option + 9);
 			//else removal not currently supported, since that would require detection of whether
 			// to destroy the old imagelist, which is difficult to know because it might be in use
 			// by other types of controls?
 		}
 
 		// Button
-		else if (aControl.type == GUI_CONTROL_BUTTON && !_tcsicmp(next_option, _T("Default")))
+		else if (aControl.type == GUI_CONTROL_BUTTON && !_tcsicmp(option, _T("Default")))
 			if (adding) aOpt.style_add |= BS_DEFPUSHBUTTON; else aOpt.style_remove |= BS_DEFPUSHBUTTON;
-		else if (aControl.type == GUI_CONTROL_CHECKBOX && !_tcsicmp(next_option, _T("Check3"))) // Radios can't have the 3rd/gray state.
+		else if (aControl.type == GUI_CONTROL_CHECKBOX && !_tcsicmp(option, _T("Check3"))) // Radios can't have the 3rd/gray state.
 			if (adding) aOpt.style_add |= BS_AUTO3STATE; else aOpt.style_remove |= BS_AUTO3STATE;
 
 		// Edit (and upper/lowercase for combobox/ddl, and others)
-		else if (!_tcsicmp(next_option, _T("ReadOnly")))
+		else if (!_tcsicmp(option, _T("ReadOnly")))
 		{
 			switch (aControl.type)
 			{
@@ -5875,7 +5862,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				break;
 			}
 		}
-		else if (!_tcsicmp(next_option, _T("Multi")))
+		else if (!_tcsicmp(option, _T("Multi")))
 		{
 			// It was named "multi" vs. multiline and/or "MultiSel" because it seems easier to
 			// remember in these cases.  In fact, any time two styles can be combined into one
@@ -5897,39 +5884,39 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				break;
 			}
 		}
-		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsicmp(next_option, _T("WantReturn")))
+		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsicmp(option, _T("WantReturn")))
 			if (adding) aOpt.style_add |= ES_WANTRETURN; else aOpt.style_remove |= ES_WANTRETURN;
-		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsicmp(next_option, _T("WantTab")))
+		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsicmp(option, _T("WantTab")))
 			if (adding) aControl.attrib |= GUI_CONTROL_ATTRIB_ALTBEHAVIOR; else aControl.attrib &= ~GUI_CONTROL_ATTRIB_ALTBEHAVIOR;
-		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsicmp(next_option, _T("WantCtrlA"))) // v1.0.44: Presence of AltSubmit bit means DON'T want Ctrl-A.
+		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsicmp(option, _T("WantCtrlA"))) // v1.0.44: Presence of AltSubmit bit means DON'T want Ctrl-A.
 			if (adding) aControl.attrib &= ~GUI_CONTROL_ATTRIB_ALTSUBMIT; else aControl.attrib |= GUI_CONTROL_ATTRIB_ALTSUBMIT;
 		else if ((aControl.type == GUI_CONTROL_LISTVIEW || aControl.type == GUI_CONTROL_TREEVIEW)
-			&& !_tcsicmp(next_option, _T("WantF2"))) // v1.0.44: All an F2 keystroke to edit the focused item.
+			&& !_tcsicmp(option, _T("WantF2"))) // v1.0.44: All an F2 keystroke to edit the focused item.
 			// Since WantF2 is the initial default, a script will almost never specify WantF2.  Therefore, it's
 			// probably not worth the code size to put -ReadOnly into effect automatically for +WantF2.
 			if (adding) aControl.attrib &= ~GUI_CONTROL_ATTRIB_ALTBEHAVIOR; else aControl.attrib |= GUI_CONTROL_ATTRIB_ALTBEHAVIOR;
-		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsicmp(next_option, _T("Number")))
+		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsicmp(option, _T("Number")))
 			if (adding) aOpt.style_add |= ES_NUMBER; else aOpt.style_remove |= ES_NUMBER;
-		else if (!_tcsicmp(next_option, _T("Lowercase")))
+		else if (!_tcsicmp(option, _T("Lowercase")))
 		{
 			if (aControl.type == GUI_CONTROL_EDIT)
 				if (adding) aOpt.style_add |= ES_LOWERCASE; else aOpt.style_remove |= ES_LOWERCASE;
 			else if (aControl.type == GUI_CONTROL_COMBOBOX || aControl.type == GUI_CONTROL_DROPDOWNLIST)
 				if (adding) aOpt.style_add |= CBS_LOWERCASE; else aOpt.style_remove |= CBS_LOWERCASE;
 		}
-		else if (!_tcsicmp(next_option, _T("Uppercase")))
+		else if (!_tcsicmp(option, _T("Uppercase")))
 		{
 			if (aControl.type == GUI_CONTROL_EDIT)
 				if (adding) aOpt.style_add |= ES_UPPERCASE; else aOpt.style_remove |= ES_UPPERCASE;
 			else if (aControl.type == GUI_CONTROL_COMBOBOX || aControl.type == GUI_CONTROL_DROPDOWNLIST)
 				if (adding) aOpt.style_add |= CBS_UPPERCASE; else aOpt.style_remove |= CBS_UPPERCASE;
 		}
-		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsnicmp(next_option, _T("Password"), 8))
+		else if (aControl.type == GUI_CONTROL_EDIT && !_tcsnicmp(option, _T("Password"), 8))
 		{
 			// Allow a space to be the masking character, since it's conceivable that might
 			// be wanted in cases where someone doesn't want anyone to know they're typing a password.
 			// Simplest to assign unconditionally, regardless of whether adding or removing:
-			aOpt.password_char = next_option[8];  // Can be '\0', which indicates "use OS default".
+			aOpt.password_char = option[8];  // Can be '\0', which indicates "use OS default".
 			if (adding)
 			{
 				aOpt.style_add |= ES_PASSWORD;
@@ -5954,12 +5941,12 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			// message is received.  This is required for the control to visibly update immediately:
 			do_invalidate_rect = true;
 		}
-		else if (!_tcsnicmp(next_option, _T("Limit"), 5)) // This is used for Hotkey controls also.
+		else if (!_tcsnicmp(option, _T("Limit"), 5)) // This is used for Hotkey controls also.
 		{
 			if (adding)
 			{
-				next_option += 5;
-				aOpt.limit = *next_option ? ATOI(next_option) : -1;  // -1 signals it to limit input to visible width of field.
+				auto option_value = option + 5;
+				aOpt.limit = *option_value ? ATOI(option_value) : -1;  // -1 signals it to limit input to visible width of field.
 				// aOpt.limit will later be ignored for some control types.
 			}
 			else
@@ -5967,9 +5954,9 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 		}
 
 		// Combo/DropDownList/ListBox/ListView
-		else if (aControl.type == GUI_CONTROL_COMBOBOX && !_tcsicmp(next_option, _T("Simple"))) // DDL is not equipped to handle this style.
+		else if (aControl.type == GUI_CONTROL_COMBOBOX && !_tcsicmp(option, _T("Simple"))) // DDL is not equipped to handle this style.
 			if (adding) aOpt.style_add |= CBS_SIMPLE; else aOpt.style_remove |= CBS_SIMPLE;
-		else if (!_tcsnicmp(next_option, _T("Sort"), 4))
+		else if (!_tcsnicmp(option, _T("Sort"), 4))
 		{
 			switch(aControl.type)
 			{
@@ -5978,7 +5965,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				break;
 			case GUI_CONTROL_LISTVIEW: // LVS_SORTDESCENDING is not a named style due to rarity of use.
 				if (adding)
-					aOpt.style_add |= _tcsicmp(next_option + 4, _T("Desc")) ? LVS_SORTASCENDING : LVS_SORTDESCENDING;
+					aOpt.style_add |= _tcsicmp(option + 4, _T("Desc")) ? LVS_SORTASCENDING : LVS_SORTDESCENDING;
 				else
 					aOpt.style_remove |= LVS_SORTASCENDING|LVS_SORTDESCENDING;
 				break;
@@ -5990,7 +5977,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 		}
 
 		// UpDown
-		else if (aControl.type == GUI_CONTROL_UPDOWN && !_tcsicmp(next_option, _T("Horz")))
+		else if (aControl.type == GUI_CONTROL_UPDOWN && !_tcsicmp(option, _T("Horz")))
 			if (adding)
 			{
 				aOpt.style_add |= UDS_HORZ;
@@ -6000,19 +5987,19 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				aOpt.style_remove |= UDS_HORZ; // But don't add UDS_AUTOBUDDY since it seems undesirable most of the time.
 
 		// Slider
-		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsicmp(next_option, _T("Invert"))) // Not called "Reverse" to avoid confusion with the non-functional style of that name.
+		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsicmp(option, _T("Invert"))) // Not called "Reverse" to avoid confusion with the non-functional style of that name.
 			if (adding) aControl.attrib |= GUI_CONTROL_ATTRIB_ALTBEHAVIOR; else aControl.attrib &= ~GUI_CONTROL_ATTRIB_ALTBEHAVIOR;
-		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsicmp(next_option, _T("NoTicks")))
+		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsicmp(option, _T("NoTicks")))
 			if (adding) aOpt.style_add |= TBS_NOTICKS; else aOpt.style_remove |= TBS_NOTICKS;
-		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsnicmp(next_option, _T("TickInterval"), 12))
+		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsnicmp(option, _T("TickInterval"), 12))
 		{
 			aOpt.tick_interval_changed = true;
 			if (adding)
 			{
 				aOpt.style_add |= TBS_AUTOTICKS;
-				next_option += 12;
-				aOpt.tick_interval_specified = *next_option;
-				aOpt.tick_interval = ATOI(next_option);
+				auto option_value = option + 12;
+				aOpt.tick_interval_specified = *option_value;
+				aOpt.tick_interval = ATOI(option_value);
 			}
 			else
 			{
@@ -6020,44 +6007,44 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				aOpt.tick_interval = -1;  // Signal it to remove the ticks later below (if the window exists).
 			}
 		}
-		else if (!_tcsnicmp(next_option, _T("Line"), 4))
+		else if (!_tcsnicmp(option, _T("Line"), 4))
 		{
-			next_option += 4;
+			auto option_value = option + 4;
 			if (aControl.type == GUI_CONTROL_SLIDER)
 			{
 				if (adding)
-					aOpt.line_size = ATOI(next_option);
+					aOpt.line_size = ATOI(option_value);
 				//else removal not supported.
 			}
-			else if (aControl.type == GUI_CONTROL_TREEVIEW && ctoupper(*next_option) == 'S')
+			else if (aControl.type == GUI_CONTROL_TREEVIEW && ctoupper(*option_value) == 'S')
 				// Seems best to consider TVS_HASLINES|TVS_LINESATROOT to be an inseparable group since
 				// one without the other is rare (script can always be overridden by specifying numeric styles):
 				if (adding) aOpt.style_add |= TVS_HASLINES|TVS_LINESATROOT; else aOpt.style_remove |= TVS_HASLINES|TVS_LINESATROOT;
 		}
-		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsnicmp(next_option, _T("Page"), 4))
+		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsnicmp(option, _T("Page"), 4))
 		{
 			if (adding)
-				aOpt.page_size = ATOI(next_option + 4);
+				aOpt.page_size = ATOI(option + 4);
 			//else removal not supported.
 		}
-		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsnicmp(next_option, _T("Thick"), 5))
+		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsnicmp(option, _T("Thick"), 5))
 		{
 			if (adding)
 			{
 				aOpt.style_add |= TBS_FIXEDLENGTH;
-				aOpt.thickness = ATOI(next_option + 5);
+				aOpt.thickness = ATOI(option + 5);
 			}
 			else // Removing the style is enough to reset its appearance on both XP Theme and Classic Theme.
 				aOpt.style_remove |= TBS_FIXEDLENGTH;
 		}
-		else if (!_tcsnicmp(next_option, _T("ToolTip"), 7))
+		else if (!_tcsnicmp(option, _T("ToolTip"), 7))
 		{
-			next_option += 7;
+			auto option_value = option + 7;
 			// Below was commented out because the SBARS_TOOLTIPS doesn't seem to do much, if anything.
 			// See bottom of BIF_StatusBar() for more comments.
 			//if (aControl.type == GUI_CONTROL_STATUSBAR)
 			//{
-			//	if (!*next_option)
+			//	if (!*option_value)
 			//		if (adding) aOpt.style_add |= SBARS_TOOLTIPS; else aOpt.style_remove |= SBARS_TOOLTIPS;
 			//}
 			//else
@@ -6066,7 +6053,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				if (adding)
 				{
 					aOpt.tip_side = -1;  // Set default.
-					switch(ctoupper(*next_option))
+					switch(ctoupper(*option_value))
 					{
 					case 'T': aOpt.tip_side = TBTS_TOP; break;
 					case 'L': aOpt.tip_side = TBTS_LEFT; break;
@@ -6083,16 +6070,15 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 					aOpt.style_remove |= TBS_TOOLTIPS;
 			}
 		}
-		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsnicmp(next_option, _T("Buddy"), 5))
+		else if (aControl.type == GUI_CONTROL_SLIDER && !_tcsnicmp(option, _T("Buddy"), 5))
 		{
 			if (adding)
 			{
-				next_option += 5;
-				TCHAR which_buddy = *next_option;
+				auto option_value = option + 5;
+				TCHAR which_buddy = *option_value;
 				if (which_buddy) // i.e. it's not the zero terminator
 				{
-					++next_option; // Now it should point to the variable name of the buddy control.
-					GuiIndexType u = FindControl(next_option);
+					GuiIndexType u = FindControl(option_value + 1);
 					if (u < mControlCount)
 					{
 						if (which_buddy == '1')
@@ -6106,7 +6092,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 		}
 
 		// Progress and Slider
-		else if (!_tcsicmp(next_option, _T("Vertical")))
+		else if (!_tcsicmp(option, _T("Vertical")))
 		{
 			// Seems best not to recognize Vertical for Tab controls since Left and Right
 			// already cover it very well.
@@ -6116,19 +6102,18 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				if (adding) aOpt.style_add |= PBS_VERTICAL; else aOpt.style_remove |= PBS_VERTICAL;
 			//else do nothing, not a supported type
 		}
-		else if (!_tcsnicmp(next_option, _T("Range"), 5)) // Caller should ignore aOpt.range_min/max if it isn't applicable for this control type.
+		else if (!_tcsnicmp(option, _T("Range"), 5)) // Caller should ignore aOpt.range_min/max if it isn't applicable for this control type.
 		{
 			if (adding)
 			{
-				next_option += 5; // Helps with omitting the first minus sign, if any, below.
-				if (*next_option) // Prevent reading beyond the zero terminator due to next_option+1 in some places below.
+				auto option_value = option + 5; // Helps with omitting the first minus sign, if any, below.
+				if (*option_value) // Prevent reading beyond the zero terminator due to option_value+1 in some places below.
 				{
-					LPTSTR cp;
 					if (aControl.type == GUI_CONTROL_DATETIME || aControl.type == GUI_CONTROL_MONTHCAL)
 					{
 						// Note: aOpt.range_changed is not set for these control types. aOpt.gdtr_range is used instead.
-						aOpt.gdtr_range = YYYYMMDDToSystemTime2(next_option, aOpt.sys_time_range);
-						if (!aOpt.gdtr_range) // Must be invalid, since next_option was verified to be non-empty.
+						aOpt.gdtr_range = YYYYMMDDToSystemTime2(option_value, aOpt.sys_time_range);
+						if (!aOpt.gdtr_range) // Must be invalid, since option_value was verified to be non-empty.
 						{
 							error_message = ERR_INVALID_OPTION;
 							goto return_error;
@@ -6148,8 +6133,8 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 					else // Control types other than datetime/monthcal.
 					{
 						aOpt.range_changed = true;
-						aOpt.range_min = ATOI(next_option);
-						if (cp = _tcschr(next_option + 1, '-')) // +1 to omit the min's minus sign, if it has one.
+						aOpt.range_min = ATOI(option_value);
+						if (auto cp = _tcschr(option_value + 1, '-')) // +1 to omit the min's minus sign, if it has one.
 							aOpt.range_max = ATOI(cp + 1);
 					}
 				}
@@ -6159,18 +6144,18 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 		}
 
 		// Progress
-		else if (aControl.type == GUI_CONTROL_PROGRESS && !_tcsicmp(next_option, _T("Smooth")))
+		else if (aControl.type == GUI_CONTROL_PROGRESS && !_tcsicmp(option, _T("Smooth")))
 			if (adding) aOpt.style_add |= PBS_SMOOTH; else aOpt.style_remove |= PBS_SMOOTH;
 
 		// Tab control
-		else if (!_tcsicmp(next_option, _T("Buttons")))
+		else if (!_tcsicmp(option, _T("Buttons")))
 		{
 			if (aControl.type == GUI_CONTROL_TAB)
 				if (adding) aOpt.style_add |= TCS_BUTTONS; else aOpt.style_remove |= TCS_BUTTONS;
 			else if (aControl.type == GUI_CONTROL_TREEVIEW)
 				if (adding) aOpt.style_add |= TVS_HASBUTTONS; else aOpt.style_remove |= TVS_HASBUTTONS;
 		}
-		else if (aControl.type == GUI_CONTROL_TAB && !_tcsicmp(next_option, _T("Bottom")))
+		else if (aControl.type == GUI_CONTROL_TAB && !_tcsicmp(option, _T("Bottom")))
 			if (adding)
 			{
 				aOpt.style_add |= TCS_BOTTOM;
@@ -6179,12 +6164,11 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			else
 				aOpt.style_remove |= TCS_BOTTOM;
 
-		else if (aControl.type == GUI_CONTROL_CUSTOM && !_tcsnicmp(next_option, _T("Class"), 5))
+		else if (aControl.type == GUI_CONTROL_CUSTOM && !_tcsnicmp(option, _T("Class"), 5))
 		{
-			next_option += 5;
 			WNDCLASSEX wc;
 			// Retrieve the class atom (http://blogs.msdn.com/b/oldnewthing/archive/2004/10/11/240744.aspx)
-			aOpt.customClassAtom = (ATOM) GetClassInfoEx(g_hInstance, next_option, &wc);
+			aOpt.customClassAtom = (ATOM) GetClassInfoEx(g_hInstance, option + 5, &wc);
 			if (aOpt.customClassAtom == 0)
 			{
 				error_message = _T("Unrecognized window class.");
@@ -6193,7 +6177,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 		}
 
 		// Styles (alignment/justification):
-		else if (!_tcsicmp(next_option, _T("Center")))
+		else if (!_tcsicmp(option, _T("Center")))
 			if (adding)
 			{
 				switch (aControl.type)
@@ -6276,7 +6260,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				}
 			}
 
-		else if (!_tcsicmp(next_option, _T("Right")))
+		else if (!_tcsicmp(option, _T("Right")))
 			if (adding)
 			{
 				switch (aControl.type)
@@ -6380,7 +6364,7 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				}
 			}
 
-		else if (!_tcsicmp(next_option, _T("Left")))
+		else if (!_tcsicmp(option, _T("Left")))
 		{
 			if (adding)
 			{
@@ -6485,17 +6469,15 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			// if "visible" and "resize" ever become valid option words, the below would otherwise wrongly
 			// detect them as variable=isible and row_count=esize, respectively.
 
-			if (IsNumeric(next_option)) // Above has already verified that *next_option can't be whitespace.
+			if (ParsePositiveInteger(option, option_dword)) // Above has already verified that *option can't be whitespace.
 			{
 				// Pure numbers are assumed to be style additions or removals:
-				DWORD given_style = ATOU(next_option); // ATOU() for unsigned.
-				if (adding) aOpt.style_add |= given_style; else aOpt.style_remove |= given_style;
-				*option_end = orig_char; // Undo the temporary termination because the caller needs aOptions to be unaltered.
+				if (adding) aOpt.style_add |= option_dword; else aOpt.style_remove |= option_dword;
 				continue;
 			}
 
-			TCHAR option_char = ctoupper(*next_option);
-			LPTSTR option_value = next_option + 1; // Above has already verified that next_option isn't the empty string.
+			TCHAR option_char = ctoupper(*option);
+			auto option_value = option + 1; // Above has already verified that option isn't the empty string.
 
 			if (!*option_value)
 			{
@@ -6515,12 +6497,10 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 					error_message = ERR_INVALID_OPTION;
 					goto return_error;
 				}
-				*option_end = orig_char; // Undo the temporary termination because the caller needs aOptions to be unaltered.
 				continue;
 			}
 			// Since above didn't "continue", there is text after the option letter, so take action accordingly.
 
-			LPTSTR endptr;
 			int option_int = 0; // Only valid for [XYWHTER].
 			float option_float; // Only valid for R.
 			TCHAR option_char2; // Only valid for [XYWH].
@@ -6576,18 +6556,10 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 				break;
 
 			case 'C':  // Color
-				aOpt.color = ColorNameToBGR(option_value);
-				if (aOpt.color == CLR_NONE) // A matching color name was not found, so assume it's in hex format.
+				if (!ColorToBGR(option_value, aOpt.color))
 				{
-					// _tcstol() automatically handles the optional leading "0x" if present:
-					aOpt.color = rgb_to_bgr(_tcstol(option_value, &endptr, 16));
-					if (*endptr)
-					{
-						error_message = ERR_INVALID_OPTION;
-						goto return_error;
-					}
-					// if option_value did not contain something hex-numeric, black (0x00) will be assumed,
-					// which seems okay given how rare such a problem would be.
+					error_message = ERR_INVALID_OPTION;
+					goto return_error;
 				}
 				break;
 
@@ -6811,12 +6783,10 @@ ResultType GuiType::ControlParseOptions(LPTSTR aOptions, GuiControlOptionsType &
 			} // switch()
 		} // Final "else" in the "else if" ladder.
 
-		*option_end = orig_char; // Undo the temporary termination because the caller needs aOptions to be unaltered.
 		continue;
-	// This "subroutine" is used to reduce code size and ensure the temporary termination is undone even on failure:
+	// This "subroutine" is used to reduce code size (needs to be re-verified):
 	return_error:
-		*option_end = orig_char; // See above.
-		if (!ValueError(error_message, next_option, FAIL_OR_OK))
+		if (!ValueError(error_message, option, FAIL_OR_OK))
 			return FAIL;
 		// Otherwise, user wants to continue.
 	} // for() each item in option list
@@ -7303,7 +7273,7 @@ void GuiType::ControlSetChoice(GuiControlType &aControl, int aChoice)
 
 
 
-ResultType GuiType::ControlLoadPicture(GuiControlType &aControl, LPTSTR aFilename, int aWidth, int aHeight, int aIconNumber)
+ResultType GuiType::ControlLoadPicture(GuiControlType &aControl, LPCTSTR aFilename, int aWidth, int aHeight, int aIconNumber)
 {
 	// LoadPicture() uses CopyImage() to scale the image, which seems to provide better scaling
 	// quality than using MoveWindow() (followed by redrawing the parent window) on the static
@@ -7421,10 +7391,9 @@ ResultType GuiType::ControlLoadPicture(GuiControlType &aControl, LPTSTR aFilenam
 
 
 
-ResultType GuiType::Show(LPTSTR aOptions)
+FResult GuiType::Show(optl<StrArg> aOptions)
 {
-	if (!mHwnd)
-		return FAIL; // Shouldn't be possible.
+	GUI_MUST_HAVE_HWND;
 
 	// In the future, it seems best to rely on mShowIsInProgress to prevent the Window Proc from ever
 	// doing a MsgSleep() to launch a script subroutine.  This is because if anything we do in this
@@ -7472,7 +7441,7 @@ ResultType GuiType::Show(LPTSTR aOptions)
 	else
 		show_mode = SW_SHOWNORMAL;
 
-	for (LPTSTR cp_end = aOptions, cp = aOptions; *cp; cp = cp_end)
+	for (auto cp_end = aOptions.value_or_empty(), cp = cp_end; *cp; cp = cp_end)
 	{
 		switch(ctoupper(*cp))
 		{
@@ -7563,7 +7532,7 @@ ResultType GuiType::Show(LPTSTR aOptions)
 			// Use _tcstod vs _tcstol to support common cases like % "w" A_ScreenWidth/4 even
 			// when the current float format is something unusual.  Something like "w400.5"
 			// could be considered invalid, but is allowed for simplicity and convenience.
-			int n = (int)_tcstod(cp + 1, &cp_end);
+			int n = (int)_tcstod(cp + 1, const_cast<LPTSTR*>(&cp_end));
 			if (cp_end == cp + 1) // No number.
 			{
 				cp_end = cp; // Flag it as invalid.
@@ -7621,6 +7590,9 @@ ResultType GuiType::Show(LPTSTR aOptions)
 			if (mControl[u]->type == GUI_CONTROL_TAB)
 				AutoSizeTabControl(*mControl[u]);
 		}
+		// For the rare case that Show is called before any controls are added or MarginX/Y
+		// is queried, the following ensures mMarginx and mMarginY have usable values:
+		SetDefaultMargins();
 	}
 
 	// Due to the checking above, if the window is minimized/maximized now, that means it will still be
@@ -8027,6 +7999,43 @@ ResultType GuiType::Show(LPTSTR aOptions)
 
 
 
+FResult GuiType::Minimize()
+{
+	GUI_MUST_HAVE_HWND;
+	ShowWindow(mHwnd, SW_MINIMIZE);
+	return OK;
+}
+
+FResult GuiType::Maximize()
+{
+	GUI_MUST_HAVE_HWND;
+	ShowWindow(mHwnd, SW_MAXIMIZE);
+	return OK;
+}
+
+FResult GuiType::Restore()
+{
+	GUI_MUST_HAVE_HWND;
+	ShowWindow(mHwnd, SW_RESTORE);
+	return OK;
+}
+
+FResult GuiType::Flash(optl<BOOL> aBlink)
+{
+	GUI_MUST_HAVE_HWND;
+	FlashWindow(mHwnd, aBlink.value_or(TRUE));
+	return OK;
+}
+
+FResult GuiType::Hide()
+{
+	GUI_MUST_HAVE_HWND;
+	Cancel();
+	return OK;
+}
+
+
+
 void GuiType::Cancel()
 {
 	if (mHwnd)
@@ -8046,10 +8055,10 @@ void GuiType::Close()
 // If there is an OnClose event handler defined, launch it as a new thread.
 // In this case, don't close or hide the window.  It's up to the handler to do that
 // if it wants to.
-// If there is no handler, treat it the same as Cancel().
+// If there is no handler, treat it the same as Hide().
 {
 	if (!IsMonitoring(GUI_EVENT_CLOSE))
-		return Cancel();
+		return (void)Cancel();
 	POST_AHK_GUI_ACTION(mHwnd, NO_CONTROL_INDEX, GUI_EVENT_CLOSE, NO_EVENT_INFO);
 	// MsgSleep() is not done because "case AHK_GUI_ACTION" in GuiWindowProc() takes care of it.
 	// See its comments for why.
@@ -8092,15 +8101,14 @@ void GuiType::VisibilityChanged()
 
 
 
-void GuiType::Submit(ResultToken &aResultToken, bool aHideIt)
+FResult GuiType::Submit(optl<BOOL> aHideIt, IObject *&aRetVal)
 // Caller has ensured that all controls have valid, non-NULL hwnds:
 {
-	if (!mHwnd)
-		_o_return_FAIL; // Shouldn't be possible.
+	GUI_MUST_HAVE_HWND;
 
 	Object* ret = Object::Create();
 	if (!ret)
-		_o_throw_oom;
+		return FR_E_OUTOFMEM;
 
 	// Handle all non-radio controls:
 	GuiIndexType u;
@@ -8120,7 +8128,7 @@ void GuiType::Submit(ResultToken &aResultToken, bool aHideIt)
 			if (value.Exited())
 			{
 				ret->Release();
-				return;
+				return FR_FAIL;
 			}
 			if (!ret->SetOwnProp(control.name, value))
 			{
@@ -8196,13 +8204,14 @@ void GuiType::Submit(ResultToken &aResultToken, bool aHideIt)
 		}
 	} // for()
 
-	if (aHideIt)
+	if (aHideIt.value_or(TRUE))
 		Cancel();
-	_o_return(ret);
+	aRetVal = ret;
+	return OK;
 
 outofmem:
 	ret->Release();
-	_o_throw_oom;
+	return FR_E_OUTOFMEM;
 }
 
 
@@ -8275,7 +8284,7 @@ void GuiType::ControlGetContents(ResultToken &aResultToken, GuiControlType &aCon
 
 
 
-GuiIndexType GuiType::FindControl(LPTSTR aControlID)
+GuiIndexType GuiType::FindControl(LPCTSTR aControlID)
 // Find the index of the control that matches the string, which can be either:
 // 1) HWND
 // 2) Name
@@ -8290,11 +8299,12 @@ GuiIndexType GuiType::FindControl(LPTSTR aControlID)
 	if (!*aControlID)
 		return -1;
 	GuiIndexType u;
-	if (IsNumeric(aControlID, TRUE, FALSE) == PURE_INTEGER) // Allow negatives, for flexibility.
+	UINT hwnd_uint;
+	if (ParseInteger(aControlID, hwnd_uint)) // Allow negatives, for flexibility, but truncate to filter out sign-extended values.
 	{
 		// v1.1.04: Allow Gui controls to be referenced by HWND.  There is some risk of breaking
 		// scripts, but only if the text of one control contains the HWND of another control.
-		u = FindControlIndex((HWND)ATOU64(aControlID));
+		u = FindControlIndex((HWND)(UINT_PTR)hwnd_uint);
 		if (u < mControlCount)
 			return u;
 		// Otherwise: no match was found, so fall back to considering it as text.
@@ -8347,10 +8357,12 @@ int GuiType::FindGroup(GuiIndexType aControlIndex, GuiIndexType &aGroupStart, Gu
 
 
 
-ResultType GuiType::SetCurrentFont(LPTSTR aOptions, LPTSTR aFontName)
+FResult GuiType::SetFont(optl<StrArg> aOptions, optl<StrArg> aFontName)
 {
+	GUI_MUST_HAVE_HWND;
 	COLORREF color;
-	int font_index = FindOrCreateFont(aOptions, aFontName, &sFont[mCurrentFontIndex], &color);
+	int font_index = FindOrCreateFont(aOptions.value_or_empty(), aFontName.value_or_empty()
+		, &sFont[mCurrentFontIndex], &color);
 	if (color != CLR_NONE) // Even if the above call failed, it returns a color if one was specified.
 		mCurrentColor = color;
 	if (font_index > -1) // Success.
@@ -8365,7 +8377,7 @@ ResultType GuiType::SetCurrentFont(LPTSTR aOptions, LPTSTR aFontName)
 
 
 
-int GuiType::FindOrCreateFont(LPTSTR aOptions, LPTSTR aFontName, FontType *aFoundationFont, COLORREF *aColor)
+int GuiType::FindOrCreateFont(LPCTSTR aOptions, LPCTSTR aFontName, FontType *aFoundationFont, COLORREF *aColor)
 // Returns the index of existing or new font within the sFont array (an index is returned so that
 // caller can see that this is the default-gui-font whenever index 0 is returned).  Returns -1
 // on error, but still sets *aColor to be the color name, if any was specified in aOptions.
@@ -8428,37 +8440,36 @@ int GuiType::FindOrCreateFont(LPTSTR aOptions, LPTSTR aFontName, FontType *aFoun
 
 	int point_size = 0;
 
-	LPTSTR next_option, option_end, endptr;
+	TCHAR option[MAX_NUMBER_SIZE + 1];
+	LPCTSTR next_option, option_end;
 	for (next_option = aOptions; *next_option; next_option = omit_leading_whitespace(option_end))
 	{
 		// Find the end of this option item:
-		if (!(option_end = StrChrAny(next_option, _T(" \t"))))  // Space or tab.
-			option_end = next_option + _tcslen(next_option); // Set to position of zero terminator instead.
+		for (option_end = next_option; *option_end && !IS_SPACE_OR_TAB(*option_end); ++option_end);
 
-		// Temporarily terminate for simplicity and to reduce ambiguity:
-		TCHAR orig_char = *option_end;
-		*option_end = '\0';
+		// Make a copy to simplify comparisons below.
+		tcslcpy(option, next_option, min((option_end - next_option) + 1, _countof(option)));
 
-		if (!_tcsicmp(next_option, _T("Bold")))
+		if (!_tcsicmp(option, _T("Bold")))
 			font.lfWeight = FW_BOLD;
-		else if (!_tcsicmp(next_option, _T("italic")))
+		else if (!_tcsicmp(option, _T("italic")))
 			font.lfItalic = true;
-		else if (!_tcsicmp(next_option, _T("norm")))
+		else if (!_tcsicmp(option, _T("norm")))
 		{
 			font.lfItalic = false;
 			font.lfUnderline = false;
 			font.lfStrikeOut = false;
 			font.lfWeight = FW_NORMAL;
 		}
-		else if (!_tcsicmp(next_option, _T("underline")))
+		else if (!_tcsicmp(option, _T("underline")))
 			font.lfUnderline = true;
-		else if (!_tcsicmp(next_option, _T("strike")))
+		else if (!_tcsicmp(option, _T("strike")))
 			font.lfStrikeOut = true;
 		else
 		{
 			// All of the remaining options are single-letter followed by a value:
-			TCHAR option_char = ctoupper(*next_option);
-			LPTSTR option_value = next_option + 1;
+			TCHAR option_char = ctoupper(*option);
+			LPTSTR option_value = option + 1;
 			if (!*option_value // Does not have a value.
 				|| _tcschr(_T("SWQ"), option_char) // Or is a specific option...
 				&& !IsNumeric(option_value, FALSE, FALSE, TRUE)) // and does not have a number.
@@ -8467,15 +8478,8 @@ int GuiType::FindOrCreateFont(LPTSTR aOptions, LPTSTR aFontName, FontType *aFoun
 			switch (option_char)
 			{
 			case 'C':
-				color = ColorNameToBGR(option_value);
-				if (color == CLR_NONE) // A matching color name was not found, so assume it's in hex format.
-				{
-					color = rgb_to_bgr(_tcstol(option_value, &endptr, 16));
-					if (*endptr)
-						goto invalid_option;
-					// if option_value does not contain something hex-numeric, black (0x00) will be assumed,
-					// which seems okay given how rare such a problem would be.
-				}
+				if (!ColorToBGR(option_value, color))
+					goto invalid_option;
 				break;
 			case 'W': font.lfWeight = ATOI(option_value); break;
 			case 'S': point_size = (int)(_tstof(option_value) + 0.5); break; // Round to nearest int.
@@ -8483,8 +8487,6 @@ int GuiType::FindOrCreateFont(LPTSTR aOptions, LPTSTR aFontName, FontType *aFoun
 			default: goto invalid_option;
 			}
 		}
-
-		*option_end = orig_char; // Undo the temporary termination.
 	}
 
 	if (aColor) // Caller wanted color returned in an output parameter.
@@ -10153,7 +10155,7 @@ bool GuiType::ControlWmNotify(GuiControlType &aControl, LPNMHDR aNmHdr, INT_PTR 
 }
 
 
-WORD GuiType::TextToHotkey(LPTSTR aText)
+WORD GuiType::TextToHotkey(LPCTSTR aText)
 // Returns a WORD (not a DWORD -- MSDN is wrong about that) compatible with the HKM_SETHOTKEY message:
 // LOBYTE is the virtual key.
 // HIBYTE is a set of modifiers:

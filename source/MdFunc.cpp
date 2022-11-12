@@ -83,11 +83,13 @@ MdFunc::MdFunc(LPCTSTR aName, void *aMcFunc, MdType aRetType, MdType *aArg, UINT
 	// #if _DEBUG, ensure aArg is effectively terminated for the inner loop below.
 	ASSERT(!aArgSize || !MdType_IsMod(aArg[aArgSize - 1]));
 
+#ifdef ENABLE_MD_THISCALL
 	if (aArgSize > 1 && *aArg == MdType::ThisCall)
 	{
 		mThisCall = true;
 		mArgType++;
 	}
+#endif
 
 	int ac = 0, pc = 0;
 	if (aPrototype)
@@ -122,8 +124,12 @@ MdFunc::MdFunc(LPCTSTR aName, void *aMcFunc, MdType aRetType, MdType *aArg, UINT
 			++pc;
 			if (!opt && pc - 1 == mMinParams)
 				mMinParams = pc;
-			if (aArg[i] == MdType::String || aArg[i] == MdType::Variant && out != MdType::Void)
+			if (aArg[i] == MdType::Variant && out != MdType::Void)
 				++mMaxResultTokens;
+#ifdef ENABLE_IMPLICIT_TOSTRING
+			else if (aArg[i] == MdType::String)
+				++mMaxResultTokens;
+#endif
 		}
 	}
 	mParamCount = pc;
@@ -150,7 +156,7 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 	int rt_count = 0;
 	
 	UINT_PTR *args = (UINT_PTR *)_alloca(mArgSlots * sizeof(UINT_PTR));
-	int ai = 0, pi = 0;
+	int first_param_index = 0;
 
 	ResultType result = OK;
 
@@ -172,14 +178,14 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		// This is reliant on (IObject*)obj being the same address as (WhateverObject*)obj
 		// (which might not be the case for classes with multiple virtual base classes):
 		args[0] = (UINT_PTR)obj;
-		ai = pi = 1;
+		first_param_index = 1;
 	}
 
 	MdType retval_arg_type = MdType::Void;
 	int retval_index = -1;
 	int output_var_count = 0;
 	auto atp = mArgType;
-	for (; ai < mArgSlots; ++ai, ++atp)
+	for (int ai = first_param_index, pi = ai; ai < mArgSlots; ++ai, ++atp)
 	{
 		bool opt = false;
 		MdType out = MdType::Void;
@@ -250,12 +256,14 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 			continue;
 		}
 
+#ifdef ENABLE_MD_BITS
 		if (MdType_IsBits(arg_type))
 		{
 			// arg_type represents a constant value to put directly into args.
 			arg_value = MdType_BitsValue(arg_type);
 			continue;
 		}
+#endif
 
 		if (ParamIndexIsOmitted(pi))
 		{
@@ -300,6 +308,7 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 			ExprTokenType *t;
 			if (auto obj = TokenToObject(param))
 			{
+#ifdef ENABLE_IMPLICIT_TOSTRING
 				ResultToken &rt = rtp[rt_count++];
 				rt.InitResult(buf);
 				ObjectToString(rt, param, obj);
@@ -314,6 +323,10 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					goto end;
 				}
 				t = &rt;
+#else
+				result = aResultToken.ParamError(pi, &param, _T("String"));
+				goto end;
+#endif
 			}
 			else
 				t = &param;
@@ -349,15 +362,22 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 				}
 			}
 			// If necessary, convert integer <-> float within the value union.
-			if (arg_type == MdType::Float64)
+			switch (arg_type)
 			{
+			case MdType::Float64:
 				if (nt.symbol == SYM_INTEGER)
 					nt.value_double = (double)nt.value_int64;
-			}
-			else
-			{
+				break;
+			case MdType::Float32:
+				if (nt.symbol == SYM_INTEGER)
+					*((float*)&nt.value_int64) = (float)nt.value_int64;
+				else
+					*((float*)&nt.value_int64) = (float)nt.value_double;
+				break;
+			default:
 				if (nt.symbol == SYM_FLOAT)
 					nt.value_int64 = (__int64)nt.value_double;
+				break;
 			}
 			void *target = &arg_value;
 			if (opt) // Optional values are represented by a pointer to a value.
@@ -390,13 +410,9 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 	bool aborted = false;
 	switch (mRetType)
 	{
-	case MdType::Int32: aResultToken.SetValue(ri32); break;
-	case MdType::UInt64:
-	case MdType::Int64: aResultToken.SetValue(ri64); break;
-	case MdType::UInt32: aResultToken.SetValue((UINT)rup); break;
-	case MdType::Float64: aResultToken.SetValue(GetDoubleRetval()); break;
-	case MdType::String: aResultToken.SetValue((LPTSTR)rup); break; // Strictly statically-allocated strings.
-	case MdType::ResultType: aResultToken.SetResult((ResultType)rup); break;
+	// Unused return types are commented out or omitted to reduce code size, and disabled
+	// at compile-time by not providing a valid md_retval<T>::t via template definition.
+	// Place the most common type (FResult) first in case this compiles to an if-else ladder:
 	case MdType::FResult:
 		if (FAILED(res))
 		{
@@ -406,10 +422,17 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		else
 			aborted = (res == FR_ABORTED);
 		break;
-	case MdType::NzIntWin32:
-		if (!(BOOL)rup)
-			aResultToken.Win32Error();
-		break;
+	case MdType::ResultType: aResultToken.SetResult((ResultType)rup); break;
+	case MdType::Int32: aResultToken.SetValue(ri32); break;
+	case MdType::UInt64:
+	case MdType::Int64: aResultToken.SetValue(ri64); break;
+	case MdType::UInt32: aResultToken.SetValue((UINT)rup); break;
+	//case MdType::Float64: aResultToken.SetValue(GetDoubleRetval()); break;
+	//case MdType::String: aResultToken.SetValue((LPTSTR)rup); break; // Strictly statically-allocated strings.
+	//case MdType::NzIntWin32:
+	//	if (!(BOOL)rup)
+	//		aResultToken.Win32Error();
+	//	break;
 	case MdType::Bool32: aResultToken.SetValue(ri32 ? TRUE : FALSE); break;
 	}
 	if (retval_index != -1)
@@ -435,7 +458,7 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 
 	// Copy output parameters
 	atp = mArgType;
-	for (int ai = 0, pi = 0; output_var_count; ++atp, ++ai, ++pi)
+	for (int ai = first_param_index, pi = ai; output_var_count; ++atp, ++ai, ++pi)
 	{
 		if (ai == retval_index)
 			++ai; // This args slot doesn't correspond to an aParam slot.
@@ -512,15 +535,14 @@ void TypedPtrToToken(MdType aType, void *aPtr, ExprTokenType &aToken)
 	case MdType::UInt64:
 	case MdType::Int64: aToken.SetValue(*(__int64*)aPtr); break;
 	case MdType::Float64: aToken.SetValue(*(double*)aPtr); break;
+	case MdType::Float32: aToken.SetValue(*(float*)aPtr); break;
+	case MdType::Int8: aToken.SetValue(*(INT8*)aPtr); break;
+	case MdType::UInt8: aToken.SetValue(*(UINT8*)aPtr); break;
+	case MdType::Int16: aToken.SetValue(*(INT16*)aPtr); break;
+	case MdType::UInt16: aToken.SetValue(*(UINT16*)aPtr); break;
 	case MdType::Object:
 		if (auto obj = *(IObject**)aPtr)
 			aToken.SetValue(obj);
-		else
-			aToken.SetValue(_T(""), 0);
-		break;
-	case MdType::String: // String*, not String
-		if (auto str = *(LPTSTR*)aPtr)
-			aToken.SetValue(str);
 		else
 			aToken.SetValue(_T(""), 0);
 		break;

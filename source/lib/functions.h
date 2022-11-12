@@ -90,7 +90,7 @@ md_func(EditGetSelectedText, MD_CONTROL_ARGS, (Ret, String, RetVal))
 md_func(EditPaste, (In, String, Value), MD_CONTROL_ARGS)
 
 md_func(EnvGet, (In, String, VarName), (Ret, String, RetVal))
-md_func_x(EnvSet, EnvSet, NzIntWin32, (In, String, VarName), (In_Opt, String, Value))
+md_func(EnvSet, (In, String, VarName), (In_Opt, String, Value))
 
 md_func_x(Exit, Exit, ResultType, (In_Opt, Int32, ExitCode))
 md_func_x(ExitApp, ExitApp, ResultType, (In_Opt, Int32, ExitCode))
@@ -124,14 +124,20 @@ md_func_x(GetKeySC, GetKeySC, Int32, (In, String, KeyName))
 md_func(GetKeyState, (In, String, KeyName), (In_Opt, String, Mode), (Ret, Variant, RetVal))
 md_func_x(GetKeyVK, GetKeyVK, Int32, (In, String, KeyName))
 
-md_func(GroupActivate, (In, String, GroupName), (In_Opt, String, Mode), (Ret, UIntPtr, RetVal))
+md_func(GroupActivate, (In, String, GroupName), (In_Opt, String, Mode), (Ret, UInt32, RetVal))
 md_func(GroupAdd, (In, String, GroupName), (In_Opt, String, WinTitle), (In_Opt, String, WinText), (In_Opt, String, ExcludeTitle), (In_Opt, String, ExcludeText))
 md_func(GroupClose, (In, String, GroupName), (In_Opt, String, Mode))
 md_func(GroupDeactivate, (In, String, GroupName), (In_Opt, String, Mode))
 
-md_func_v(GuiCtrlFromHwnd, (In, UIntPtr, Hwnd), (Ret, Object, Gui))
-md_func_v(GuiFromHwnd, (In, UIntPtr, Hwnd), (In_Opt, Bool32, Recurse), (Ret, Object, Gui))
+md_func_v(GuiCtrlFromHwnd, (In, UInt32, Hwnd), (Ret, Object, Gui))
+md_func_v(GuiFromHwnd, (In, UInt32, Hwnd), (In_Opt, Bool32, Recurse), (Ret, Object, Gui))
 
+md_func(HotIf, (In_Opt, Variant, Criterion))
+md_func(HotIfWinActive, (In_Opt, String, WinTitle), (In_Opt, String, WinText))
+md_func(HotIfWinExist, (In_Opt, String, WinTitle), (In_Opt, String, WinText))
+md_func(HotIfWinNotActive, (In_Opt, String, WinTitle), (In_Opt, String, WinText))
+md_func(HotIfWinNotExist, (In_Opt, String, WinTitle), (In_Opt, String, WinText))
+md_func_x(Hotkey, BIF_Hotkey, FResult, (In, String, KeyName), (In_Opt, Variant, Action), (In_Opt, String, Options))
 md_func_x(Hotstring, BIF_Hotstring, FResult, (In, String, String), (In_Opt, Variant, Replacement), (In_Opt, String, OnOffToggle), (Ret, Variant, RetVal))
 
 md_func(IL_Add, (In, UIntPtr, ImageList), (In, String, Filename), (In_Opt, Int32, IconNumber), (In_Opt, Bool32, ResizeNonIcon), (Ret, Int32, Index))
@@ -164,6 +170,9 @@ md_func(ListViewGetContent, (In_Opt, String, Options), MD_CONTROL_ARGS, (Ret, Va
 md_func(LoadPicture, (In, String, Filename), (In_Opt, String, Options), (Out_Opt, Int32, ImageType), (Ret, UIntPtr, Handle))
 
 md_func_v(MenuFromHandle, (In, UIntPtr, Handle), (Ret, Object, Menu))
+md_func(MenuSelect, (In_Opt, Variant, WinTitle), (In_Opt, String, WinText), (In, String, Menu)
+	, (In_Opt, String, SubMenu1), (In_Opt, String, SubMenu2), (In_Opt, String, SubMenu3), (In_Opt, String, SubMenu4), (In_Opt, String, SubMenu5), (In_Opt, String, SubMenu6)
+	, (In_Opt, String, ExcludeTitle), (In_Opt, String, ExcludeText))
 
 md_func(MonitorGet, (In_Opt, Int32, N), (Out_Opt, Int32, Left), (Out_Opt, Int32, Top), (Out_Opt, Int32, Right), (Out_Opt, Int32, Bottom), (Ret, Int32, RetVal))
 md_func_x(MonitorGetCount, MonitorGetCount, Int32, md_arg_none)
@@ -260,6 +269,8 @@ md_func(SoundPlay, (In, String, Path), (In_Opt, String, Wait))
 md_func(StatusBarGetText, (In_Opt, Int32, Part), MD_WINTITLE_ARGS, (Ret, String, RetVal))
 md_func(StatusBarWait, (In_Opt, String, Text), (In_Opt, Float64, Timeout), (In_Opt, Int32, Part), (In_Opt, Variant, WinTitle), (In_Opt, String, WinText), (In_Opt, Int32, Interval), (In_Opt, String, ExcludeTitle), (In_Opt, String, ExcludeText), (Ret, Bool32, RetVal))
 
+md_func(StrSplit, (In, String, String), (In_Opt, Variant, Delimiters), (In_Opt, String, OmitChars), (In_Opt, Int32, MaxParts), (Ret, Object, RetVal))
+
 md_func(Suspend, (In_Opt, Int32, Mode))
 
 md_func_x(SysGet, SysGet, Int32, (In, Int32, Index))
@@ -267,7 +278,7 @@ md_func(SysGetIPAddresses, (Ret, Object, RetVal))
 
 md_func(Thread, (In, String, Command), (In_Opt, Int32, Value1), (In_Opt, Int32, Value2))
 
-md_func(ToolTip, (In_Opt, String, Text), (In_Opt, Int32, X), (In_Opt, Int32, Y), (In_Opt, Int32, Index), (Ret, UIntPtr, Hwnd))
+md_func(ToolTip, (In_Opt, String, Text), (In_Opt, Int32, X), (In_Opt, Int32, Y), (In_Opt, Int32, Index), (Ret, UInt32, Hwnd))
 
 md_func(TraySetIcon, (In_Opt, String, File), (In_Opt, Int32, Number), (In_Opt, Bool32, Freeze))
 md_func(TrayTip, (In_Opt, String, Text), (In_Opt, String, Title), (In_Opt, String, Options))

@@ -34,6 +34,8 @@ thread_local Debugger *g_Debugger;
 thread_local CStringA g_DebuggerHost;
 thread_local CStringA g_DebuggerPort;
 
+LPCTSTR g_AutoExecuteThreadDesc = _T("Auto-execute"); // This is used to reduce code size (allow comparing address vs. string).
+
 // The first breakpoint uses sMaxId + 1. Don't change this without also changing breakpoint_remove.
 int Breakpoint::sMaxId = 0;
 
@@ -102,6 +104,67 @@ inline bool BreakpointLineIsSlippery(Line *aLine)
 		: act == ACT_ELSE || act == ACT_BLOCK_BEGIN;
 }
 
+bool LineIsFatArrowBlock(Line *line)
+{
+	return line->mActionType == ACT_BLOCK_BEGIN && line->mAttribute
+		&& line->mRelatedLine
+		&& line->mRelatedLine->mLineNumber == line->mLineNumber
+		&& line->mRelatedLine->mFileIndex == line->mFileIndex;
+}
+
+Line *Debugger::FindFirstLineForBreakpoint(int file_index, UINT line_no)
+{
+	Line *found_line = nullptr;
+	for (Line *line = g_script->mFirstLine; line; line = line->mNextLine)
+	{
+		if (line->mFileIndex == file_index && line->mLineNumber >= line_no)
+		{
+			// ACT_ELSE and ACT_BLOCK_BEGIN generally don't cause PreExecLine() to be called,
+			// so any breakpoint set on one of those lines would never be hit.  Attempting to
+			// set a breakpoint on one of these should act like setting a breakpoint on a line
+			// which contains no code: put the breakpoint at the next line instead.
+			// Without this check, setting a breakpoint on a line like "else Exit" would not work.
+			// ACT_CASE executes when the *previous* case reaches its end, so for that case
+			// we want to shift the breakpoint to the first Line after the ACT_CASE.
+			// An expression such as x:=()=>y results in a fat arrow function prior to the assignment;
+			// in that case breakpoints need to be set on a series of lines (inside each fat arrow
+			// function and on the final expression Line).
+			if (BreakpointLineIsSlippery(line) && !LineIsFatArrowBlock(line))
+				continue;
+			// Use the first line of code at or after lineno, like Visual Studio.
+			// To display the breakpoint correctly, an IDE should use breakpoint_get.
+			if (!found_line || found_line->mLineNumber > line->mLineNumber)
+				found_line = line;
+			if (line->mLineNumber == line_no)
+				break;
+			//else must keep searching, since class var initializers can cause lines to be listed out of order.
+		}
+	}
+	return found_line;
+}
+
+// Set Line::mBreakpoint for a single executable line and all fat-arrow functions
+// that it contains.  line should be as determined by FindFirstLineForBreakpoint().
+void SetBreakpointForLineGroup(Line *line, Breakpoint *bp)
+{
+	while (line->mActionType == ACT_BLOCK_BEGIN)
+	{
+		// Under the conditions established by FindFirstLineForBreakpoint(), this line can
+		// only be the block-begin of a fat-arrow function, which is always followed by a
+		// return and block-end, then either another fat-arrow or the final expression Line.
+		ASSERT(LineIsFatArrowBlock(line) && line->mNextLine->mActionType == ACT_RETURN
+			&& line->mNextLine->mNextLine->mActionType == ACT_BLOCK_END);
+		line = line->mNextLine; // Set it to the return.
+		if (!line)
+			return; // Shouldn't happen.
+		line->mBreakpoint = bp;
+		if (   !(line = line->mNextLine)     // Set it to the block-end.
+			|| !(line = line->mNextLine)   ) // Set it to the next fat-arrow block-begin or the final expression.
+			return; // Shouldn't happen.
+	}
+	line->mBreakpoint = bp;
+}
+
 
 // PreExecLine: aLine is about to execute; handle current line marker, breakpoints and step into/over/out.
 int Debugger::PreExecLine(Line *aLine)
@@ -117,7 +180,18 @@ int Debugger::PreExecLine(Line *aLine)
 	{
 		if (bp->temporary)
 		{
-			aLine->mBreakpoint = NULL;
+			auto line = aLine;
+			if (line->mPrevLine && LineIsFatArrowBlock(line->mPrevLine))
+			{
+				// This line is inside a fat-arrow function, which means the breakpoint must have been
+				// set not just for this line, but also for all other fat-arrow functions on this line
+				// and the expression line which contains them (and is last in the Line list).
+				Line *prev;
+				for (line = line->mPrevLine; // Init to the fat-arrow's block-begin.
+					(prev = line->mPrevLine) && prev->mActionType == ACT_BLOCK_END && LineIsFatArrowBlock(prev->mParentLine);
+					line = prev->mParentLine); // Update to the previous fat-arrow's block-begin.
+			}
+			SetBreakpointForLineGroup(line, nullptr);
 			delete bp;
 		}
 		return Break();
@@ -658,38 +732,20 @@ DEBUGGER_COMMAND(Debugger::breakpoint_set)
 			return DEBUGGER_E_BREAKPOINT_INVALID;
 	}
 
-	Line *line = NULL, *found_line = NULL;
-	for (line = line ? line->mNextLine : g_script->mFirstLine; line; line = line->mNextLine)
+	if (auto line = FindFirstLineForBreakpoint(file_index, lineno))
 	{
-		if (line->mFileIndex == file_index && line->mLineNumber >= lineno)
+		Breakpoint *bp = line->mBreakpoint;
+		if (!bp)
 		{
-			// ACT_ELSE and ACT_BLOCK_BEGIN generally don't cause PreExecLine() to be called,
-			// so any breakpoint set on one of those lines would never be hit.  Attempting to
-			// set a breakpoint on one of these should act like setting a breakpoint on a line
-			// which contains no code: put the breakpoint at the next line instead.
-			// Without this check, setting a breakpoint on a line like "else Exit" would not work.
-			// ACT_CASE executes when the *previous* case reaches its end, so for that case
-			// we want to shift the breakpoint to the first Line after the ACT_CASE.
-			if (BreakpointLineIsSlippery(line))
-				continue;
-			// Use the first line of code at or after lineno, like Visual Studio.
-			// To display the breakpoint correctly, an IDE should use breakpoint_get.
-			if (!found_line || found_line->mLineNumber > line->mLineNumber)
-				found_line = line;
-			// Must keep searching, since class var initializers can cause lines to be listed out of order.
-			//break;
+			bp = new Breakpoint();
+			SetBreakpointForLineGroup(line, bp);
 		}
-	}
-	if (found_line)
-	{
-		if (!found_line->mBreakpoint)
-			found_line->mBreakpoint = new Breakpoint();
-		found_line->mBreakpoint->state = state;
-		found_line->mBreakpoint->temporary = temporary;
+		bp->state = state;
+		bp->temporary = temporary;
 
 		return mResponseBuf.WriteF(
 			"<response command=\"breakpoint_set\" transaction_id=\"%e\" state=\"%s\" id=\"%i\"/>"
-			, aTransactionId, state ? "enabled" : "disabled", found_line->mBreakpoint->id);
+			, aTransactionId, state ? "enabled" : "disabled", bp->id);
 	}
 	// There are no lines of code beginning at or after lineno.
 	return DEBUGGER_E_BREAKPOINT_INVALID;
@@ -781,25 +837,14 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 			if (lineno && line->mLineNumber != lineno)
 			{
 				// Move the breakpoint within its current file.
-				int file_index = line->mFileIndex;
-				Line *old_line = line;
-
-				for (line = g_script->mFirstLine; line; line = line->mNextLine)
+				Line *new_line = FindFirstLineForBreakpoint(line->mFileIndex, lineno);
+				if (new_line != line)
 				{
-					if (line->mFileIndex == file_index && line->mLineNumber >= lineno)
-					{
-						line->mBreakpoint = bp;
-						break;
-					}
+					if (!new_line)
+						return DEBUGGER_E_BREAKPOINT_INVALID;
+					SetBreakpointForLineGroup(line, nullptr);
+					SetBreakpointForLineGroup(new_line, bp);
 				}
-
-				// If line is NULL, the line was not found.
-				if (!line)
-					return DEBUGGER_E_BREAKPOINT_INVALID;
-
-				// Seems best to only remove the breakpoint from its previous line
-				// once we know the breakpoint_update has succeeded.
-				old_line->mBreakpoint = NULL;
 			}
 
 			if (state != -1)
@@ -826,8 +871,7 @@ DEBUGGER_COMMAND(Debugger::breakpoint_remove)
 		if (line->mBreakpoint && line->mBreakpoint->id == breakpoint_id)
 		{
 			delete line->mBreakpoint;
-			line->mBreakpoint = NULL;
-
+			SetBreakpointForLineGroup(line, nullptr);
 			return DEBUGGER_E_OK;
 		}
 	}
@@ -895,7 +939,7 @@ DEBUGGER_COMMAND(Debugger::stack_get)
 			else if (se->type == DbgStack::SE_Thread)
 			{
 				// !se->line implies se->type == SE_Thread.
-				if (_tcscmp(se->desc, _T("Auto-execute")) && se[1].type == DbgStack::SE_UDF)
+				if (se->desc != g_AutoExecuteThreadDesc && se[1].type == DbgStack::SE_UDF)
 					// Show the function's jump-to line since se->line is most likely whatever line
 					// this thread interrupted.  Don't do it for the auto-execute thread since in
 					// that case the function doesn't represent the thread's overall execution.
@@ -2802,7 +2846,7 @@ void DbgStack::Pop()
 		g_script->mCurrLine = g_Debugger->mCurrLine = mTop->line;
 }
 
-void DbgStack::Push(TCHAR *aDesc)
+void DbgStack::Push(LPCTSTR aDesc)
 {
 	Entry &s = *Push();
 	s.line = NULL;
@@ -3013,15 +3057,20 @@ void GetScriptStack(LPTSTR aBuf, int aBufSize, DbgStack::Entry *aTop)
 	auto aBuf_orig = aBuf;
 	for (auto se = aTop ? aTop : g_Debugger->mStack.mTop - 1; se >= g_Debugger->mStack.mBottom; --se)
 	{
-		auto &line = *se->line;
+		auto &line = se->line ? *se->line : *g_script->mCurrLine;
 		auto line_start = aBuf;
-		if (se->type == DbgStack::SE_Thread)
-			aBuf += sntprintf(aBuf, BUF_SPACE_REMAINING, _T("> %s\r\n"), se->desc);
-		else
+		if (se->type != DbgStack::SE_Thread || se->desc == g_AutoExecuteThreadDesc)
 		{
+			auto name = se->Name();
+			if (name == g_AutoExecuteThreadDesc)
+				name = _T("");
 			aBuf += sntprintf(aBuf, BUF_SPACE_REMAINING, _T("%s (%i) : [%s] ")
-				, Line::sSourceFile[line.mFileIndex], (int)line.mLineNumber, se->Name());
+				, Line::sSourceFile[line.mFileIndex], (int)line.mLineNumber, name);
 			aBuf = line.ToText(aBuf, BUF_SPACE_REMAINING, true, 0, false, false);
+		}
+		if (se->type == DbgStack::SE_Thread)
+		{
+			aBuf += sntprintf(aBuf, BUF_SPACE_REMAINING, _T("> %s\r\n"), se->desc);
 		}
 		if (BUF_SPACE_REMAINING <= 1) // In case of truncation, there should be 1 char left, since the terminator is not counted.
 		{

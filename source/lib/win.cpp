@@ -244,7 +244,7 @@ bif_impl FResult GroupAdd(StrArg aGroup, optl<StrArg> aTitle, optl<StrArg> aText
 
 
 
-bif_impl FResult GroupActivate(StrArg aGroup, optl<StrArg> aMode, UINT_PTR &aRetVal)
+bif_impl FResult GroupActivate(StrArg aGroup, optl<StrArg> aMode, UINT &aRetVal)
 {
 	WinGroup *group;
 	if (   !(group = g_script->FindGroup(aGroup, true))   ) // Last parameter -> create-if-not-found.
@@ -260,9 +260,7 @@ bif_impl FResult GroupActivate(StrArg aGroup, optl<StrArg> aMode, UINT_PTR &aRet
 			return FR_E_ARG(1);
 	}
 
-	HWND activated;
-	group->Activate(mode == 'R', activated);
-	aRetVal = (UINT_PTR)activated;
+	aRetVal = (UINT)(UINT_PTR)group->Activate(mode == 'R');
 	return OK;
 }
 
@@ -751,21 +749,34 @@ bif_impl FResult ControlGetClassNN(CONTROL_PARAMETERS_DECL, StrRet &aRetVal)
 	if (target_window == control_window)
 		target_window = GetNonChildParent(control_window);
 
+	TCHAR class_nn[WINDOW_CLASS_NN_SIZE];
+	auto fr = ControlGetClassNN(target_window, control_window, class_nn, _countof(class_nn));
+	return fr != OK ? fr : aRetVal.Copy(class_nn) ? OK : FR_E_OUTOFMEM;
+}
+
+
+
+// Retrieves the ClassNN of a control.
+// aBuf is ideally sized by WINDOW_CLASS_NN_SIZE to avoid any possibility of
+// the buffer being insufficient.  Must be large enough to fit the class name
+// plus CONTROL_NN_SIZE.
+FResult ControlGetClassNN(HWND aWindow, HWND aControl, LPTSTR aBuf, int aBufSize)
+{
+	ASSERT(aBufSize > CONTROL_NN_SIZE);
 	class_and_hwnd_type cah;
-	TCHAR class_name[WINDOW_CLASS_SIZE];
-	cah.hwnd = control_window;
-	cah.class_name = class_name;
-	if (!GetClassName(cah.hwnd, class_name, _countof(class_name) - 5)) // -5 to allow room for sequence number.
+	cah.hwnd = aControl;
+	cah.class_name = aBuf;
+	int length = GetClassName(cah.hwnd, aBuf, aBufSize - CONTROL_NN_SIZE); // Allow room for sequence number.
+	if (!length)
 		return FR_E_WIN32;
-	
 	cah.class_count = 0;  // Init for the below.
 	cah.is_found = false; // Same.
-	EnumChildWindows(target_window, EnumChildFindSeqNum, (LPARAM)&cah);
+	EnumChildWindows(aWindow, EnumChildFindSeqNum, (LPARAM)&cah);
 	if (!cah.is_found)
 		return FR_E_FAILED;
 	// Append the class sequence number onto the class name:
-	sntprintfcat(class_name, _countof(class_name), _T("%d"), cah.class_count);
-	return aRetVal.Copy(class_name) ? OK : FR_E_OUTOFMEM;
+	sntprintf(aBuf + length, aBufSize - length, _T("%u"), cah.class_count);
+	return OK;
 }
 
 
@@ -958,16 +969,18 @@ bif_impl FResult ListViewGetContent(optl<StrArg> aOpt, CONTROL_PARAMETERS_DECL, 
 	if (get_count)
 	{
 		int result; // Must be signed to support writing a col count of -1 to aOutputVar.
+		DWORD_PTR msg_result;
 		if (include_focused_only) // Listed first so that it takes precedence over include_selected_only.
 		{
-			if (!SendMessageTimeout(aHwnd, LVM_GETNEXTITEM, -1, LVNI_FOCUSED, SMTO_ABORTIFHUNG, 2000, (PDWORD_PTR)&result)) // Timed out or failed.
+			if (!SendMessageTimeout(aHwnd, LVM_GETNEXTITEM, -1, LVNI_FOCUSED, SMTO_ABORTIFHUNG, 2000, &msg_result)) // Timed out or failed.
 				return FR_E_WIN32;
-			++result; // i.e. Set it to 0 if not found, or the 1-based row-number otherwise.
+			result = (int)msg_result + 1; // i.e. Set it to 0 if not found, or the 1-based row-number otherwise.
 		}
 		else if (include_selected_only)
 		{
-			if (!SendMessageTimeout(aHwnd, LVM_GETSELECTEDCOUNT, 0, 0, SMTO_ABORTIFHUNG, 2000, (PDWORD_PTR)&result)) // Timed out or failed.
+			if (!SendMessageTimeout(aHwnd, LVM_GETSELECTEDCOUNT, 0, 0, SMTO_ABORTIFHUNG, 2000, &msg_result)) // Timed out or failed.
 				return FR_E_WIN32;
+			result = (int)msg_result;
 		}
 		else if (col_option) // "Count Col" returns the number of columns.
 			result = (int)col_count;
@@ -1075,7 +1088,7 @@ bif_impl FResult ListViewGetContent(optl<StrArg> aOpt, CONTROL_PARAMETERS_DECL, 
 			//    mouse/key lag would occur).
 			if (!SendMessageTimeout(aHwnd, LVM_GETNEXTITEM, next, include_focused_only ? LVNI_FOCUSED : LVNI_SELECTED
 				, SMTO_ABORTIFHUNG, 2000, (PDWORD_PTR)&next) // Timed out or failed.
-				|| next == -1) // No next item.  Relies on short-circuit boolean order.
+				|| (int)next == -1) // No next item.  Relies on short-circuit boolean order.
 				break; // End of estimation phase (if estimate is too small, the text retrieval below will truncate it).
 		}
 		else
@@ -1120,7 +1133,7 @@ bif_impl FResult ListViewGetContent(optl<StrArg> aOpt, CONTROL_PARAMETERS_DECL, 
 			// Fix for v1.0.37.01: Prevent an infinite loop (for details, see comments in the estimation phase above).
 			if (!SendMessageTimeout(aHwnd, LVM_GETNEXTITEM, next, include_focused_only ? LVNI_FOCUSED : LVNI_SELECTED
 				, SMTO_ABORTIFHUNG, 2000, (PDWORD_PTR)&next) // Timed out or failed.
-				|| next == -1) // No next item.
+				|| (int)next == -1) // No next item.
 				break; // See comment above for why unconditional break vs. continue.
 		}
 		else // Retrieve every row, so the "next" row becomes the "i" index.
@@ -1406,7 +1419,7 @@ bif_impl FResult WinSetRegion(optl<StrArg> aOptions, WINTITLE_PARAMETERS_DECL)
 		if (pt_count >= MAX_REGION_POINTS)
 			return FR_E_ARG(0);
 
-		if (isdigit(*cp) || *cp == '-' || *cp == '+') // v1.0.38.02: Recognize leading minus/plus sign so that the X-coord is just as tolerant as the Y.
+		if (cisdigit(*cp) || *cp == '-' || *cp == '+') // v1.0.38.02: Recognize leading minus/plus sign so that the X-coord is just as tolerant as the Y.
 		{
 			// Assume it's a pair of X/Y coordinates.  It's done this way rather than using X and Y
 			// as option letters because:
@@ -1962,16 +1975,8 @@ bif_impl FResult WinSetTransColor(ExprTokenType &aValue, WINTITLE_PARAMETERS_DEC
 		}
 		if (*aValue_copy) // Seems more flexible to allow a leading space to omit the color key, rather than interpreting it as black or an error.
 		{
-			color = ColorNameToBGR(aValue_copy);
-			if (color == CLR_NONE)
-			{
-				// A matching color name was not found, so assume it's in hex format.
-				// _tcstol() automatically handles the optional leading "0x" if present:
-				LPTSTR endptr;
-				color = rgb_to_bgr(_tcstol(aValue_copy, &endptr, 16));
-				if (*endptr) // Invalid color name/number.
-					return FR_E_ARG(0);
-			}
+			if (!ColorToBGR(aValue_copy, color))
+				return FR_E_ARG(0);
 		}
 		break;
 	}
@@ -2306,39 +2311,6 @@ ResultType DetermineTargetWindow(HWND &aWindow, ResultToken &aResultToken, ExprT
 }
 
 
-ResultType DetermineTargetControl(HWND &aControl, HWND &aWindow, ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount
-	, int aNonWinParamCount, bool aThrowIfNotFound)
-{
-	aWindow = aControl = nullptr;
-	// Only functions which can operate on top-level windows allow Control to be
-	// omitted (and a select few other functions with more optional parameters).
-	// This replaces the old "ahk_parent" string used with ControlSend, but is
-	// also used by SendMessage.
-	LPTSTR control_spec = nullptr;
-	if (!ParamIndexIsOmitted(0))
-	{
-		switch (DetermineTargetHwnd(aWindow, aResultToken, *aParam[0]))
-		{
-		case OK:
-			aControl = aWindow;
-			if (!aControl)
-				return aResultToken.Error(ERR_NO_CONTROL, ErrorPrototype::Target);
-			return OK;
-		case FAIL:
-			return FAIL;
-		}
-		// Since above didn't return, it wasn't a pure Integer or object {Hwnd}.
-		control_spec = ParamIndexToString(0, _f_number_buf);
-	}
-	if (!DetermineTargetWindow(aWindow, aResultToken, aParam + 1, aParamCount - 1, aNonWinParamCount))
-		return FAIL;
-	aControl = control_spec ? ControlExist(aWindow, control_spec) : aWindow;
-	if (!aControl && aThrowIfNotFound)
-		return aResultToken.Error(ERR_NO_CONTROL, ErrorPrototype::Target);
-	return OK;
-}
-
-
 
 BIF_DECL(BIF_WinExistActive)
 {
@@ -2366,7 +2338,14 @@ BIF_DECL(BIF_WinExistActive)
 	{
 		TCHAR *param[4], param_buf[4][MAX_NUMBER_SIZE];
 		for (int j = 0; j < 4; ++j) // For each formal parameter, including optional ones.
-			param[j] = ParamIndexToOptionalString(j, param_buf[j]);
+		{
+			if (ParamIndexIsOmitted(j))
+				param[j] = _T("");
+			else if (ParamIndexToObject(j))
+				_f_throw_param(j, _T("String"));
+			else
+				param[j] = ParamIndexToString(j, param_buf[j]);
+		}
 
 		hwnd = _f_callee_id == FID_WinExist
 			? WinExist(*g, param[0], param[1], param[2], param[3], false, true)

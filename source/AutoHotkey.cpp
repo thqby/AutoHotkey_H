@@ -141,7 +141,7 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 	InitializeCriticalSection(&g_Critical);
 	InitializeCriticalSection(&g_CriticalRegExCache); // v1.0.45.04: Must be done early so that it's unconditional, so that DeleteCriticalSection() in the script destructor can also be unconditional (deleting when never initialized can crash, at least on Win 9x).
 	InitializeCriticalSection(&g_CriticalTLSCallback);
-	Object::sAnyPrototype = Object::CreateRootPrototypes();
+
 	// v1.1.22+: This is done unconditionally, on startup, so that any attempts to read a drive
 	// that has no media (and possibly other errors) won't cause the system to display an error
 	// dialog that the script can't suppress.  This is known to affect floppy drives and some
@@ -259,6 +259,13 @@ int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdL
 			break; // No more switches allowed after this point.
 		}
 	}
+	
+	// Initialize the object model here, prior to any use of Objects (or Array below).
+	// Doing this here rather than in a static initializer in script_object.cpp avoids
+	// issues of static initialization order.  At this point all static members such as
+	// sMembers arrays have been initialized (normally they are constant initialized
+	// anyway, but in debug mode the arrays using cast_into_voidp() are not).
+	Object::CreateRootPrototypes();
 
 	if (Var *var = g_script->FindOrAddVar(_T("A_Args"), 6, VAR_DECLARE_GLOBAL))
 	{
@@ -477,7 +484,6 @@ unsigned __stdcall ThreadMain(LPTSTR *data)
 		g_script = new Script();
 		g_clip = new Clipboard();
 		g_MsgMonitor = new MsgMonitorList();
-		Object::sAnyPrototype = Object::CreateRootPrototypes();
 		g_script->mEncrypt = encrypt;
 
 		// v1.1.22+: This is done unconditionally, on startup, so that any attempts to read a drive
@@ -556,6 +562,8 @@ unsigned __stdcall ThreadMain(LPTSTR *data)
 				break; // No more switches allowed after this point.
 			}
 		}
+
+		Object::CreateRootPrototypes();
 
 		if (Var *var = g_script->FindOrAddVar(_T("A_Args"), 6, VAR_DECLARE_GLOBAL))
 		{

@@ -82,9 +82,9 @@ HRESULT SoundSetGet_GetDevice(LPTSTR aDeviceString, IMMDevice *&aDevice)
 				target_name = aDeviceString;
 				target_name_length = delim - aDeviceString;
 			}
-			else if (IsNumeric(aDeviceString, FALSE, FALSE))
+			else if (ParseInteger(aDeviceString, target_index))
 			{
-				target_index = ATOI(aDeviceString) - 1;
+				--target_index;
 			}
 			else
 			{
@@ -145,10 +145,9 @@ struct SoundComponentSearch
 
 void SoundConvertComponent(LPTSTR aBuf, SoundComponentSearch &aSearch)
 {
-	if (IsNumeric(aBuf) == PURE_INTEGER)
+	if (ParseInteger(aBuf, aSearch.target_instance))
 	{
 		*aSearch.target_name = '\0';
-		aSearch.target_instance = ATOI(aBuf);
 	}
 	else
 	{
@@ -298,6 +297,8 @@ BIF_DECL(BIF_Sound)
 	{
 		search.target_control = SoundControlType(_f_callee_id - FID_SoundSetVolume);
 		aSetting = ParamIndexToString(0, _f_number_buf);
+		if (!IsNumeric(aSetting, TRUE, FALSE, TRUE))
+			_f_throw_param(0);
 		++aParam;
 		--aParamCount;
 	}

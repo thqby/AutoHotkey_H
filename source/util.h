@@ -68,12 +68,14 @@ inline int cisctype(TBYTE c, int type)
 	return (c & (~0x7F)) ? 0 : _isctype(c, type);
 }
 
-inline int cisalpha(TBYTE c)  { return ((c & ~0x7F) ? 0 : isalpha(c)); }
+// These simplified checks significantly reduce code size vs. using the standard C functions:
+inline int cisupper(TBYTE c)  { return c <= 'Z' && c >= 'A'; }
+inline int cislower(TBYTE c)  { return c >= 'a' && c <= 'z'; }
+inline int cisdigit(TBYTE c)  { return c <= '9' && c >= '0'; }
+inline int cisalpha(TBYTE c)  { return cisupper(c) || cislower(c); }
+
 inline int cisalnum(TBYTE c)  { return ((c & ~0x7F) ? 0 : isalnum(c)); }
-inline int cisdigit(TBYTE c)  { return ((c & ~0x7F) ? 0 : isdigit(c)); }
 inline int cisxdigit(TBYTE c) { return ((c & ~0x7F) ? 0 : isxdigit(c)); }
-inline int cisupper(TBYTE c)  { return ((c & ~0x7F) ? 0 : isupper(c)); }
-inline int cislower(TBYTE c)  { return ((c & ~0x7F) ? 0 : islower(c)); }
 inline int cisprint(TBYTE c)  { return ((c & ~0x7F) ? 0 : isprint(c)); }
 inline int cisspace(TBYTE c)  { return ((c & ~0x7F) ? 0 : isspace(c)); }
 
@@ -164,14 +166,15 @@ inline LPTSTR omit_leading_whitespace(LPTSTR aBuf)
 }
 
 
-inline LPTSTR omit_leading_any(LPTSTR aBuf, LPTSTR aOmitList, size_t aLength)
+template<typename T>
+inline T omit_leading_any(T aBuf, LPCTSTR aOmitList, size_t aLength)
 // Returns the address of the first character in aBuf that isn't a member of aOmitList.
 // But no more than aLength characters of aBuf will be considered.  If aBuf is composed
 // entirely of omitted characters, the address of the char after the last char in the
 // string will returned (that char will be the zero terminator unless aLength explicitly
 // caused only part of aBuf to be considered).
 {
-	LPTSTR cp;
+	LPCTSTR cp;
 	for (size_t i = 0; i < aLength; ++i, ++aBuf)
 	{
 		// Check if the current char is a member of the omitted-char list:
@@ -199,13 +202,14 @@ inline LPTSTR omit_trailing_whitespace(LPTSTR aBuf, LPTSTR aBuf_marker)
 
 
 
-inline size_t omit_trailing_any(LPTSTR aBuf, LPTSTR aOmitList, LPTSTR aBuf_marker)
+template<typename T>
+inline size_t omit_trailing_any(T aBuf, LPCTSTR aOmitList, T aBuf_marker)
 // aBuf_marker must be a position in aBuf (to the right of it).
 // Starts at aBuf_marker and keeps moving to the left until a char that isn't a member
 // of aOmitList is found.  The length of the remaining substring is returned.
 // That length will be zero if the string consists entirely of omitted characters.
 {
-	LPTSTR cp;
+	LPCTSTR cp;
 	for (; aBuf_marker > aBuf; --aBuf_marker)
 	{
 		// Check if the current char is a member of the omitted-char list:
@@ -502,6 +506,34 @@ inline int ATOI(LPCTSTR buf)
 //	return strtoul(buf, NULL, IsHex(buf) ? 16 : 10);
 //}
 
+// ParseInteger() and ParsePositiveInteger() replace several calls to IsNumeric() that would otherwise
+// be immediately followed by a call to ATOI(), ATOI64() or ATOU().  This reduces code size measurably
+// in some cases (I observed between 0 and 440 bytes per call) and may also improve performance.
+
+// If buf is a valid integer, sets i to the converted value and returns true.
+// Otherwise returns false and leaves i unset.
+template<typename T>
+bool ParseInteger(LPCTSTR buf, T &i)
+{
+	LPCTSTR endptr;
+	T temp = static_cast<T>(istrtoi64(buf, &endptr));
+	if (!*endptr) // No invalid suffix.
+	{
+		i = temp; // Set output parameter only now that we know it is valid.
+		return true;
+	}
+	return false;
+}
+
+// If buf is a valid integer not starting with '-', sets i to the converted value and returns true.
+// Otherwise returns false and leaves i unset.
+template<typename T>
+bool ParsePositiveInteger(LPCTSTR buf, T &i)
+{
+	// Callers don't want to permit negative values.
+	return *buf != '-' && ParseInteger(buf, i);
+}
+
 static double_conversion::StringToDoubleConverter S2Dconverter(5, 0, __builtin_nan("0"), 0, 0);
 inline double ATOF(LPCTSTR buf, LPTSTR *endptr = nullptr)
 // Unlike some Unix versions of strtod(), the VC++ version does not seem to handle hex strings
@@ -694,7 +726,7 @@ UINT StrReplace(LPTSTR aHaystack, LPTSTR aOld, LPTSTR aNew, StringCaseSenseType 
 	, UINT aLimit = UINT_MAX, size_t aSizeLimit = -1, LPTSTR *aDest = NULL, size_t *aHaystackLength = NULL);
 size_t PredictReplacementSize(ptrdiff_t aLengthDelta, int aReplacementCount, int aLimit, size_t aHaystackLength
 	, size_t aCurrentLength, size_t aEndOffsetOfCurrMatch);
-LPTSTR TranslateLFtoCRLF(LPTSTR aString);
+LPTSTR TranslateLFtoCRLF(LPCTSTR aString);
 bool DoesFilePatternExist(LPCTSTR aFilePattern, DWORD *aFileAttr = NULL, DWORD aRequiredAttr = 0);
 LPTSTR ConvertFilespecToCorrectCase(LPTSTR aFilespec, LPTSTR aBuf, size_t aBufSize, size_t &aBufLength);
 void ConvertFilespecToCorrectCase(LPTSTR aBuf, size_t aBufSize, size_t &aBufLength);
@@ -703,7 +735,8 @@ unsigned __int64 GetFileSize64(HANDLE aFileHandle);
 LPTSTR GetWin32ErrorText(LPTSTR aBuf, DWORD aBufSize, DWORD aError);
 void AssignColor(LPTSTR aNewColorName, COLORREF &aColor, HBRUSH &aBrush);
 void AssignColor(COLORREF aNewColorValue, COLORREF &aColor, HBRUSH &aBrush);
-COLORREF ColorNameToBGR(LPTSTR aColorName);
+bool ColorToBGR(LPCTSTR aColorNameOrRGB, COLORREF &aBGR);
+COLORREF ColorNameToBGR(LPCTSTR aColorName);
 LPTSTR ConvertEscapeSequences(LPTSTR aBuf, LPTSTR aLiteralMap);
 int FindExprDelim(LPCTSTR aBuf, TCHAR aDelimiter = ',', int aStartIndex = 0, LPCTSTR aLiteralMap = NULL);
 int FindTextDelim(LPCTSTR aBuf, TCHAR aDelimiter = ',', int aStartIndex = 0, LPCTSTR aLiteralMap = NULL);
@@ -732,7 +765,7 @@ HBITMAP IconToBitmap(HICON ahIcon, bool aDestroyIcon);
 HBITMAP IconToBitmap32(HICON aIcon, bool aDestroyIcon); // Lexikos: Used for menu icons on Vista+. Creates a 32-bit (ARGB) device-independent bitmap from an icon.
 int CALLBACK FontEnumProc(ENUMLOGFONTEX *lpelfe, NEWTEXTMETRICEX *lpntme, DWORD FontType, LPARAM lParam);
 //bool IsStringInList(LPTSTR aStr, LPTSTR aList, bool aFindExactMatch);
-LPTSTR InStrAny(LPTSTR aStr, LPTSTR aNeedle[], int aNeedleCount, size_t &aFoundLen);
+LPCTSTR InStrAny(LPCTSTR aStr, LPTSTR aNeedle[], int aNeedleCount, size_t &aFoundLen);
 
 LPTSTR ResourceIndexToId(HMODULE aModule, LPCTSTR aType, int aIndex); // L17: Find integer ID of resource from index. i.e. IconNumber -> resource ID.
 HICON ExtractIconFromExecutable(LPCTSTR aFilespec, int aIconNumber, int aWidth, int aHeight // L17: Extract icon of the appropriate size from an executable (or compatible) file.

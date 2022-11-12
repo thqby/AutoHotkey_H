@@ -679,7 +679,7 @@ IAhkApi* IAhkApi::Initialize() {
 		g_clip = new Clipboard();
 		g_script = new Script();
 		g_MsgMonitor = new MsgMonitorList();
-		Object::sAnyPrototype = Object::CreateRootPrototypes();
+		Object::CreateRootPrototypes();
 		SetErrorMode(SEM_FAILCRITICALERRORS);
 		UpdateWorkingDir();
 		g_WorkingDirOrig = SimpleHeap::Malloc(const_cast<LPTSTR>(g_WorkingDir.GetString()));

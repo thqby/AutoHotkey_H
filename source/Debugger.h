@@ -76,6 +76,8 @@ thread_local extern Debugger *g_Debugger;
 thread_local extern CStringA g_DebuggerHost;
 thread_local extern CStringA g_DebuggerPort;
 
+extern LPCTSTR g_AutoExecuteThreadDesc;
+
 
 enum BreakpointTypeType {BT_Line, BT_Call, BT_Return, BT_Exception, BT_Conditional, BT_Watch};
 enum BreakpointStateType {BS_Disabled=0, BS_Enabled};
@@ -115,7 +117,7 @@ struct DbgStack
 		Line *line;
 		union
 		{
-			TCHAR *desc; // SE_Thread -- "auto-exec", hotkey/hotstring name, "timer", etc.
+			LPCTSTR desc; // SE_Thread -- "auto-exec", hotkey/hotstring name, "timer", etc.
 			NativeFunc *func; // SE_BIF
 			UDFCallInfo *udf; // SE_UDF
 		};
@@ -165,7 +167,7 @@ struct DbgStack
 
 	void Pop();
 
-	void Push(TCHAR *aDesc);
+	void Push(LPCTSTR aDesc);
 	void Push(NativeFunc *aFunc);
 	void Push(UDFCallInfo *aRecurse);
 
@@ -421,6 +423,7 @@ private:
 	void ExitBreakState();
 
 	int WriteBreakpointXml(Breakpoint *aBreakpoint, Line *aLine);
+	Line *FindFirstLineForBreakpoint(int file_index, UINT line_no);
 
 	void AppendPropertyName(CStringA &aNameBuf, size_t aParentNameLength, const char *aName);
 	void AppendStringKey(CStringA &aNameBuf, size_t aParentNameLength, const char *aKey);
