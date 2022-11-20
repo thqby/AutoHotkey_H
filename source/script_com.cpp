@@ -1642,11 +1642,7 @@ STDMETHODIMP IObjectComCompatible::GetIDsOfNames(REFIID riid, LPOLESTR *rgszName
 	}
 
 	// Nonstandard method used by other threads of this process
-	if (cNames >= 2 && *rgDispId == (LONG)g_ProcessId) {
-		if (cNames == 3) {
-			auto aDebugger = *(IDebugProperties**)(rgDispId + 1);
-			aDebugger->WriteProperty("<object>", ExprTokenType(this));
-		}
+	if (cNames == 2 && *rgDispId == (LONG)g_ProcessId) {
 		*(IObject**)rgDispId = this;
 		return S_OK;
 	}
@@ -1867,44 +1863,12 @@ void WriteComObjType(IDebugProperties *aDebugger, ComObject *aObject, LPCSTR aNa
 void ComObject::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPageSize, int aDepth)
 {
 	DebugCookie rootCookie;
-	aDebugger->BeginProperty(NULL, "object", 2 + (mVarType == VT_DISPATCH) * 2 + (mEventSink != NULL), rootCookie);
-	if (aPage == 0)
+	aDebugger->BeginProperty(NULL, "object", 2 + (mVarType == VT_DISPATCH)*2 + (mEventSink != NULL), rootCookie);
+	if (aPage == 0 && aDepth > 0)
 	{
-		// For simplicity, assume they all fit within aPageSize.
-		
+		// For simplicity, assume aPageSize >= 2.
 		aDebugger->WriteProperty("Value", ExprTokenType(mVal64));
 		aDebugger->WriteProperty("VarType", ExprTokenType((__int64)mVarType));
-
-		if (mVarType == VT_DISPATCH)
-		{
-			WriteComObjType(aDebugger, this, "DispatchType", _T("Name"));
-			WriteComObjType(aDebugger, this, "DispatchIID", _T("IID"));
-			// DebugWrite Property of ahk object
-			if (aDepth) {
-				LPOLESTR s[] = { L"",L"",L"" };
-				DISPID id[3] = { (LONG)g_ProcessId };
-				*(void**)(id + 1) = aDebugger;
-				this->mDispatch->GetIDsOfNames(IID_NULL, s, 3, LOCALE_USER_DEFAULT, id);
-			}
-		}
-		
-		if (mEventSink)
-		{
-			DebugCookie sinkCookie;
-			aDebugger->BeginProperty("EventSink", "object", 2, sinkCookie);
-			
-			if (mEventSink->mAhkObject)
-				aDebugger->WriteProperty("Object", ExprTokenType(mEventSink->mAhkObject));
-			else
-				aDebugger->WriteProperty("Prefix", ExprTokenType(mEventSink->mPrefix));
-			
-			OLECHAR buf[40];
-			if (!StringFromGUID2(mEventSink->mIID, buf, _countof(buf)))
-				*buf = 0;
-			aDebugger->WriteProperty("IID", ExprTokenType((LPTSTR)(LPCTSTR)CStringTCharFromWCharIfNeeded(buf)));
-			
-			aDebugger->EndProperty(sinkCookie);
-		}
 	}
 	aDebugger->EndProperty(rootCookie);
 }

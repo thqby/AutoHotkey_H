@@ -196,7 +196,7 @@ enum CommandIDs {CONTROL_ID_FIRST = IDCANCEL + 1
 #define ERR_TOO_MANY_REFS ERR_EXPR_TOO_LONG // No longer applies to just var/func refs. Old message: "Too many var/func refs."
 #define ERR_NO_LABEL _T("Label not found in current scope.")
 #define ERR_INVALID_MENU_TYPE _T("Invalid menu type.")
-#define ERR_INVALID_SUBMENU _T("Invalid submenu.")
+#define ERR_INVALID_MENU_ITEM _T("Nonexistent menu item.")
 #define ERR_WINDOW_PARAM _T("Requires at least one of its window parameters.")
 #define ERR_MOUSE_COORD _T("X & Y must be either both absent or both present.")
 #define ERR_DIVIDEBYZERO _T("Divide by zero.")
@@ -261,7 +261,7 @@ enum CommandIDs {CONTROL_ID_FIRST = IDCANCEL + 1
 
 void DoIncrementalMouseMove(int aX1, int aY1, int aX2, int aY2, int aSpeed);
 
-DWORD ProcessExist(LPCTSTR aProcess);
+DWORD ProcessExist(LPCTSTR aProcess, bool aGetParent = false);
 DWORD GetProcessName(DWORD aProcessID, LPTSTR aBuf, DWORD aBufSize, bool aGetNameOnly);
 
 FResult Shutdown(int nFlag);
@@ -2097,6 +2097,7 @@ public:
 	ResultType EnableStandardOpenItem(bool aEnable);
 	ResultType Display(bool aForceToForeground = true, int aX = COORD_UNSPECIFIED, int aY = COORD_UNSPECIFIED);
 	FResult GetItem(LPCTSTR aNameOrPos, UserMenuItem *&aItem);
+	FResult ItemNotFoundError(LPCTSTR aItem);
 	UserMenuItem *FindItem(LPCTSTR aNameOrPos, UserMenuItem *&aPrevItem, bool &aByPos);
 	UserMenuItem *FindItemByID(UINT aID);
 	bool ContainsMenu(UserMenu *aMenu);
