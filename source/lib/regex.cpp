@@ -730,17 +730,25 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 
 	// Get the replacement text (if any) from the incoming parameters.  If it was omitted, treat it as "".
 	TCHAR repl_buf[MAX_NUMBER_SIZE];
-	LPTSTR replacement = ParamIndexToOptionalString(2, repl_buf);
-	size_t replacement_length;
-	IObject* obj = NULL;
-	ExprTokenType param, obj_token;
-	ExprTokenType* params = &param;
+	LPTSTR replacement = _T("");
 	ResultToken result_token;
-	if (!ParamIndexIsOmitted(2) && (obj = ParamIndexToObject(2))) {
-		if (!ValidateFunctor(obj, 1, aResultToken))
-			return;
-		result_token.InitResult(repl_buf);
-		obj_token.SetValue(obj);
+	ExprTokenType matchobj_token, *params;
+	IObject *callback_obj = nullptr;
+	int prev_excpt = g->ExcptMode;
+	result_token.mem_to_free = nullptr;
+	if (!ParamIndexIsOmitted(2))
+	{
+		if (callback_obj = ParamIndexToObject(2))
+		{
+			if (!ValidateFunctor(callback_obj, 1, aResultToken))
+				return;
+			params = &matchobj_token;
+			matchobj_token.symbol = SYM_OBJECT;
+			result_token.InitResult(repl_buf);
+			g->ExcptMode = EXCPTMODE_CATCH;
+		}
+		else
+			replacement = ParamIndexToOptionalString(2, repl_buf);
 	}
 
 	// In PCRE, lengths and such are confined to ints, so there's little reason for using unsigned for anything.
@@ -762,7 +770,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 	// Below uses a temp variable because realloc() returns NULL on failure but leaves original block allocated.
 	// Note that if it's given a NULL pointer, realloc() does a malloc() instead.
 	LPTSTR realloc_temp;
-	#define REGEX_REALLOC(size) \
+#define REGEX_REALLOC(size) \
 	{\
 		result_size = size;\
 		if (   !(realloc_temp = trealloc(result, result_size))   )\
@@ -863,7 +871,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 			{
 				aResultToken.marker = aHaystack;
 				aResultToken.marker_length = aHaystackLength;
-				
+
 				// There's no need to do the following because it should already be that way when replacement_count==0.
 				//if (result)
 				//	free(result);
@@ -911,7 +919,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					// Above is the length difference between the current replacement text and what it's
 					// replacing (it's negative when replacement is smaller than what it replaces).
 					REGEX_REALLOC((int)PredictReplacementSize((new_result_length - match_end_offset) / replacement_count // See above.
-						, replacement_count, limit, aHaystackLength, new_result_length+2, match_end_offset)); // +2 in case of empty_string_is_not_a_match (which needs room for up to two extra characters).  The function will also do another +1 to convert length to size (for terminator).
+						, replacement_count, limit, aHaystackLength, new_result_length + 2, match_end_offset)); // +2 in case of empty_string_is_not_a_match (which needs room for up to two extra characters).  The function will also do another +1 to convert length to size (for terminator).
 					// The above will return if an alloc error occurs.
 				}
 				//else result_size is not only large enough, but also non-zero.  Other sections rely on it always
@@ -929,22 +937,74 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 			else // i.e. it's the first iteration, so begin calculating the size required.
 				new_result_length = (int)result_length + haystack_portion_length; // Init length to the part of haystack before the match (it must be copied over as literal text).
 
-			if (obj) {
-				if (second_iteration) {
-					tmemcpy(dest, replacement, replacement_length);
-					result_length += replacement_length;
+			// Calculate the actual replacement string through the callback function
+			if (callback_obj)
+			{
+				if (second_iteration)
+				{
+					tmemcpy(dest, replacement, result_token.marker_length);
+					result_length += result_token.marker_length;
+					free(result_token.mem_to_free);
+					result_token.mem_to_free = nullptr;
 				}
-				else {
-					IObject* match_object;
-					if (!RegExCreateMatchArray(aHaystack, aRE, aExtra, aOffset, ((RegExCalloutData*)aExtra->callout_data)->pattern_count, captured_pattern_count, match_object)) {
-						aResultToken.MemoryError();
-						return;
-					}
-					param.SetValue(match_object);
+				else
+				{
+					if (!RegExCreateMatchArray(aHaystack, aRE, aExtra, aOffset, static_cast<RegExCalloutData *>(aExtra->callout_data)->pattern_count, captured_pattern_count, matchobj_token.object))
+						goto out_of_mem;
 					result_token.SetValue(_T(""));
-					obj->Invoke(result_token, IT_CALL, nullptr, obj_token, &params, 1);
-					replacement = TokenToString(result_token, repl_buf, &replacement_length);
-					new_result_length += (int)replacement_length;
+					callback_obj->Invoke(result_token, IT_CALL, nullptr, ExprTokenType{ callback_obj }, &params, 1);
+					matchobj_token.object->Release();
+					if (g->ThrownToken)
+					{
+						// Objects that inherit from Error are not handled, and the replacement is interrupted.
+						// The behavior when a value is thrown is similar to the return value of RegEx callout.
+						// - If the function throws 0 or non-numeric value, does not change the current substring.
+						// - If the function throws 1 or greater, matching fails at the current point.
+						// - If the function throws -1 or lesser, replacing is abandoned.
+						if (!Object::HasBase(*g->ThrownToken, ErrorPrototype::Error))
+						{
+							auto code = TokenToInt64(*g->ThrownToken);
+							Script::FreeExceptionToken(g->ThrownToken);
+							result_token.SetResult(OK);
+							if (code < 0)
+							{
+								limit = 0;
+								--replacement_count;
+								match_end_offset = aStartingOffset;
+								break;
+							}
+							if (code > 0)
+							{
+								++limit;
+								--replacement_count;
+								result_token.marker_length = 1;
+							}
+							else
+								result_token.marker_length = aOffset[1] - aOffset[0];
+							new_result_length += int(result_token.marker_length);
+							replacement = match_pos;
+							continue;
+						}
+					}
+					else if (result_token.symbol == SYM_OBJECT)
+					{
+						auto obj = result_token.object;
+						result_token.SetValue(_T(""));
+						ObjectToString(result_token, ExprTokenType{ obj }, obj);
+						obj->Release();
+					}
+					if (result_token.Exited())
+					{
+						if (g->ThrownToken && !(prev_excpt & EXCPTMODE_CATCH))
+						{
+							g_script->UnhandledException(g_script->mCurrLine);
+							Script::FreeExceptionToken(g->ThrownToken);
+						}
+						aResultToken.SetExitResult(result_token.Result());
+						goto abort;
+					}
+					replacement = TokenToString(result_token, repl_buf, &result_token.marker_length);
+					new_result_length += (int)result_token.marker_length;
 				}
 				continue;
 			}
@@ -975,7 +1035,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 				extra_offset = 0; // Set default. Indicate that there's no need to hop over an extra character.
 				if (char_after_dollar = src[1]) // This check avoids calling ctoupper on '\0', which directly or indirectly causes an assertion error in CRT.
 				{
-					switch(char_after_dollar = ctoupper(char_after_dollar))
+					switch (char_after_dollar = ctoupper(char_after_dollar))
 					{
 					case 'U':
 					case 'L':
@@ -984,7 +1044,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 						extra_offset = 1;
 						char_after_dollar = src[2]; // Ignore the transform character for the purposes of backreference recognition further below.
 						break;
-					//else leave things at their defaults.
+						//else leave things at their defaults.
 					}
 				}
 				//else leave things at their defaults.
@@ -1052,8 +1112,8 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					// copied over literally.  So that would have to be checked for if this is changed.
 					if (ref_num >= 0 && ref_num < captured_pattern_count) // Treat ref_num==0 as reference to the entire-pattern's match.
 					{
-						int ref_num0 = aOffset[ref_num*2];
-						int ref_num1 = aOffset[ref_num*2 + 1];
+						int ref_num0 = aOffset[ref_num * 2];
+						int ref_num1 = aOffset[ref_num * 2 + 1];
 						match_length = ref_num1 - ref_num0;
 						if (match_length)
 						{
@@ -1063,7 +1123,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 								if (transform)
 								{
 									dest[match_length] = '\0'; // Terminate for use below (shouldn't cause overflow because REALLOC reserved space for terminator; nor should there be any need to undo the termination afterward).
-									switch(transform)
+									switch (transform)
 									{
 									case 'U': CharUpper(dest); break;
 									case 'L': CharLower(dest); break;
@@ -1121,7 +1181,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		// PCRE_NOTEMPTY-mode for one extra iteration.  Otherwise there are too few replacements (4 vs. 5)
 		// in examples like:
 		//    RegExReplace("ABC", "Z*|A", "x")
-		empty_string_is_not_a_match = (aOffset[0] == aOffset[1]) ? PCRE_NOTEMPTY|PCRE_ANCHORED : 0;
+		empty_string_is_not_a_match = (aOffset[0] == aOffset[1]) ? PCRE_NOTEMPTY | PCRE_ANCHORED : 0;
 		aStartingOffset = match_end_offset; // In either case, set starting offset to the candidate for the next search.
 	} // for()
 
@@ -1137,6 +1197,8 @@ abort:
 	}
 	// Now fall through to below so that count is set even for out-of-memory error.
 set_count_and_return:
+	free(result_token.mem_to_free);
+	g->ExcptMode = prev_excpt;
 	if (output_var_count)
 		output_var_count->Assign(replacement_count); // v1.0.47.05: Must be done last in case output_var_count shares the same memory with haystack, needle, or replacement.
 }

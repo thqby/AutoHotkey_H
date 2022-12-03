@@ -4,7 +4,8 @@
 #include "script_com.h"
 #include "exports.h"
 #include <process.h>  // NewThread
-#include "LiteZip.h"  // crc32
+#include "LiteZip.h"  // crc32"
+#include "MdFunc.h"
 
 // Following macros are used in addScript and ahkExec
 // HotExpr code from LoadFromFile, Hotkeys need to be toggled to get activated
@@ -652,8 +653,6 @@ EXPORT DWORD NewThread(LPTSTR aScript, LPTSTR aCmdLine, LPTSTR aTitle) // HotKey
 
 IAhkApi IAhkApi::instance;
 thread_local Object* IAhkApi::sObject[(int)ObjectType::MAXINDEX] = {};
-thread_local Object* IAhkApi::sFuncPrototype = nullptr;
-thread_local void* IAhkApi::sMemToFree = nullptr;
 thread_local int IAhkApi::sInit = 0;
 
 IAhkApi::Prototype::~Prototype() { if (OnDispose) OnDispose(); }
@@ -722,16 +721,6 @@ IAhkApi* IAhkApi::Initialize() {
 		instance.sObject[(int)ObjectType::UObject] = g_script->FindGlobalFunc(_T("UObject"));
 		instance.sObject[(int)ObjectType::UArray] = g_script->FindGlobalFunc(_T("UArray"));
 		instance.sObject[(int)ObjectType::UMap] = g_script->FindGlobalFunc(_T("UMap"));
-		sFuncPrototype = Object::CreatePrototype(_T("NativeFunc"), Func::sPrototype);
-		auto __del = new BuiltInFunc(_T("NativeFunc.Prototype.__Delete"), [](BIF_DECL_PARAMS) {
-			if (auto obj = dynamic_cast<NativeFunc*>(TokenToObject(*aParam[0]))) {
-				free(sMemToFree);
-				sMemToFree = obj;
-			}
-			else _f_throw_param(0);
-			}, 1, 1);
-		sFuncPrototype->DefineMethod(_T("__Delete"), __del);
-		__del->Release();
 		instance.sInit = 1 | fg;
 #undef GETAHKOBJECT
 	}
@@ -739,10 +728,6 @@ IAhkApi* IAhkApi::Initialize() {
 }
 
 void IAhkApi::Finalize() {
-	if (sFuncPrototype)
-		sFuncPrototype->Release(), sFuncPrototype = nullptr;
-	if (sMemToFree)
-		free(sMemToFree), sMemToFree = nullptr;
 	memset(sObject, 0, sizeof(sObject));
 	sInit = 0;
 }
@@ -850,37 +835,41 @@ bool STDMETHODCALLTYPE IAhkApi::Script_SetVar(LPTSTR aVarName, ExprTokenType& aV
 }
 
 Func* STDMETHODCALLTYPE IAhkApi::Func_New(FuncEntry& aBIF) {
-	BuiltInFunc tmp(aBIF);
-	auto size = (_tcslen(aBIF.mName) + 1) * sizeof(TCHAR);
 	HMODULE mod = nullptr;
-	if (tmp.mOutputVars && !GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)&aBIF, &mod))
-		size += MAX_FUNC_OUTPUT_VAR;
-	auto func = (BuiltInFunc*)malloc(sizeof(BuiltInFunc) + size);
+	size_t sz_name, sz_out;
+	if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, aBIF.mName, &mod))
+		sz_name = (_tcslen(aBIF.mName) + 1) * sizeof(TCHAR);
+	else sz_name = 0;
+	if (aBIF.mOutputVars && !GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)&aBIF, &mod))
+		sz_out = MAX_FUNC_OUTPUT_VAR;
+	else sz_out = 0;
+	auto func = ::new(malloc(sizeof(BuiltInFunc) + sz_name + sz_out)) BuiltInFunc(aBIF);
 	if (!func) return nullptr;
-	memcpy(func, &tmp, sizeof(BuiltInFunc));
-	if (func->mOutputVars && !mod) {
-		func->mOutputVars = (UCHAR*)func + sizeof(BuiltInFunc);
+	func->MarkNeedFree();
+	if (sz_out) {
+		func->mOutputVars = (UCHAR *)func + sizeof(BuiltInFunc);
 		memcpy(func->mOutputVars, aBIF.mOutputVars, MAX_FUNC_OUTPUT_VAR);
-		func->mName = (LPCTSTR)(func->mOutputVars + MAX_FUNC_OUTPUT_VAR);
-		size -= MAX_FUNC_OUTPUT_VAR;
 	}
-	else func->mName = (LPCTSTR)((UCHAR*)func + sizeof(BuiltInFunc));
-	memcpy((void*)func->mName, aBIF.mName, size);
-	tmp.Base()->AddRef();
-	func->SetBase(IAhkApi::sFuncPrototype);
+	if (sz_name) {
+		func->mName = (LPCTSTR)((char *)func + sizeof(BuiltInFunc) + sz_out);
+		memcpy((void *)func->mName, aBIF.mName, sz_name);
+	}
 	return func;
 }
 
 Func* STDMETHODCALLTYPE IAhkApi::Method_New(LPTSTR aFullName, ObjectMember& aMember, Object* aPrototype) {
-	BuiltInMethod tmp(aFullName);
-	auto size = (_tcslen(aFullName) + 1) * sizeof(TCHAR);
-	auto func = (BuiltInMethod*)malloc(sizeof(BuiltInMethod) + size);
+	HMODULE mod = nullptr;
+	size_t sz_name;
+	if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, aFullName, &mod))
+		sz_name = (_tcslen(aFullName) + 1) * sizeof(TCHAR);
+	else sz_name = 0;
+	auto func = ::new (malloc(sizeof(BuiltInMethod) + sz_name)) BuiltInMethod(aFullName);
 	if (!func) return nullptr;
-	memcpy(func, &tmp, sizeof(BuiltInMethod));
-	func->mName = (LPCTSTR)((char*)func + sizeof(BuiltInMethod));
-	memcpy((void*)func->mName, aFullName, size);
-	tmp.Base()->AddRef();
-	func->SetBase(IAhkApi::sFuncPrototype);
+	func->MarkNeedFree();
+	if (sz_name) {
+		func->mName = (LPCTSTR)((char *)func + sizeof(BuiltInMethod));
+		memcpy((void *)func->mName, aFullName, sz_name);
+	}
 	func->mMID = aMember.id;
 	func->mClass = aPrototype;
 	func->mBIM = aMember.method;
@@ -1149,6 +1138,34 @@ void STDMETHODCALLTYPE IAhkApi::PumpMessages() {
 			MsgSleep(SLEEP_INTERVAL, WAIT_FOR_MESSAGES);
 		g_script->TerminateApp(EXIT_EXIT, g_ExitCode = 0);
 	}
+}
+
+Func *STDMETHODCALLTYPE IAhkApi::MdFunc_New(LPCTSTR aName, void *aFuncPtr, MdType *aSig, Object *aPrototype) {
+	HMODULE mod = nullptr;
+	size_t sz_name, sz_sig;
+	UINT ac = 0;
+	for (auto sig = aSig + 1; sig[ac] != MdType::Void; ++ac);
+	if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, aName, &mod))
+		sz_name = (_tcslen(aName) + 1) * sizeof(TCHAR);
+	else sz_name = 0;
+	if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCTSTR)aSig, &mod))
+		sz_sig = ac;
+	else sz_sig = 0;
+	auto p = (char *)malloc(sizeof(MdFunc) + sz_name + sz_sig);
+	if (!p) return nullptr;
+	if (sz_name) {
+		auto t = p + sizeof(MdFunc);
+		memcpy(t, aName, sz_name);
+		aName = (LPCTSTR)t;
+	}
+	auto arg = aSig + 1;
+	if (sz_sig) {
+		arg = (MdType*)(p + sizeof(MdFunc) + sz_name);
+		memcpy(arg, aSig + 1, sz_sig);
+	}
+	auto func = ::new(p) MdFunc(aName, aFuncPtr, aSig[0], arg, ac, aPrototype);
+	func->MarkNeedFree();
+	return func;
 }
 
 

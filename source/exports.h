@@ -116,11 +116,10 @@ public:
 
 	virtual void STDMETHODCALLTYPE PumpMessages();
 
+	virtual Func *STDMETHODCALLTYPE MdFunc_New(LPCTSTR aName, void* aFuncPtr, MdType* aSig, Object *aPrototype = nullptr);
 
 private:
-	thread_local static Object* sFuncPrototype;
 	thread_local static Object* sObject[(int)ObjectType::MAXINDEX];
-	thread_local static void* sMemToFree;
 	thread_local static int sInit;
 	static IAhkApi instance;
 	IAhkApi() {};

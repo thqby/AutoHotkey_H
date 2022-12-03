@@ -1753,6 +1753,10 @@ class DECLSPEC_NOVTABLE NativeFunc : public Func
 {
 protected:
 	NativeFunc(LPCTSTR aName) : Func(aName) {}
+	enum Flags : decltype(mFlags)
+	{
+		NeedFreeFlag = LastObjectFlag << 1
+	};
 
 public:
 	UCHAR *mOutputVars = nullptr; // String of indices indicating which params are output vars.
@@ -1761,9 +1765,10 @@ public:
 
 	bool Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount) override;
 
+	void MarkNeedFree() { mFlags |= NeedFreeFlag; }
 	void *operator new(size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
 	void *operator new[](size_t aBytes) {return SimpleHeap::Alloc(aBytes);}
-	void operator delete(void *aPtr) {}
+	void operator delete(void *aPtr) { if (static_cast<NativeFunc*>(aPtr)->mFlags & NeedFreeFlag) free(aPtr); }
 	void operator delete[](void *aPtr) {}
 };
 

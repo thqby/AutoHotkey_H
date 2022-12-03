@@ -1780,7 +1780,7 @@ LineNumberType Script::LoadFromText(LPTSTR aScript, LPCTSTR aPathToShow)
 // HotKeyIt H1 LoadFromText() for text instead LoadFromFile()
 // Returns the number of non-comment lines that were loaded, or LOADING_FAILED on error.
 {
-	mIsReadyToExecute = mAutoExecSectionIsRunning = false;
+	mIsReadyToExecute = false;
 
 	// L4: Changed this next section to support lines added for #if (expression).
 	// Each #if (expression) is pre-parsed *before* the main script in order for
@@ -2006,7 +2006,7 @@ void Script::TerminateApp(ExitReasons aExitReason, int aExitCode)
 UINT Script::LoadFromFile(LPCTSTR aFileSpec)
 // Returns the number of non-comment lines that were loaded, or LOADING_FAILED on error.
 {
-	mIsReadyToExecute = mAutoExecSectionIsRunning = false;
+	mIsReadyToExecute = false;
 	if (!aFileSpec && !g_hResource)
 		aFileSpec = mFileSpec;
 
