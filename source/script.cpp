@@ -1874,7 +1874,7 @@ void ReleaseStaticVarObjects(FuncList &aFuncs)
 {
 	for (int i = 0; i < aFuncs.mCount; ++i)
 	{
-		ASSERT(!aFuncs.mItem[i]->IsBuiltIn());
+		ASSERT(dynamic_cast<UserFunc*>(aFuncs.mItem[i]));
 		auto &f = *(UserFunc *)aFuncs.mItem[i];
 		// Since it doesn't seem feasible to release all var backups created by recursive function
 		// calls and all tokens in the 'stack' of each currently executing expression, currently
@@ -4744,7 +4744,6 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		if (!parameter)
 			return ScriptError(ERR_PARAM1_REQUIRED);
 
-		bool show_autohotkey_version = false;
 		if (!_tcsnicmp(parameter, _T("AutoHotkey"), 10))
 		{
 			if (!parameter[10]) // Just #requires AutoHotkey; would seem silly to warn the user in this case.
@@ -4752,19 +4751,30 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 
 			if (IS_SPACE_OR_TAB(parameter[10]))
 			{
-				auto cp = omit_leading_whitespace(parameter + 11);
-				if (*cp == 'v')
-					++cp;
-				if (cp[0] == T_AHK_VERSION[0] && _tcschr(_T(".-+"), cp[1]) // Major version matches.
-					&& CompareVersion(cp, T_AHK_VERSION) <= 0) // Required minor and patch versions <= A_AhkVersion (also taking into account any pre-release suffix).
-					return CONDITION_TRUE;
-				show_autohotkey_version = true;
+				TCHAR word[32];
+				for (LPCTSTR end, cp = parameter + 11; ; cp = end)
+				{
+					cp = omit_leading_whitespace(cp);
+					if (!*cp)
+						return CONDITION_TRUE;
+					
+					for (end = cp; *end && !IS_SPACE_OR_TAB(*end); ++end);
+					tcslcpy(word, cp, min(_countof(word), end - cp + 1));
+
+					// Allow these words when appropriate: 32-bit, 64-bit
+					if (!_tcsicmp(word, _T(AHK_BIT)))
+						continue;
+
+					// It's either an unment requirement or a version number.
+					if (VersionSatisfies(T_AHK_VERSION, word))
+						continue;
+
+					break;
+				}
 			}
 		}
-		TCHAR buf[100];
-		sntprintf(buf, _countof(buf), _T("This script requires %s%s%s.")
-			, parameter, show_autohotkey_version ? _T(", but you have v") : _T(""), show_autohotkey_version ? T_AHK_VERSION : _T(""));
-		return ScriptError(buf);
+		// Unmet or unrecognized requirement.
+		return RequirementError(parameter);
 #endif
 	}
 
@@ -4824,6 +4834,16 @@ ResultType Script::ConvertDirectiveBool(LPTSTR aBuf, bool &aResult, bool aDefaul
 	else
 		return FAIL;
 	return OK;
+}
+
+
+
+ResultType Script::RequirementError(LPCTSTR aRequirement)
+{
+	TCHAR buf[512];
+	sntprintf(buf, _countof(buf), _T("This script requires %s.\n\nCurrent interpreter: %s v%s %s\n%s")
+		, aRequirement, T_AHK_NAME, T_AHK_VERSION, _T(AHK_BIT), mOurEXE);
+	return ScriptError(buf);
 }
 
 
@@ -8532,7 +8552,7 @@ ResultType Script::PreparseExpressions(FuncList &aFuncs)
 {
 	for (int i = 0; i < aFuncs.mCount; ++i)
 	{
-		ASSERT(!aFuncs.mItem[i]->IsBuiltIn());
+		ASSERT(dynamic_cast<UserFunc*>(aFuncs.mItem[i]));
 		auto &func = *(UserFunc *)aFuncs.mItem[i];
 		if (func.mPreprocessLocalVarsDone)
 			continue;
@@ -10485,18 +10505,14 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 			if (stack_count < 0)
 				return LineError(ERR_EXPR_SYNTAX);
 			Func *func = nullptr;
-			ExprTokenType *func_op = nullptr;
 			if (this_postfix->callsite->func)
-				func = dynamic_cast<Func*>(this_postfix->callsite->func);
+				func = this_postfix->callsite->func;
 			else
 			{
 				if (stack_count < 1)
 					return LineError(ERR_EXPR_SYNTAX);
-				func_op = stack[--stack_count];
-				if (func_op->symbol == SYM_VAR && func_op->var->HasObject())
-					func = dynamic_cast<Func*>(func_op->var->Object());
-				else if (func_op->symbol == SYM_OBJECT)
-					func = dynamic_cast<Func*>(func_op->object);
+				auto func_op = stack[--stack_count];
+				func = dynamic_cast<Func*>(TokenToObject(*func_op));
 			}
 			if (this_postfix->callsite->flags & EIF_LEAVE_PARAMS)
 				stack_count = prev_stack_count;
@@ -10509,7 +10525,8 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 				if (param_count > func->mParamCount && !func->mIsVariadic)
 					return LineError(ERR_TOO_MANY_PARAMS, FAIL, func->mName);
 
-				auto *bif = func && func->IsBuiltIn() ? ((BuiltInFunc *)func)->mBIF : nullptr;
+				auto func_as_bif = dynamic_cast<BuiltInFunc*>(func);
+				auto *bif = func_as_bif ? func_as_bif->mBIF : nullptr;
 
 				for (int i = 0; i < param_count; ++i)
 				{
@@ -11377,9 +11394,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			}
 
 			// Throw the newly-created token
-			g.ThrownToken = token;
-			if (!(g.ExcptMode & EXCPTMODE_CATCH))
-				g_script->UnhandledException(line);
+			line->SetThrownToken(g, token);
 			return FAIL;
 		}
 
@@ -13160,7 +13175,7 @@ ResultType Script::PreprocessLocalVars(FuncList &aFuncs)
 {
 	for (int i = 0; i < aFuncs.mCount; ++i)
 	{
-		ASSERT(!aFuncs.mItem[i]->IsBuiltIn());
+		ASSERT(dynamic_cast<UserFunc*>(aFuncs.mItem[i]));
 		auto &func = *(UserFunc *)aFuncs.mItem[i];
 		if (func.mPreprocessLocalVarsDone)
 			continue;

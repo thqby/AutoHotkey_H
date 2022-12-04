@@ -28,7 +28,7 @@ GNU General Public License for more details.
 #else
 #pragma comment(lib, "D:/Program Files/Visual Leak Detector/lib/Win32/vld.lib")
 #endif // _WIN64
-#include <vld.h>	// find memory leaks
+#include "D:/Program Files/Visual Leak Detector/include/vld.h"	// find memory leaks
 #endif
 
 #ifdef ENABLE_TLS_CALLBACK

@@ -773,6 +773,7 @@ HICON ExtractIconFromExecutable(LPCTSTR aFilespec, int aIconNumber, int aWidth, 
 
 PWSTR GetDocumentsFolder();
 
+int VersionSatisfies(LPCTSTR v, LPCTSTR r, bool aThreeWayDefault = false);
 int CompareVersion(LPCTSTR a, LPCTSTR b);
 
 BOOLEAN __stdcall GenRandom(PVOID RandomBuffer, ULONG RandomBufferLength);

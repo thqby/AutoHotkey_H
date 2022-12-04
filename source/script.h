@@ -1262,7 +1262,8 @@ public:
 	ResultType LineError(LPCTSTR aErrorText, ResultType aErrorType = FAIL, LPCTSTR aExtraInfo = _T(""));
 	IObject *CreateRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo, Object *aPrototype);
 	ResultType ThrowRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo = _T(""));
-	
+	void SetThrownToken(global_struct &g, ResultToken *aToken);
+
 	ResultType ValidateVarUsage(Var *aVar, int aUsage);
 	ResultType VarIsReadOnlyError(Var *aVar, int aErrorType);
 	ResultType LineUnexpectedError();
@@ -1743,7 +1744,7 @@ public:
 	static BoundFunc *Bind(IObject *aFunc, int aFlags, LPCTSTR aMember, ExprTokenType **aParam, int aParamCount);
 	~BoundFunc();
 	
-	bool IsBuiltIn() override { return true; }
+	bool IsBuiltIn() override { return false; }
 	bool ArgIsOutputVar(int aArg) override { return false; }
 	bool Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount) override;
 };
@@ -2087,12 +2088,6 @@ public:
 	ResultType UpdateName(UserMenuItem *aMenuItem, LPCTSTR aNewName);
 	void SetItemState(UserMenuItem *aMenuItem, UINT aState, UINT aStateMask);
 	FResult SetItemState(StrArg aItemName, UINT aState, UINT aStateMask);
-	void CheckItem(UserMenuItem *aMenuItem);
-	void UncheckItem(UserMenuItem *aMenuItem);
-	void ToggleCheckItem(UserMenuItem *aMenuItem);
-	void EnableItem(UserMenuItem *aMenuItem);
-	void DisableItem(UserMenuItem *aMenuItem);
-	void ToggleEnableItem(UserMenuItem *aMenuItem);
 	void SetDefault(UserMenuItem *aMenuItem = NULL, bool aUpdateGuiMenuBars = true);
 	ResultType CreateHandle();
 	void DestroyHandle();
@@ -2906,6 +2901,7 @@ public:
 	static bool IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf);
 	ResultType IsDirective(LPTSTR aBuf);
 	ResultType ConvertDirectiveBool(LPTSTR aBuf, bool &aResult, bool aDefault);
+	ResultType RequirementError(LPCTSTR aRequirement);
 	ResultType ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType = ACT_INVALID
 		, LPTSTR aLiteralMap = NULL, size_t aLiteralMapLength = 0);
 	ResultType ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDeref, int *aPos = NULL, TCHAR aEndChar = 0);

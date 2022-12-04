@@ -1642,7 +1642,7 @@ void Object::GetOwnPropDesc(ResultToken &aResultToken, int aID, int aFlags, Expr
 	if (!field)
 		_o__ret(aResultToken.UnknownMemberError(ExprTokenType(this), IT_GET, name));
 	auto desc = Object::Create();
-	desc->SetInternalCapacity(1 + (field->symbol == SYM_DYNAMIC));
+	desc->SetInternalCapacity(field->symbol == SYM_DYNAMIC ? 3 : 1);
 	if (field->symbol == SYM_DYNAMIC)
 	{
 		if (auto getter = field->prop->Getter()) desc->SetOwnProp(_T("Get"), getter);
@@ -1948,7 +1948,7 @@ ResultType Array::SetCapacity(index_t aNewCapacity)
 	if (mLength > aNewCapacity)
 		RemoveAt(aNewCapacity, mLength - aNewCapacity);
 	auto new_item = (Variant *)realloc(mItem, sizeof(Variant) * aNewCapacity);
-	if (!new_item)
+	if (!new_item && aNewCapacity)
 		return FAIL;
 	mItem = new_item;
 	mCapacity = aNewCapacity;
