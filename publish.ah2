@@ -1,12 +1,12 @@
 github := GitHubRelease('thqby/AutoHotkey_H', FileRead('E:\Documents\github access token.txt'))
-tagname := 'v' ComObject('Shell.Application').NameSpace(A_ScriptDir '\bin\x64w_MT').ParseName('AutoHotkey.exe').ExtendedProperty('ProductVersion')
-release_folder := 'bin\release'
+tagname := 'v' ComObject('Shell.Application').NameSpace(A_ScriptDir '\bin').ParseName('AutoHotkey64.exe').ExtendedProperty('ProductVersion')
+SetWorkingDir(A_ScriptDir '\bin')
 
 if (!A_Args.Length) {
 	pack()
 
 	r := github.create(tagname)
-	if !(r := github.upload_asset(tagname, release_folder '\' tagname '.7z', tagname '.7z')).Has('id')
+	if !(r := github.upload_asset(tagname, tagname '.7z', tagname '.7z')).Has('id')
 		throw JSON.stringify(r)
 } else {
 	switch A_Args[1] {
@@ -23,15 +23,7 @@ if (!A_Args.Length) {
 }
 
 pack() {
-	SetWorkingDir(A_ScriptDir)
-	DirCreate(release_folder)
-	FileDelete(release_folder '\*.*')
-	try FileCopy('bin\Win32w_MT\AutoHotkey.exe', release_folder '\AutoHotkey32.exe', true)
-	try FileCopy('bin\Win32w_MT\AutoHotkey.dll', release_folder '\AutoHotkey32.dll', true)
-	try FileCopy('bin\x64w_MT\AutoHotkey.exe', release_folder '\AutoHotkey64.exe', true)
-	try FileCopy('bin\x64w_MT\AutoHotkey.dll', release_folder '\AutoHotkey64.dll', true)
-	try FileCopy('source\ahkapi.h', release_folder '\ahkapi.h', true)
-	RunWait('"C:\Program Files\7-Zip\7z.exe" a -mx9 ' tagname '.7z autohotkey*', release_folder, 'hide')
+	RunWait('"C:\Program Files\7-Zip\7z.exe" a -mx9 ' tagname '.7z autohotkey*.exe autohotkey*.dll',, 'hide')
 }
 
 class GitHubRelease {
