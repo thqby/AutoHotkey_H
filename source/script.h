@@ -1262,7 +1262,7 @@ public:
 	ResultType LineError(LPCTSTR aErrorText, ResultType aErrorType = FAIL, LPCTSTR aExtraInfo = _T(""));
 	IObject *CreateRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo, Object *aPrototype);
 	ResultType ThrowRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo = _T(""));
-	void SetThrownToken(global_struct &g, ResultToken *aToken);
+	ResultType SetThrownToken(global_struct &g, ResultToken *aToken, ResultType aErrorType = FAIL);
 
 	ResultType ValidateVarUsage(Var *aVar, int aUsage);
 	ResultType VarIsReadOnlyError(Var *aVar, int aErrorType);
@@ -1328,7 +1328,7 @@ public:
 	IObjectPtr() : mObject(NULL) {}
 	IObjectPtr(IObject *object) : mObject(object) {}
 	ResultType ExecuteInNewThread(TCHAR *aNewThreadDesc
-		, ExprTokenType *aParamValue = NULL, int aParamCount = 0, __int64 *aRetVal = NULL) const;
+		, ExprTokenType *aParamValue = NULL, int aParamCount = 0, bool aReturnBoolean = false) const;
 	const IObjectPtr* operator-> () { return this; } // Act like a pointer.
 	operator void *() const { return mObject; } // For comparisons and boolean eval.
 
@@ -3436,7 +3436,7 @@ FResult FValueError(LPCTSTR aErrorText, LPCTSTR aExtraInfo = _T(""));
 FResult FTypeError(LPCTSTR aExpectedType, ExprTokenType &aActualValue);
 FResult FParamError(int aIndex, ExprTokenType *aParam, LPCTSTR aExpectedType = nullptr);
 
-ResultType FResultToError(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, FResult aResult);
+ResultType FResultToError(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, FResult aResult, int aFirstParam);
 
 void PauseCurrentThread();
 void ToggleSuspendState();

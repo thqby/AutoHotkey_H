@@ -10,9 +10,7 @@
 /source/ComServer_h.h
 /.vs
 /.vscode
-/bin
-/bin_debug
-/bin_minimal
+/bin*/
 /ipch
 /temp
 /test

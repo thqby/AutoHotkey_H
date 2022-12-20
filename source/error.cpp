@@ -123,7 +123,7 @@ ResultType Script::ThrowRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo
 		token->symbol = SYM_OBJECT;
 		token->mem_to_free = NULL;
 
-		aLine->SetThrownToken(*g, token);
+		return aLine->SetThrownToken(*g, token, aErrorType);
 	}
 
 	// Returning FAIL causes each caller to also return FAIL, until either the
@@ -137,7 +137,7 @@ ResultType Script::ThrowRuntimeException(LPCTSTR aErrorText, LPCTSTR aExtraInfo)
 }
 
 
-void Line::SetThrownToken(global_struct &g, ResultToken *aToken)
+ResultType Line::SetThrownToken(global_struct &g, ResultToken *aToken, ResultType aErrorType)
 {
 #ifdef CONFIG_DEBUGGER
 	if (g_Debugger->IsConnected())
@@ -146,11 +146,12 @@ void Line::SetThrownToken(global_struct &g, ResultToken *aToken)
 			// chance to inspect the exception and report it.  There's nothing in the DBGp
 			// spec about what to do next, probably since PHP would just log the error.
 			// In our case, it seems more useful to suppress the dialog than to show it.
-			return;
+			return FAIL;
 #endif
 	g.ThrownToken = aToken;
 	if (!(g.ExcptMode & EXCPTMODE_CATCH))
-		g_script->UnhandledException(this);
+		return g_script->UnhandledException(this, aErrorType); // Usually returns FAIL; may return OK if aErrorType == FAIL_OR_OK.
+	return FAIL;
 }
 
 
@@ -247,7 +248,7 @@ ResultType Script::RuntimeError(LPCTSTR aErrorText, LPCTSTR aExtraInfo, ResultTy
 #ifdef CONFIG_DEBUGGER
 		|| g_Debugger->BreakOnExceptionIsEnabled()
 #endif
-		|| aPrototype && aPrototype->HasOwnProps()) && aErrorType != WARN)
+		|| aPrototype) && aErrorType != WARN)
 		return ThrowRuntimeException(aErrorText, aExtraInfo, aLine, aErrorType, aPrototype);
 
 	return ShowError(aErrorText, aErrorType, aExtraInfo, aLine);
@@ -991,7 +992,7 @@ FResult FParamError(int aIndex, ExprTokenType *aParam, LPCTSTR aExpectedType)
 
 
 
-ResultType FResultToError(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, FResult aResult)
+ResultType FResultToError(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, FResult aResult, int aFirstParam)
 {
 	if (aResult & FR_OUR_FLAG)
 	{
@@ -1008,7 +1009,7 @@ ResultType FResultToError(ResultToken &aResultToken, ExprTokenType *aParam[], in
 			ASSERT(!code);
 			return aResultToken.SetExitResult(FAIL);
 		case FR_FACILITY_ARG:
-			return aResultToken.ParamError(code, code < aParamCount ? aParam[code] : nullptr);
+			return aResultToken.ParamError(code, code + aFirstParam < aParamCount ? aParam[code + aFirstParam] : nullptr);
 		case FACILITY_WIN32:
 			if (!code)
 				code = GetLastError();

@@ -875,13 +875,13 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 	// It also provides more consistency.
 	aScriptFilename = buf;
 #else
-	TCHAR def_buf[513]; // Enough for max Documents path (256 chars, according to testing on 20H2), slash and max NTFS filename (255 chars).
 	if (g_hResource)
 		mKind = Script::ScriptKindResource, g_AllowMainWindow = false;
-	if (!aScriptFilename) // v1.0.46.08: Change in policy: store the default script in the My Documents directory rather than in Program Files.  It's more correct and solves issues that occur due to Vista's file-protection scheme.
+	if (!aScriptFilename)
 	{
-		// Since no script-file was specified on the command line, use the default name.
-		// For portability, first check if there's an <EXENAME>.ahk file in the current directory.
+		// Since no script-file was specified on the command line, use the default path,
+		// <EXEDIR>\<EXENAME>.ahk.  This is intended for portable copies of AutoHotkey.
+		// Users of a proper AutoHotkey installation should open .ahk files directly.
 		LPTSTR suffix, dot;
 		if (  (suffix = _tcsrchr(buf, '\\')) // Find name part of path.
 			&& (dot = _tcsrchr(suffix, '.')) // Find extension part of name.
@@ -893,33 +893,6 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 			return FAIL;
 
 		aScriptFilename = buf; // Use the entire path, including the exe's directory.
-		if (!g_hResource && GetFileAttributes(aScriptFilename) == 0xFFFFFFFF) // File doesn't exist, so fall back to new method.
-		{
-			// The only known cause of failure for SHGetKnownFolderPath is having a path longer than
-			// 256 characters; i.e. by sabotaging the "...\User Shell Folders\Personal" registry value.
-			// It's very unlikely to happen naturally, so just permit _sntprintf to print "(null)".
-			PWSTR docs_path = GetDocumentsFolder();
-			auto len = _sntprintf(def_buf, _countof(def_buf), _T("%ws%s"), docs_path, suffix);
-			CoTaskMemFree(docs_path); // NULL is OK here too (but abnormal).
-			// def_buf allows for the maximum length docs_path (according to testing) and maximum length suffix
-			// (based on file system limitation of <= 255 characters per name, not path), but check overflow in
-			// case any of these limits ever change:
-			if (len < 0 || len >= _countof(def_buf))
-				return FAIL; // Probably impossible, and definitely abnormal, so for code size just silently exit.
-			aScriptFilename = def_buf;
-			if (GetFileAttributes(aScriptFilename) == 0xFFFFFFFF)
-			{
-				SetCurrentDirectory(mOurEXEDir);
-				if (GetFileAttributes(AHK_HELP_FILE) != 0xFFFFFFFF) // Avoids hh.exe showing an error message if the file doesn't exist.
-				{
-					if (ActionExec(_T("hh.exe"), _T("\"ms-its:") AHK_HELP_FILE _T("::/docs/Welcome.htm\""), nullptr, false, _T("Max")))
-						return FAIL; // Help file launched, so exit the program.
-				}
-				// Since above didn't return, the help file is missing or failed to launch,
-				// so continue on and let the missing script file be reported as an error.
-			}
-		}
-		//else since the file exists, everything is now set up right. (The file might be a directory, but that isn't checked due to rarity.)
 	}
 	if (g_hResource) //It is a compiled exe
 	{
@@ -8342,11 +8315,8 @@ void Script::CountNestedFuncRefs(UserFunc &aWithin, LPCTSTR aFuncName)
 
 Var *Script::AddVar(LPCTSTR aVarName, size_t aVarNameLength, VarList *aList, int aInsertPos, int aScope)
 // Returns the address of the new variable or NULL on failure.
-// Caller must ensure that g->CurrentFunc!=NULL whenever aIsLocal!=0.
 // Caller must ensure that aVarName isn't NULL and that this isn't a duplicate variable name.
 // In addition, it has provided aInsertPos, which is the insertion point so that the list stays sorted.
-// Finally, aIsLocal has been provided to indicate which list, global or local, should receive this
-// new variable, as well as the type of local variable.  (See the declaration of VAR_LOCAL etc.)
 {
 	if (aVarNameLength > MAX_VAR_NAME_LENGTH)
 	{
@@ -8361,8 +8331,6 @@ Var *Script::AddVar(LPCTSTR aVarName, size_t aVarNameLength, VarList *aList, int
 	if (*var_name && !Var::ValidateName(var_name))
 		// Above already displayed error for us.  This can happen at loadtime or runtime (e.g. StringSplit).
 		return NULL;
-
-	bool aIsLocal = (aScope & VAR_LOCAL);
 
 	if ((aScope & (VAR_LOCAL | VAR_DECLARED)) == VAR_LOCAL // This is an implicit local.
 		&& g_Warn_LocalSameAsGlobal && !mIsReadyToExecute // Not enabled at runtime because of overlap with #Warn UseUnset, and dynamic assignments in assume-local mode are less likely to be intended global.
@@ -11813,7 +11781,6 @@ ResultType HotkeyCriterion::Eval(LPTSTR aHotkeyName)
 	// See MsgSleep() for comments about the following section.
 	// Critical seems to improve reliability, either because the thread completes faster (i.e. before the timeout) or because we check for messages less often.
 	InitNewThread(0, false, true, true);
-	ResultType result;
 
 	// Let HotIf default to the criterion currently being evaluated, in case Hotkey() is called.
 	g->HotCriterion = this;
@@ -11829,11 +11796,7 @@ ResultType HotkeyCriterion::Eval(LPTSTR aHotkeyName)
 
 	// CALL THE CALLBACK
 	ExprTokenType param = aHotkeyName;
-	__int64 retval;
-	result = IObjectPtr(Callback)->ExecuteInNewThread(_T("#HotIf"), &param, 1, &retval);
-	if (result != FAIL)
-		result = retval ? CONDITION_TRUE : CONDITION_FALSE;
-	
+	auto result = IObjectPtr(Callback)->ExecuteInNewThread(_T("#HotIf"), &param, 1, true);
 
 	// The following allows the expression to set the Last Found Window for the
 	// hotkey function.
