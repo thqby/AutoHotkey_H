@@ -1074,9 +1074,10 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			{
 #define EVT_ARG_ADD(_value) gui_event_args[gui_event_arg_count++].SetValue(_value)
 
-				if (event_is_control_generated || pgui->mEventSink != pgui)
-					// Set first argument
-					EVT_ARG_ADD(event_is_control_generated ? (IObject*)pcontrol : (IObject*)pgui);
+				// The following check isn't used because a Gui with an event sink can also have events handled
+				// by unrelated function objects.  Instead, MsgMonitorList::Call adjusts parameters as needed:
+				//if (event_is_control_generated || pgui->mEventSink != pgui)
+				EVT_ARG_ADD(event_is_control_generated ? (IObject*)pcontrol : (IObject*)pgui);
 
 				switch(gui_action)
 				{
@@ -1230,10 +1231,8 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				if (gui_action == GUI_EVENT_CONTEXTMENU && pcontrol)
 				{
 					// Call the control's context menu handler, if any, omitting the "Gui" parameter
-					// for consistency with other Ctrl events (and perhaps convenience).  But don't
-					// omit the first parameter if the Gui parameter was already omitted.
-					int arg_to_omit = pgui->mEventSink != pgui ? 1 : 0;
-					result = pcontrol->events.Call(gui_event_args + arg_to_omit, gui_event_arg_count - arg_to_omit, gui_event_code, gui_event_kind, pgui);
+					// for consistency with other Ctrl events (and perhaps convenience).
+					result = pcontrol->events.Call(gui_event_args + 1, gui_event_arg_count - 1, gui_event_code, gui_event_kind, pgui);
 					if (result == EARLY_RETURN // Suppress the GUI's handler for this event, if any.
 						|| !pgui->mHwnd) // Gui was destroyed.
 					{
@@ -1948,6 +1947,7 @@ void InitNewThread(int aPriority, bool aSkipUninterruptible, bool aIncrementThre
 	if (g_script->mUninterruptibleTime && g_script->mUninterruptedLineCountMax // Both components must be non-zero to start off uninterruptible.
 		|| g.ThreadIsCritical) // v1.0.38.04.
 	{
+		g.PeekFrequency = UNINTERRUPTIBLE_PEEK_FREQUENCY; // This ensures the thread will always have a chance to call Critical() before MsgSleep() is called.
 		g.AllowThreadToBeInterrupted = false;
 		if (!g.ThreadIsCritical)
 		{
@@ -2061,10 +2061,14 @@ BOOL IsInterruptible()
 		&& (DWORD)(GetTickCount()- g->ThreadStartTime) >= (DWORD)g->UninterruptibleDuration // See big comment section above.
 		&& g->UninterruptedLineCount // In case of "Critical" on the first line.  See v2.0 comment above.
 		)
+	{
 		// Once the thread becomes interruptible by any means, g->ThreadStartTime/UninterruptibleDuration
 		// can never matter anymore because only Critical (never "Thread Interrupt") can turn off the
 		// interruptibility again, and it resets g->UninterruptibleDuration.
 		g->AllowThreadToBeInterrupted = true; // Avoids issues with 49.7 day limit of 32-bit TickCount, and also helps performance future callers of this function (they can skip most of the checking above).
+		if (!g->ThreadIsCritical)
+			g->PeekFrequency = DEFAULT_PEEK_FREQUENCY;
+	}
 	//else g->AllowThreadToBeInterrupted is already up-to-date.
 	return (BOOL)g->AllowThreadToBeInterrupted;
 }

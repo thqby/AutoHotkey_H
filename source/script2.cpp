@@ -1262,7 +1262,7 @@ bif_impl FResult ToolTip(optl<StrArg> aText, optl<int> aX, optl<int> aY, optl<in
 
 	TOOLINFO ti = { 0 };
 	ti.cbSize = sizeof(ti);
-	ti.uFlags = TTF_TRACK;
+	ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
 	ti.lpszText = const_cast<LPTSTR>(tip_text);
 	// ti.hwnd is the window to which notification messages are sent.  Set this to allow customization.
 	ti.hwnd = g_hWnd;
@@ -2532,7 +2532,7 @@ bif_impl FResult BIF_Hotkey(StrArg aName, ExprTokenType *aAction, optl<StrArg> a
 				for (HotkeyVariant* v = Hotkey::shk[i]->mFirstVariant; v; v = v->mNextVariant)
 					if (v->mHotCriterion == g->HotCriterion)
 					{
-						functor = v->mOriginalCallback.ToFunc();
+						functor = v->mOriginalCallback.ToObject();
 						goto break_twice;
 					}
 			}
@@ -2651,7 +2651,7 @@ bif_impl void Critical(optl<StrArg> aSetting, int &aRetVal)
 	// DON'T GO TOO HIGH because this setting reduces response time for ALL messages, even those that
 	// don't launch script threads (especially painting/drawing and other screen-update events).
 	// Some hardware has a tickcount granularity of 15 instead of 10, so this covers more variations.
-	DWORD peek_frequency_when_critical_is_on = 16; // Set default.  See below.
+	DWORD peek_frequency_when_critical_is_on = UNINTERRUPTIBLE_PEEK_FREQUENCY; // Set default.  See below.
 	// v1.0.48: Below supports "Critical 0" as meaning "Off" to improve compatibility with A_IsCritical.
 	// In fact, for performance, only the following are no recognized as turning on Critical:
 	//     - "On"

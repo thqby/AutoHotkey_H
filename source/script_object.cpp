@@ -1460,7 +1460,7 @@ void Map::Capacity(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 
 void Object::OwnProps(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
-	_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 1)
+	_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 0)
 		, static_cast<IndexEnumerator::Callback>(&Object::GetEnumProp)));
 }
 
@@ -1483,7 +1483,7 @@ void Object::ToJSON(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 
 void Map::__Enum(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
-	_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 1)
+	_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 0)
 		, static_cast<IndexEnumerator::Callback>(&Map::GetEnumItem)));
 }
 
@@ -2235,7 +2235,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 		_o_throw_oom;
 
 	case M___Enum:
-		_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 1)
+		_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 0)
 			, static_cast<IndexEnumerator::Callback>(&Array::GetEnumItem)));
 
 	case M_Join:
@@ -2505,7 +2505,7 @@ bool EnumBase::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 
 ResultType IndexEnumerator::Next(Var *var0, Var *var1)
 {
-	return (mObject->*mGetItem)(++mIndex, var0, var1, mParamCount);
+	return (mObject->*mGetItem)(++mIndex, var0, var1, mParamCount ? mParamCount : var1 ? 2 : 1);
 }
 
 
@@ -2601,7 +2601,7 @@ ResultType RegExMatchObject::GetEnumItem(UINT &aIndex, Var *aKey, Var *aVal, int
 		return CONDITION_FALSE;
 	// In single-var mode, return the subpattern values.
 	// Otherwise, return the subpattern names first and values second.
-	if (aVarCount < 2)
+	if (aVarCount == 1)
 	{
 		aVal = aKey;
 		aKey = nullptr;
@@ -3215,7 +3215,12 @@ ResultType MsgMonitorList::Call(ExprTokenType *aParamValue, int aParamCount, UIN
 		// Set last found window (as documented).
 		g->hWndLastUsed = aGui->mHwnd;
 		
-		result = CallMethod(func, func, method_name, aParamValue, aParamCount, &retval);
+		// If we're about to call a method of the Gui itself, don't pass the Gui as the first parameter
+		// since it will be in `this`.  Doing this here rather than when the parameters are built ensures
+		// that message monitor functions (not methods) still receive the expected Gui parameter.
+		int skip_arg = func == aGui && mon.is_method && aParamValue->symbol == SYM_OBJECT && aParamValue->object == aGui;
+
+		result = CallMethod(func, func, method_name, aParamValue + skip_arg, aParamCount - skip_arg, &retval);
 		if (result == FAIL) // Callback encountered an error.
 			break;
 		if (result == EARLY_RETURN) // Callback returned a non-empty value.

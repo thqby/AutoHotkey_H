@@ -183,7 +183,7 @@ void RegExMatchObject::Invoke(ResultToken &aResultToken, int aID, int aFlags, Ex
 	{
 	case M_Count: _o_return(mPatternCount - 1);
 	case M_Mark: _o_return(mMark ? mMark : _T(""));
-	case M___Enum: _o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 1)
+	case M___Enum: _o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 0)
 		, static_cast<IndexEnumerator::Callback>(&RegExMatchObject::GetEnumItem)));
 	}
 
@@ -710,7 +710,6 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 	ResultToken result_token;
 	ExprTokenType matchobj_token, *params;
 	IObject *callback_obj = nullptr;
-	int prev_excpt = g->ExcptMode;
 	result_token.mem_to_free = nullptr;
 	if (!ParamIndexIsOmitted(2))
 	{
@@ -721,7 +720,6 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 			params = &matchobj_token;
 			matchobj_token.symbol = SYM_OBJECT;
 			result_token.InitResult(repl_buf);
-			g->ExcptMode |= EXCPTMODE_CATCH;
 		}
 		else
 			replacement = ParamIndexToOptionalString(2, repl_buf);
@@ -930,39 +928,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					result_token.SetValue(_T(""));
 					callback_obj->Invoke(result_token, IT_CALL, nullptr, ExprTokenType{ callback_obj }, &params, 1);
 					matchobj_token.object->Release();
-					if (g->ThrownToken)
-					{
-						// Objects that inherit from Error are not handled, and the replacement is interrupted.
-						// The behavior when a value is thrown is similar to the return value of RegEx callout.
-						// - If the function throws 0 or non-numeric value, does not change the current substring.
-						// - If the function throws 1 or greater, matching fails at the current point.
-						// - If the function throws -1 or lesser, replacing is abandoned.
-						if (!Object::HasBase(*g->ThrownToken, ErrorPrototype::Error))
-						{
-							auto code = TokenToInt64(*g->ThrownToken);
-							Script::FreeExceptionToken(g->ThrownToken);
-							result_token.SetResult(OK);
-							if (code < 0)
-							{
-								limit = 0;
-								--replacement_count;
-								match_end_offset = aStartingOffset;
-								break;
-							}
-							if (code > 0)
-							{
-								++limit;
-								--replacement_count;
-								result_token.marker_length = 1;
-							}
-							else
-								result_token.marker_length = aOffset[1] - aOffset[0];
-							new_result_length += int(result_token.marker_length);
-							replacement = match_pos;
-							continue;
-						}
-					}
-					else if (result_token.symbol == SYM_OBJECT)
+					if (result_token.symbol == SYM_OBJECT)
 					{
 						auto obj = result_token.object;
 						result_token.SetValue(_T(""));
@@ -971,11 +937,6 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					}
 					if (result_token.Exited())
 					{
-						if (g->ThrownToken && !(prev_excpt & EXCPTMODE_CATCH))
-						{
-							g_script->UnhandledException(g_script->mCurrLine);
-							Script::FreeExceptionToken(g->ThrownToken);
-						}
 						aResultToken.SetExitResult(result_token.Result());
 						goto abort;
 					}
@@ -1174,7 +1135,6 @@ abort:
 	// Now fall through to below so that count is set even for out-of-memory error.
 set_count_and_return:
 	free(result_token.mem_to_free);
-	g->ExcptMode = prev_excpt;
 	if (output_var_count)
 		output_var_count->Assign(replacement_count); // v1.0.47.05: Must be done last in case output_var_count shares the same memory with haystack, needle, or replacement.
 }

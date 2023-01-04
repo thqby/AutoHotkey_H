@@ -319,95 +319,96 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM& aDynaParam, int* aShortNameLen)
 	tcslcpy(buf, type_string, _countof(buf)); // Make a modifiable copy for easier parsing below.
 
 	if (aShortNameLen) {
-#define TEST_TYPE(t, n)  else if (!_tcsnicmp(buf, _T(t), 1)) aDynaParam.type = (n)
 		aDynaParam.is_ptr = aDynaParam.passed_by_address = false;
 		*aShortNameLen = aDynaParam.is_unsigned + 1;
-		if (!_tcsnicmp(buf, _T("I6"), 2)) aDynaParam.type = DLL_ARG_INT64, ++(*aShortNameLen);
-		TEST_TYPE("S", DLL_ARG_STR), aDynaParam.is_ptr = 1;
-#ifdef _WIN64
-		TEST_TYPE("T", DLL_ARG_INT64), aDynaParam.is_ptr = 1; // Ptr vs IntPtr to simplify recognition of the pointer suffix, to avoid any possible confusion with IntP, and because it is easier to type.
-#else
-		TEST_TYPE("T", DLL_ARG_INT), aDynaParam.is_ptr = 1;
-#endif
-		TEST_TYPE("H", DLL_ARG_SHORT);
-		TEST_TYPE("C", DLL_ARG_CHAR);
-		TEST_TYPE("I", DLL_ARG_INT);
-		TEST_TYPE("F", DLL_ARG_FLOAT);
-		TEST_TYPE("D", DLL_ARG_DOUBLE);
-		TEST_TYPE("A", DLL_ARG_ASTR), aDynaParam.is_ptr = 1;
-		TEST_TYPE("W", DLL_ARG_WSTR), aDynaParam.is_ptr = 1;
-		TEST_TYPE("O", DLL_ARG_OBJPTR), aDynaParam.is_ptr = 2;
-		else if (!aDynaParam.is_unsigned && isdigit(buf[1]) && ctoupper(*buf) == 'B') {
-			int i = 2, n = buf[1] - '0';
-			while (isdigit(buf[i])) n = n * 10 + (buf[i++] - '0');
-			if (aDynaParam.struct_size = n)
-				aDynaParam.type = DLL_ARG_STRUCT, (*aShortNameLen) += i - 1;
-			else aDynaParam.type = DLL_ARG_INVALID, * aShortNameLen = 0;
+		switch (ctolower(*buf))
+		{
+		case 'i': if (buf[1] == '6') aDynaParam.type = DLL_ARG_INT64, ++(*aShortNameLen); else aDynaParam.type = DLL_ARG_INT; break;
+		case 's': aDynaParam.type = DLL_ARG_STR, aDynaParam.is_ptr = 1; break;
+		case 'a': aDynaParam.type = DLL_ARG_ASTR, aDynaParam.is_ptr = 1; break;
+		case 'w': aDynaParam.type = DLL_ARG_WSTR, aDynaParam.is_ptr = 1; break;
+		case 'o': aDynaParam.type = DLL_ARG_OBJPTR, aDynaParam.is_ptr = 2; break;
+		case 't': aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64), aDynaParam.is_ptr = 1; break;
+		case 'c': aDynaParam.type = DLL_ARG_CHAR; break;
+		case 'h': aDynaParam.type = DLL_ARG_SHORT; break;
+		case 'f': aDynaParam.type = DLL_ARG_FLOAT; break;
+		case 'd': aDynaParam.type = DLL_ARG_DOUBLE; break;
+		case 'b':
+			if (!aDynaParam.is_unsigned && isdigit(buf[1])) {
+				int i = 2, n = buf[1] - '0';
+				while (isdigit(buf[i])) n = n * 10 + (buf[i++] - '0');
+				if (aDynaParam.struct_size = n) {
+					aDynaParam.type = DLL_ARG_STRUCT, (*aShortNameLen) += i - 1;
+					break;
+				}
+			}
+		default: aDynaParam.type = DLL_ARG_INVALID, *aShortNameLen = 0; return;
 		}
-		else {
-			aDynaParam.type = DLL_ARG_INVALID, * aShortNameLen = 0;
-			return;
-		}
-#undef TEST_TYPE
 		while (IS_SPACE_OR_TAB(aBuf[*aShortNameLen])) ++(*aShortNameLen);
 		if (aBuf[*aShortNameLen] && _tcschr(_T("*pP"), aBuf[*aShortNameLen])) {
 			++(*aShortNameLen);
 			if (aDynaParam.type == DLL_ARG_STRUCT)
-				aDynaParam.type = DLL_ARG_INVALID;
+				aDynaParam.type = DLL_ARG_INVALID, *aShortNameLen = 0;
 			else aDynaParam.passed_by_address = true;
 		}
+		return;
 	}
-	else {
-		// v1.0.30.02: The addition of 'P'.
-		// However, the current detection below relies upon the fact that none of the types currently
-		// contain the letter P anywhere in them, so it would have to be altered if that ever changes.
-		LPTSTR cp = StrChrAny(buf + 1, _T("*pP")); // Asterisk or the letter P.  Relies on the check above to ensure type_string is not empty (and buf + 1 is valid).
-		if (cp && !*omit_leading_whitespace(cp + 1)) // Additional validation: ensure nothing following the suffix.
+
+	// v1.0.30.02: The addition of 'P'.
+	// However, the current detection below relies upon the fact that none of the types currently
+	// contain the letter P anywhere in them, so it would have to be altered if that ever changes.
+	LPTSTR cp = StrChrAny(buf + 1, _T("*pP")); // Asterisk or the letter P.  Relies on the check above to ensure type_string is not empty (and buf + 1 is valid).
+	if (cp && !*omit_leading_whitespace(cp + 1)) // Additional validation: ensure nothing following the suffix.
+	{
+		aDynaParam.passed_by_address = true;
+		// Remove trailing options so that stricmp() can be used below.
+		// Allow optional space in front of asterisk (seems okay even for 'P').
+		if (IS_SPACE_OR_TAB(cp[-1]))
 		{
-			aDynaParam.passed_by_address = true;
-			// Remove trailing options so that stricmp() can be used below.
-			// Allow optional space in front of asterisk (seems okay even for 'P').
-			if (IS_SPACE_OR_TAB(cp[-1]))
-			{
-				cp = omit_trailing_whitespace(buf, cp - 1);
-				cp[1] = '\0'; // Terminate at the leftmost whitespace to remove all whitespace and the suffix.
-			}
-			else
-				*cp = '\0'; // Terminate at the suffix to remove it.
+			cp = omit_trailing_whitespace(buf, cp - 1);
+			cp[1] = '\0'; // Terminate at the leftmost whitespace to remove all whitespace and the suffix.
 		}
 		else
-			aDynaParam.passed_by_address = false;
-		aDynaParam.is_ptr = false;
-#define TEST_TYPE(t, n)  else if (!_tcsicmp(buf, _T(t)))  aDynaParam.type = (n)
-		if (false) {}
-		TEST_TYPE("Int", DLL_ARG_INT); // The few most common types are kept up top for performance.
-		TEST_TYPE("Str", DLL_ARG_STR);
-#ifdef _WIN64
-		TEST_TYPE("Ptr", DLL_ARG_INT64), aDynaParam.is_ptr = 1; // Ptr vs IntPtr to simplify recognition of the pointer suffix, to avoid any possible confusion with IntP, and because it is easier to type.
-#else
-		TEST_TYPE("Ptr", DLL_ARG_INT), aDynaParam.is_ptr = 1;
-#endif
-		TEST_TYPE("Short", DLL_ARG_SHORT);
-		TEST_TYPE("Char", DLL_ARG_CHAR);
-		TEST_TYPE("Int64", DLL_ARG_INT64);
-		TEST_TYPE("Float", DLL_ARG_FLOAT);
-		TEST_TYPE("Double", DLL_ARG_DOUBLE);
-		TEST_TYPE("AStr", DLL_ARG_ASTR);
-		TEST_TYPE("WStr", DLL_ARG_WSTR);
-#undef TEST_TYPE
-		else // It's non-blank but an unknown type.
-		{
-			int b = 0;
-			if (!aDynaParam.passed_by_address && !aDynaParam.is_unsigned && (isdigit(buf[b]) || !_tcsnicmp(buf, _T("Struct"), b = 6) && isdigit(buf[b]))) {
-				int i = b + 1, n = buf[b] - '0';
-				while (isdigit(buf[i])) n = n * 10 + (buf[i++] - '0');
-				aDynaParam.struct_size = n;
-				aDynaParam.type = n && buf[i] == 0 ? DLL_ARG_STRUCT : DLL_ARG_INVALID;
-			}
-			else aDynaParam.type = DLL_ARG_INVALID;
-		}
+			*cp = '\0'; // Terminate at the suffix to remove it.
 	}
-	return; // Since above didn't "return", the type is explicitly valid
+	else
+		aDynaParam.passed_by_address = false;
+	// Using a switch benchmarks better than the old approach, which was an if-else-if ladder
+	// of string comparisons.  The old approach appeared to penalize Int64 vs. Int, perhaps due
+	// to position in the ladder.
+	switch (ctolower(*buf))
+	{
+	case 'i':
+		// This method currently benchmarks better than _tcsnicmp, especially for Int64.
+		if (ctolower(buf[1]) == 'n' && ctolower(buf[2]) == 't')
+		{
+			if (!buf[3])
+				aDynaParam.type = DLL_ARG_INT;
+			else if (buf[3] == '6' && buf[4] == '4' && !buf[5])
+				aDynaParam.type = DLL_ARG_INT64;
+			else
+				break;
+			return;
+		}
+		break;
+	case 'p': if (!_tcsicmp(buf, _T("Ptr")))	{ aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64); return; } break;
+	case 's': if (!_tcsicmp(buf, _T("Str")))	{ aDynaParam.type = DLL_ARG_STR; return; }
+			if (!_tcsicmp(buf, _T("Short")))	{ aDynaParam.type = DLL_ARG_SHORT; return; }
+			if (!_tcsnicmp(buf, _T("Struct"), 6)) { tcslcpy(buf, buf + 6, _countof(buf) - 6); } break;
+	case 'd': if (!_tcsicmp(buf, _T("Double")))	{ aDynaParam.type = DLL_ARG_DOUBLE; return; } break;
+	case 'f': if (!_tcsicmp(buf, _T("Float")))	{ aDynaParam.type = DLL_ARG_FLOAT; return; } break;
+	case 'a': if (!_tcsicmp(buf, _T("AStr")))	{ aDynaParam.type = DLL_ARG_ASTR; return; } break;
+	case 'w': if (!_tcsicmp(buf, _T("WStr")))	{ aDynaParam.type = DLL_ARG_WSTR; return; } break;
+	case 'c': if (!_tcsicmp(buf, _T("Char")))	{ aDynaParam.type = DLL_ARG_CHAR; return; } break;
+	}
+	// Since above didn't "return", the type is invalid.
+	aDynaParam.type = DLL_ARG_INVALID;
+	if (!aDynaParam.passed_by_address && !aDynaParam.is_unsigned && isdigit(buf[0])) {
+		int i = 1, n = buf[0] - '0';
+		while (isdigit(buf[i])) n = n * 10 + (buf[i++] - '0');
+		if (n && buf[i] == 0)
+			aDynaParam.struct_size = n, aDynaParam.type = DLL_ARG_STRUCT;
+	}
 }
 
 void ConvertDllArgType(ExprTokenType& aToken, DYNAPARM& aDynaParam) {

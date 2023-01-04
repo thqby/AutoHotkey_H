@@ -4232,58 +4232,24 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 			{
 				++parameter; // Remove '<'.
 				*parameter_end = '\0'; // Remove '>'.
-				name_len = parameter_end - parameter;
+				bool error_was_shown, file_was_found;
+				// Save the working directory; see the similar line below for details.
+				LPTSTR prev_dir = GetWorkingDir();
+				// Attempt to include a script file from a Lib folder:
+				IncludeLibrary(parameter, parameter_end - parameter, error_was_shown, file_was_found);
+				// Restore the working directory.
+				if (prev_dir)
+				{
+					SetCurrentDirectory(prev_dir);
+					free(prev_dir);
+				}
+				// If any file was included, consider it a success; i.e. allow #include <lib> and #include <lib_func>.
+				if (!error_was_shown && (file_was_found || ignore_load_failure))
+					return CONDITION_TRUE;
+				*parameter_end = '>'; // Restore '>' for display to the user.
+				return error_was_shown ? FAIL : ScriptError(_T("Script library not found."), aBuf);
 			}
-		}
-
-		if (*parameter != '<' && _tcschr(parameter + 1, '|')) {
-			LineBuffer lbuf;
-			LPTSTR sep, beg, end, buf;
-			if (!DerefInclude(lbuf.p, parameter) || !(sep = _tcschr(lbuf.p + 1, '|')))
-				return FAIL;
-			buf = (LPTSTR)_alloca((90 + 2 * (sep - lbuf.p) + _tcsclen(sep + 1)) * sizeof(TCHAR));
-			for (beg = sep - 1, end = sep; beg >= lbuf.p; beg--)
-				if (*beg == '/' || *beg == '\\')
-					break;
-				else if (*beg == '.')
-					end = beg;
-			IObjPtr obj{ Object::Create() };
-			*sep = '\0';
-			auto l = _stprintf(buf, _T("#include %c%s%c\nObjFromPtrAddRef(0x%p)._:="), name_len ? '<' : ' ', lbuf.p, name_len ? '>' : ' ', obj.obj);
-			*end = '\0';
-			_stprintf(buf + l, _T("String(%s(%s))\nExitApp"), beg + 1, sep + 1);
-			LPTSTR script = NULL;
-			if (auto hThread = OpenThread(THREAD_ALL_ACCESS, TRUE, NewThread(buf))) {
-				ExprTokenType token{};
-				if (WaitForSingleObject(hThread, 5000) != WAIT_TIMEOUT && ((Object*)obj.obj)->GetOwnProp(token, _T("_")))
-					script = token.marker;
-			}
-			else return ScriptError(_T("Create thread fail."), aBuf);
-			if (script) {
-				_stprintf(buf, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, mEncrypt ? nullptr : SimpleHeap::Alloc(script), _tcslen(script) * sizeof(TCHAR));
-				return LoadIncludedText(script, buf) == OK ? CONDITION_TRUE : FAIL;
-			}
-			else return ignore_load_failure ? CONDITION_TRUE : FAIL;
-		}
-
-		if (name_len)
-		{
-			bool error_was_shown, file_was_found;
-			// Save the working directory; see the similar line below for details.
-			LPTSTR prev_dir = GetWorkingDir();
-			// Attempt to include a script file from a Lib folder:
-			IncludeLibrary(parameter, name_len, error_was_shown, file_was_found);
-			// Restore the working directory.
-			if (prev_dir)
-			{
-				SetCurrentDirectory(prev_dir);
-				free(prev_dir);
-			}
-			// If any file was included, consider it a success; i.e. allow #include <lib> and #include <lib_func>.
-			if (!error_was_shown && (file_was_found || ignore_load_failure))
-				return CONDITION_TRUE;
-			*(parameter + name_len) = '>'; // Restore '>' for display to the user.
-			return error_was_shown ? FAIL : ScriptError(_T("Function library not found."), aBuf);
+			//else invalid syntax; treat it as a regular #include which will almost certainly fail.
 		}
 
 		LPTSTR include_path;
@@ -10727,7 +10693,10 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			// checked on demand by callers of IsInterruptible().
 			if (g.UninterruptedLineCount > g_script->mUninterruptedLineCountMax // See above.
 				&& g_script->mUninterruptedLineCountMax > -1)
+			{
 				g.AllowThreadToBeInterrupted = true;
+				g.PeekFrequency = DEFAULT_PEEK_FREQUENCY;
+			}
 		}
 
 		// At this point, a pause may have been triggered either by the above MsgSleep()
