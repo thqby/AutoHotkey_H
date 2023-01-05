@@ -373,6 +373,7 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM& aDynaParam, int* aShortNameLen)
 	}
 	else
 		aDynaParam.passed_by_address = false;
+	aDynaParam.is_ptr = false;
 	// Using a switch benchmarks better than the old approach, which was an if-else-if ladder
 	// of string comparisons.  The old approach appeared to penalize Int64 vs. Int, perhaps due
 	// to position in the ladder.
@@ -391,7 +392,7 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM& aDynaParam, int* aShortNameLen)
 			return;
 		}
 		break;
-	case 'p': if (!_tcsicmp(buf, _T("Ptr")))	{ aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64); return; } break;
+	case 'p': if (!_tcsicmp(buf, _T("Ptr")))	{ aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64), aDynaParam.is_ptr = 1; return; } break;
 	case 's': if (!_tcsicmp(buf, _T("Str")))	{ aDynaParam.type = DLL_ARG_STR; return; }
 			if (!_tcsicmp(buf, _T("Short")))	{ aDynaParam.type = DLL_ARG_SHORT; return; }
 			if (!_tcsnicmp(buf, _T("Struct"), 6)) { tcslcpy(buf, buf + 6, _countof(buf) - 6); } break;
