@@ -8608,9 +8608,28 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	bool text_color_was_changed;
 	TCHAR buf[1024];
 
+	pgui = GuiType::FindGui(hWnd);
+	if (!pgui) // This avoids numerous checks below.
+		return DefDlgProc(hWnd, iMsg, wParam, lParam);
+
+	if (pgui->mEvents.IsMonitoring(iMsg, GUI_EVENTKIND_MESSAGE))
+	{
+		ExprTokenType param[] = { pgui, (__int64)wParam, (__int64)(DWORD_PTR)lParam, (__int64)iMsg };
+		InitNewThread(0, false, true);
+		INT_PTR retval;
+		auto result = pgui->mEvents.Call(param, 4, iMsg, GUI_EVENTKIND_MESSAGE, pgui, &retval);
+		ResumeUnderlyingThread();
+		if (result == EARLY_RETURN)
+			return retval;
+	}
+
 	switch (iMsg)
 	{
-	// case WM_CREATE: --> Do nothing extra because DefDlgProc() appears to be sufficient.
+	//case WM_CREATE:
+		// The DefDlgProc() call above is sufficient.
+		// This case wouldn't be executed because FindGui() won't work until after CreateWindowEx() has returned.
+		// If it ever becomes necessary, the GuiType pointer could be passed as lpParam of CreateWindowEx().
+
 	case WM_MOUSEWHEEL:
 		if (!(pgui = GuiType::FindGui(hWnd)))
 			break; // Let default proc handle it.
@@ -8669,8 +8688,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		break;
 
 	case WM_SIZE: // Listed first for performance.
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break; // Let default proc handle it.
 		pgui->mIsMinimized = wParam == SIZE_MINIMIZED; // See "case WM_SETFOCUS" for comments.
 		if (pgui->mStatusBarHwnd)
 			// Send the msg even if the bar is hidden because the OS typically knows not to do extra drawing work for
@@ -8683,36 +8700,36 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		case SIZE_RESTORED: wParam = 0; break;
 		case SIZE_MAXIMIZED: wParam = 1; break;
 		case SIZE_MINIMIZED: wParam = -1; break;
-		//default:
-		// Note that SIZE_MAXSHOW/SIZE_MAXHIDE don't seem to ever be received under the conditions
-		// described at MSDN, even if the window has WS_POPUP style.  They are probably relics from
-		// 16-bit Windows.  For simplicity (and because the window may have actually been resized)
-		// let wParam have its current (unexpected) value, if that's ever possible.
+			//default:
+			// Note that SIZE_MAXSHOW/SIZE_MAXHIDE don't seem to ever be received under the conditions
+			// described at MSDN, even if the window has WS_POPUP style.  They are probably relics from
+			// 16-bit Windows.  For simplicity (and because the window may have actually been resized)
+			// let wParam have its current (unexpected) value, if that's ever possible.
 		}
 		// probably never contain those values, and as a result they are not documented in the help file.
 		if (pgui->IsMonitoring(GUI_EVENT_RESIZE))
 			POST_AHK_GUI_ACTION(hWnd, NO_CONTROL_INDEX, MAKEWORD(GUI_EVENT_RESIZE, wParam), lParam);
-			// MsgSleep() is not done because "case AHK_GUI_ACTION" in GuiWindowProc() takes care of it.
-			// See its comments for why.
-		
+		// MsgSleep() is not done because "case AHK_GUI_ACTION" in GuiWindowProc() takes care of it.
+		// See its comments for why.
+
 		if (pgui->mWidth != COORD_UNSPECIFIED) // also avoids compile error for variable initialization
 		{   // AutoSizePos
 			// calculate size difference of new client area
 			int addWidth = LOWORD(lParam) - pgui->mWidth, addHeight = HIWORD(lParam) - pgui->mHeight;
-			
+
 			// Required to update pgui->mMaxExtentRight and ...Down
 			bool aResizeWasDone = false;
 
 			// Calculate moved controls and add addWidth/Height to correctly position following controls
 			int addedHeight = 0, addedWidth = 0, autoX = 0, autoY = 0;
 			float autoW = 0, autoH = 0;
-			
+
 			// Add Scrollbars to client area if they exist because we keep client area behind scrollbars
 			if (pgui->mStyle & WS_VSCROLL && (int)pgui->mVScroll->nPage <= pgui->mVScroll->nMax)
 				addWidth += GetSystemMetrics(SM_CYVSCROLL);
 			if (pgui->mStyle & WS_HSCROLL && (int)pgui->mHScroll->nPage <= pgui->mHScroll->nMax)
 				addHeight += GetSystemMetrics(SM_CYHSCROLL);
-			
+
 			// use original size of window if new size is smaller so controls will newer be smaller than original size.
 			if (addHeight < 0)
 				addHeight = 0;
@@ -8722,7 +8739,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 			for (GuiIndexType i = 0; i < pgui->mControlCount; i++)
 			{
 				GuiControlType *aControl = pgui->mControl[i];
-				
+
 				if (aControl->type == GUI_CONTROL_STATUSBAR)
 					continue;
 
@@ -8741,14 +8758,14 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 				// Check for autosize and autoposition options
 				if (!(aControl->mAX || aControl->mAY || aControl->mAWidth || aControl->mAHeight || aControl->mAXAuto || aControl->mAYAuto || aControl->mAWAuto || aControl->mAHAuto))
 					continue;
-				
+
 				// Calculate new size and position for controls
 				RECT rect;
 				GetWindowRect(aControl->hwnd, &rect);
 				POINT pt = { rect.left, rect.top };
 				ScreenToClient(pgui->mHwnd, &pt);
 				int x = pt.x, y = pt.y, width = rect.right - rect.left, height = rect.bottom - rect.top;
-				
+
 				// calculate new x position
 				if (aControl->mAX)
 				{
@@ -8790,7 +8807,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 				{
 					height = aControl->mHeight + (int)(autoH * addHeight);
 				}
-				
+
 				// Apply values used for axa and aya options in following controls
 				//int autoXnew = (aControl->mAX ? (int)(aControl->mAX * addWidth) : 0) + (aControl->mAWidth ? (int)(aControl->mAWidth * addWidth) : 0);
 				//int autoYnew = (aControl->mAY ? (int)(aControl->mAY * addHeight) : 0) + (aControl->mAHeight ? (int)(aControl->mAHeight * addHeight) : 0);
@@ -8800,7 +8817,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 				//if (autoY < autoYnew)
 				if (!aControl->mAHAuto)
 					autoY = (aControl->mAY ? (int)(aControl->mAY * addHeight) : 0) + (aControl->mAHeight ? (int)(aControl->mAHeight * addHeight) : 0);
-				
+
 				// Continue if size of control was not changed
 				if (x == pt.x && y == pt.y && width == rect.right - rect.left && height == rect.bottom - rect.top)
 					continue;
@@ -8808,7 +8825,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 				MoveWindow(aControl->hwnd, x, y, width, height, false);
 				aResizeWasDone = true;
 			}
-			
+
 			// Update client area for gui if controls were moved
 			if (aResizeWasDone)
 			{
@@ -8845,8 +8862,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 
 	case WM_GETMINMAXINFO: // Added for v1.0.44.13.
 	{
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break; // Let default proc handle it.
 		MINMAXINFO &mmi = *(LPMINMAXINFO)lParam;
 		if (pgui->mMinWidth >= 0) // This check covers both COORD_UNSPECIFIED and COORD_CENTERED.
 			mmi.ptMinTrackSize.x = pgui->mMinWidth;
@@ -8875,9 +8890,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 
 	case WM_COMMAND:
 	{
-		// First find which of the GUI windows is receiving this event:
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break; // No window (might be impossible since this function is for GUI windows, but seems best to let DefDlgProc handle it).
 		int id = LOWORD(wParam);
 		// For maintainability, this is checked first because "code" (the HIWORD) is sometimes or always 0,
 		// which falsely indicates that the message is from a menu:
@@ -8929,15 +8941,13 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		if (control_index < pgui->mControlCount // Relies on short-circuit boolean order.
 			&& pgui->mControl[control_index]->hwnd == (HWND)lParam) // Handles match (this filters out bogus msgs).
 			pgui->Event(control_index, HIWORD(wParam), GUI_EVENT_WM_COMMAND);
-			// v1.0.35: And now pass it on to DefDlgProc() in case it needs to see certain types of messages.
+		// v1.0.35: And now pass it on to DefDlgProc() in case it needs to see certain types of messages.
 		break;
 	}
 
 	case WM_SYSCOMMAND:
 		if (wParam == SC_CLOSE)
 		{
-			if (   !(pgui = GuiType::FindGui(hWnd))   )
-				break; // Let DefDlgProc() handle it.
 			pgui->Close();
 			return 0;
 		}
@@ -8945,9 +8955,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 
 	case WM_NOTIFY:
 	{
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break; // Let DefDlgProc() handle it.
-
 		NMHDR &nmhdr = *(LPNMHDR)lParam;
 		if (!nmhdr.idFrom)
 		{
@@ -8978,14 +8985,14 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 
 		switch (control.type)
 		{
-		/////////////////////
-		// LISTVIEW WM_NOTIFY
-		/////////////////////
+			/////////////////////
+			// LISTVIEW WM_NOTIFY
+			/////////////////////
 		case GUI_CONTROL_LISTVIEW:
 			switch (nmhdr.code)
 			{
-			// MSDN: LVN_HOTTRACK: "Return zero to allow the list view to perform its normal track select processing."
-			// Also, LVN_HOTTRACK is listed first for performance since it arrives far more often than any other notification.
+				// MSDN: LVN_HOTTRACK: "Return zero to allow the list view to perform its normal track select processing."
+				// Also, LVN_HOTTRACK is listed first for performance since it arrives far more often than any other notification.
 			case LVN_HOTTRACK:  // v1.0.36.04: No longer an event because it occurs so often: Due to single-thread limit, it was decreasing the reliability of AltSubmit ListViews' receipt of other events such as "I", such as Toralf's Icon Viewer.
 			case NM_CUSTOMDRAW: // Return CDRF_DODEFAULT (0).  Occurs for every redraw, such as mouse cursor sliding over control or window activation.
 			case LVN_ITEMCHANGING: // Not yet supported (seems rarely needed), so always allow the change by returning 0 (FALSE).
@@ -9008,10 +9015,10 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 				// Although the OS sometimes generates focus+select together, that's only when the focus is
 				// moving and selecting a single item; i.e. not by Ctrl/Shift and the mouse or arrow keys.
 				// Also, de-focus and de-select seem to always be separate.
-				UINT newly_changed =  lv.uNewState ^ lv.uOldState; // uChanged doesn't seem accurate: it's always 8?  So derive the "correct" value of which flags have actually changed.
+				UINT newly_changed = lv.uNewState ^ lv.uOldState; // uChanged doesn't seem accurate: it's always 8?  So derive the "correct" value of which flags have actually changed.
 				UINT newly_on = newly_changed & lv.uNewState;
 				UINT newly_off = newly_changed & lv.uOldState;
-				
+
 				// If the focus and selection is changed with Shift and the arrow keys, the control sends the
 				// selection change first, then focus change.  So for consistency, report the selection change
 				// first when the notification includes both.
@@ -9048,12 +9055,12 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 				}
 				break;
 
-			// When alt-submit mode isn't in effect, it seems best to ignore all clicks except double-clicks, since
-			// right-click should normally be handled via GuiContenxtMenu instead (to allow AppsKey to work, etc.);
-			// and since left-clicks can be used to extend a selection (ctrl-click or shift-click), so are pretty
-			// vague events that most scripts probably wouldn't have explicit handling for.  A script that needs
-			// to know when the selection changes can turn on AltSubmit to catch a wide variety of ways the
-			// selection can change, the most all-encompassing of which is probably LVN_ITEMCHANGED.
+				// When alt-submit mode isn't in effect, it seems best to ignore all clicks except double-clicks, since
+				// right-click should normally be handled via GuiContenxtMenu instead (to allow AppsKey to work, etc.);
+				// and since left-clicks can be used to extend a selection (ctrl-click or shift-click), so are pretty
+				// vague events that most scripts probably wouldn't have explicit handling for.  A script that needs
+				// to know when the selection changes can turn on AltSubmit to catch a wide variety of ways the
+				// selection can change, the most all-encompassing of which is probably LVN_ITEMCHANGED.
 			case NM_CLICK:
 				// v1.0.36.03: For NM_CLICK/NM_RCLICK, it's somewhat debatable to set event_info when the
 				// ListView isn't single-select, but the usefulness seems to outweigh any confusion it might cause.
@@ -9115,9 +9122,9 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 			} // switch(nmhdr.code).
 			break;
 
-		/////////////////////
-		// TREEVIEW WM_NOTIFY
-		/////////////////////
+			/////////////////////
+			// TREEVIEW WM_NOTIFY
+			/////////////////////
 		case GUI_CONTROL_TREEVIEW:
 			switch (nmhdr.code)
 			{
@@ -9125,10 +9132,10 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 			case NM_CUSTOMDRAW: // Return CDRF_DODEFAULT (0). Occurs for every redraw, such as mouse cursor sliding over control or window activation.
 			case TVN_DELETEITEMW:
 			case TVN_DELETEITEMA:
-			// TVN_SELCHANGING, TVN_ITEMEXPANDING, and TVN_SINGLEEXPAND are not reported to the script as events
-			// because there is currently no support for vetoing the selection-change or expansion; plus these
-			// notifications each have an "-ED" counterpart notification that is reported to the script (even
-			// TVN_SINGLEEXPAND is followed by a TVN_ITEMEXPANDED notification).
+				// TVN_SELCHANGING, TVN_ITEMEXPANDING, and TVN_SINGLEEXPAND are not reported to the script as events
+				// because there is currently no support for vetoing the selection-change or expansion; plus these
+				// notifications each have an "-ED" counterpart notification that is reported to the script (even
+				// TVN_SINGLEEXPAND is followed by a TVN_ITEMEXPANDED notification).
 			case TVN_SELCHANGINGW:   // Received even for non-Unicode apps, at least on XP.
 			case TVN_SELCHANGINGA:
 			case TVN_ITEMEXPANDINGW: // Received even for non-Unicode apps, at least on XP.
@@ -9199,14 +9206,14 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 				explicitly_return_true = true;
 				break;
 
-			// Since a left-click is just one method of changing selection (keyboard navigation is another),
-			// it seems desirable for performance not to report such clicks except in alt-submit mode.
-			// Similarly, right-clicks are reported only in alt-submit mode because GuiContextMenu should be used
-			// to catch right-clicks (due to its additional handling for the AppsKey).
+				// Since a left-click is just one method of changing selection (keyboard navigation is another),
+				// it seems desirable for performance not to report such clicks except in alt-submit mode.
+				// Similarly, right-clicks are reported only in alt-submit mode because GuiContextMenu should be used
+				// to catch right-clicks (due to its additional handling for the AppsKey).
 			case NM_CLICK:
 			case NM_DBLCLK:
-			//case NM_RCLICK: // Not handled because the default processing generates WM_CONTEXTMENU, which is what we want.
-			//case NM_RDBLCLK: // As above, but NM_RDBLCLK is never actually generated by a TreeView (at least in some OS versions).
+				//case NM_RCLICK: // Not handled because the default processing generates WM_CONTEXTMENU, which is what we want.
+				//case NM_RDBLCLK: // As above, but NM_RDBLCLK is never actually generated by a TreeView (at least in some OS versions).
 				switch(nmhdr.code)
 				{
 				case NM_CLICK: gui_event = GUI_EVENT_CLICK; break;
@@ -9246,9 +9253,9 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 			} // switch(nmhdr.code).
 			break;
 
-		//////////////////////
-		// OTHER CONTROL TYPES
-		//////////////////////
+			//////////////////////
+			// OTHER CONTROL TYPES
+			//////////////////////
 		case GUI_CONTROL_DATETIME: // NMDATETIMECHANGE struct contains an NMHDR as it's first member.
 			// Both MonthCal's year spinner (when year is clicked on) and DateTime's drop-down calendar
 			// seem to start a new message pump.  This is one of the reason things were redesigned to
@@ -9348,14 +9355,12 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	case WM_VSCROLL: // These two should only be received for sliders and up-downs.
 	case WM_HSCROLL:
 		GuiIndexType aControlIndex;
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break; // Let default proc handle it.
 		aControlIndex = GUI_HWND_TO_INDEX((HWND)lParam);
-		if (aControlIndex >= pgui->mControlCount 
-			|| (pgui->mControl[aControlIndex]->type != GUI_CONTROL_UPDOWN 
+		if (aControlIndex >= pgui->mControlCount
+			|| (pgui->mControl[aControlIndex]->type != GUI_CONTROL_UPDOWN
 				&& pgui->mControl[aControlIndex]->type != GUI_CONTROL_SLIDER))
 		{
-			thread_local static SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
+			SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
 			bool bar = iMsg == WM_VSCROLL;
 
 			GetScrollInfo(pgui->mHwnd, bar, &aScrollInfo);
@@ -9407,10 +9412,8 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		}
 		pgui->Event(GUI_HWND_TO_INDEX((HWND)lParam), LOWORD(wParam), GUI_EVENT_NONE, HIWORD(wParam));
 		return 0; // "If an application processes this message, it should return zero."
-	
+
 	//case WM_ERASEBKGND:
-	//	if (   !(pgui = GuiType::FindGui(hWnd))   )
-	//		break; // Let DefDlgProc() handle it.
 	//	if (!pgui->mBackgroundBrushWin) // Let default proc handle it.
 	//		break;
 	//	// Can't use SetBkColor(), need an real brush to fill it.
@@ -9421,30 +9424,26 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	// The below seems to be the equivalent of the above (but MSDN indicates it will only work
 	// if there is no WM_ERASEBKGND handler).  It might perform a little better.
 	case WM_CTLCOLORDLG:
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break; // Let DefDlgProc() handle it.
 		if (!pgui->mBackgroundBrushWin) // Let default proc handle it.
 			break;
 		SetBkColor((HDC)wParam, pgui->mBackgroundColorWin);
 		return (LRESULT)pgui->mBackgroundBrushWin;
 
-	// It seems that scrollbars belong to controls (such as Edit and ListBox) do not send us
-	// WM_CTLCOLORSCROLLBAR (unlike the static messages we receive for radio and checkbox).
-	// Therefore, this section is commented out since it has no effect (it might be useful
-	// if a control's class window-proc is ever overridden with a new proc):
-	//case WM_CTLCOLORSCROLLBAR:
-	//	if (   !(pgui = GuiType::FindGui(hWnd))   )
-	//		break;
-	//	if (pgui->mBackgroundBrushWin)
-	//	{
-	//		// Since we're processing this msg rather than passing it on to the default proc, must set
-	//		// background color unconditionally, otherwise plain white will likely be used:
-	//		SetTextColor((HDC)wParam, pgui->mBackgroundColorWin);
-	//		SetBkColor((HDC)wParam, pgui->mBackgroundColorWin);
-	//		// Always return a real HBRUSH so that Windows knows we altered the HDC for it to use:
-	//		return (LRESULT)pgui->mBackgroundBrushWin;
-	//	}
-	//	break;
+		// It seems that scrollbars belong to controls (such as Edit and ListBox) do not send us
+		// WM_CTLCOLORSCROLLBAR (unlike the static messages we receive for radio and checkbox).
+		// Therefore, this section is commented out since it has no effect (it might be useful
+		// if a control's class window-proc is ever overridden with a new proc):
+		//case WM_CTLCOLORSCROLLBAR:
+		//	if (pgui->mBackgroundBrushWin)
+		//	{
+		//		// Since we're processing this msg rather than passing it on to the default proc, must set
+		//		// background color unconditionally, otherwise plain white will likely be used:
+		//		SetTextColor((HDC)wParam, pgui->mBackgroundColorWin);
+		//		SetBkColor((HDC)wParam, pgui->mBackgroundColorWin);
+		//		// Always return a real HBRUSH so that Windows knows we altered the HDC for it to use:
+		//		return (LRESULT)pgui->mBackgroundBrushWin;
+		//	}
+		//	break;
 
 	case WM_CTLCOLORSTATIC:
 	case WM_CTLCOLORLISTBOX:
@@ -9458,8 +9457,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		// types of buttons used so far.  This has been confirmed: Even when a theme is in effect,
 		// checkboxes, radios, and groupboxes do not receive WM_CTLCOLORBTN, but they do receive
 		// WM_CTLCOLORSTATIC.
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break;
 		if (   !(pcontrol = pgui->FindControl((HWND)lParam))   )
 			break;
 		if (text_color_was_changed = (pcontrol->type != GUI_CONTROL_PIC && pcontrol->union_color != CLR_DEFAULT))
@@ -9487,7 +9484,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		//  - To match the control's text, which usually takes on the "disabled" color.
 		use_bg_color = iMsg == WM_CTLCOLORSTATIC && pcontrol->UsesGuiBgColor();
 		pgui->ControlGetBkColor(*pcontrol, use_bg_color, bk_brush, bk_color);
-		
+
 		if (bk_brush)
 		{
 			// Since we're processing this msg rather than passing it on to the default proc, must set
@@ -9516,8 +9513,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	{
 		// WM_DRAWITEM msg is received by GUI windows that contain a tab control with custom tab
 		// colors.  The TCS_OWNERDRAWFIXED style is what causes this message to be received.
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break;
 		LPDRAWITEMSTRUCT lpdis = (LPDRAWITEMSTRUCT)lParam;
 		// Otherwise, it might be a tab control with custom tab colors:
 		control_index = (GuiIndexType)GUI_ID_TO_INDEX(lpdis->CtlID); // Convert from ID to array index. Relies on unsigned to flag as out-of-bounds.
@@ -9543,7 +9538,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		tci.pszText = buf;
 		tci.cchTextMax = _countof(buf) - 1; // MSDN example uses -1.
 		// Set text color if needed:
-        COLORREF prev_color = CLR_INVALID;
+		COLORREF prev_color = CLR_INVALID;
 		if (control.union_color != CLR_DEFAULT)
 			prev_color = SetTextColor(lpdis->hDC, control.union_color);
 		// Draw the text.  Note that rcItem contains the dimensions of a tab that has already been sized
@@ -9575,7 +9570,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		// if the dialog box is activated."
 		// "If the window is being activated and is not minimized, the DefWindowProc function sets the
 		// keyboard focus to the window."
-		if (   (pgui = GuiType::FindGui(hWnd)) && pgui->mIsMinimized   )
+		if (pgui->mIsMinimized)
 			return 0;
 		// The simple check above solves a problem caused by bad OS behaviour that I couldn't find any
 		// mention of in all my searching, and that took hours to debug; so I'll be verbose:
@@ -9635,50 +9630,47 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		break;
 
 	case WM_CONTEXTMENU:
-		if (pgui = GuiType::FindGui(hWnd))
+	{
+		HWND clicked_hwnd = (HWND)wParam;
+		bool from_keyboard; // Whether Context Menu was generated from keyboard (AppsKey or Shift-F10).
+		if (   !(from_keyboard = (lParam == -1))   ) // Mouse click vs. keyboard event.
 		{
-			HWND clicked_hwnd = (HWND)wParam;
-			bool from_keyboard; // Whether Context Menu was generated from keyboard (AppsKey or Shift-F10).
-			if (   !(from_keyboard = (lParam == -1))   ) // Mouse click vs. keyboard event.
+			// If the click occurred above the client area, assume it was in title/menu bar or border.
+			// Let default proc handle it.
+			point_and_hwnd_type pah = {0};
+			pah.pt.x = LOWORD(lParam);
+			pah.pt.y = HIWORD(lParam);
+			POINT client_pt = pah.pt;
+			if (!ScreenToClient(hWnd, &client_pt) || client_pt.y < 0)
+				break; // Allows default proc to display standard system context menu for title bar.
+			// v1.0.38.01: Recognize clicks on pictures and text controls as occurring in that control
+			// (via A_GuiControl) rather than generically in the window:
+			if (clicked_hwnd == pgui->mHwnd)
 			{
-				// If the click occurred above the client area, assume it was in title/menu bar or border.
-				// Let default proc handle it.
-				point_and_hwnd_type pah = {0};
-				pah.pt.x = LOWORD(lParam);
-				pah.pt.y = HIWORD(lParam);
-				POINT client_pt = pah.pt;
-				if (!ScreenToClient(hWnd, &client_pt) || client_pt.y < 0)
-					break; // Allows default proc to display standard system context menu for title bar.
-				// v1.0.38.01: Recognize clicks on pictures and text controls as occurring in that control
-				// (via A_GuiControl) rather than generically in the window:
-				if (clicked_hwnd == pgui->mHwnd)
-				{
-					// v1.0.40.01: Rather than doing "ChildWindowFromPoint(clicked_hwnd, client_pt)" -- which fails to
-					// detect text and picture controls (and perhaps others) when they're inside GroupBoxes and
-					// Tab controls -- use the MouseGetPos() method, which seems much more accurate.
-					EnumChildWindows(clicked_hwnd, EnumChildFindPoint, (LPARAM)&pah); // Find topmost control containing point.
-					clicked_hwnd = pah.hwnd_found; // Okay if NULL; the next stage will handle it.
-				}
+				// v1.0.40.01: Rather than doing "ChildWindowFromPoint(clicked_hwnd, client_pt)" -- which fails to
+				// detect text and picture controls (and perhaps others) when they're inside GroupBoxes and
+				// Tab controls -- use the MouseGetPos() method, which seems much more accurate.
+				EnumChildWindows(clicked_hwnd, EnumChildFindPoint, (LPARAM)&pah); // Find topmost control containing point.
+				clicked_hwnd = pah.hwnd_found; // Okay if NULL; the next stage will handle it.
 			}
-			// Finding control_index requires only GUI_HWND_TO_INDEX (not FindControl) since context menu message
-			// never arrives for a ComboBox's Edit control (since that control has its own context menu).
-			control_index = GUI_HWND_TO_INDEX(clicked_hwnd); // Yields a small negative value on failure, which due to unsigned is seen as a large positive number.
-			if (control_index >= pgui->mControlCount) // The user probably clicked the parent window rather than inside one of its controls.
-				control_index = NO_CONTROL_INDEX;
-				// Above flags it as a non-control event. Must use NO_CONTROL_INDEX rather than something
-				// like 0xFFFFFFFF so that high-order bit is preserved for use below.
-			if (pgui->IsMonitoring(GUI_EVENT_CONTEXTMENU)
-				|| control_index != NO_CONTROL_INDEX && pgui->mControl[control_index]->events.IsMonitoring(GUI_EVENT_CONTEXTMENU))
-				POST_AHK_GUI_ACTION(hWnd, control_index, MAKEWORD(GUI_EVENT_CONTEXTMENU, from_keyboard), NO_EVENT_INFO);
-			return 0; // Return value doesn't matter.
 		}
-		//else it's for some non-GUI window (probably impossible).  Let DefDlgProc() handle it.
-		break;
+		// Finding control_index requires only GUI_HWND_TO_INDEX (not FindControl) since context menu message
+		// never arrives for a ComboBox's Edit control (since that control has its own context menu).
+		control_index = GUI_HWND_TO_INDEX(clicked_hwnd); // Yields a small negative value on failure, which due to unsigned is seen as a large positive number.
+		if (control_index >= pgui->mControlCount) // The user probably clicked the parent window rather than inside one of its controls.
+			control_index = NO_CONTROL_INDEX;
+		// Above flags it as a non-control event. Must use NO_CONTROL_INDEX rather than something
+		// like 0xFFFFFFFF so that high-order bit is preserved for use below.
+		if (pgui->IsMonitoring(GUI_EVENT_CONTEXTMENU)
+			|| control_index != NO_CONTROL_INDEX && pgui->mControl[control_index]->events.IsMonitoring(GUI_EVENT_CONTEXTMENU))
+			POST_AHK_GUI_ACTION(hWnd, control_index, MAKEWORD(GUI_EVENT_CONTEXTMENU, from_keyboard), NO_EVENT_INFO);
+		return 0; // Return value doesn't matter.
+	}
+	//else it's for some non-GUI window (probably impossible).  Let DefDlgProc() handle it.
+	break;
 
 	case WM_DROPFILES:
 	{
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break; // Let DefDlgProc() handle it.
 		HDROP hdrop = (HDROP)wParam;
 		if (pgui->mHdrop || !pgui->IsMonitoring(GUI_EVENT_DROPFILES))
 		{
@@ -9749,8 +9741,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		return 0;
 
 	case WM_CLOSE: // For now, take the same action as SC_CLOSE.
-		if (   !(pgui = GuiType::FindGui(hWnd))   )
-			break; // Let DefDlgProc() handle it.
 		pgui->Close();
 		return 0;
 
@@ -9763,29 +9753,28 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		// be impossible for a window to be destroyed without the object "knowing about it" and
 		// updating itself (then destroying itself) accordingly.  The object methods always
 		// destroy (recursively) any windows it owns, so once again it "knows about it".
-		if (pgui = GuiType::FindGui(hWnd)) // Assign.
-			if (!pgui->mDestroyWindowHasBeenCalled)
-			{
-				pgui->mDestroyWindowHasBeenCalled = true; // Tell it not to call DestroyWindow(), just clean up everything else.
-				pgui->Destroy();
-			}
+		if (!pgui->mDestroyWindowHasBeenCalled)
+		{
+			pgui->mDestroyWindowHasBeenCalled = true; // Tell it not to call DestroyWindow(), just clean up everything else.
+			pgui->Destroy();
+		}
 		// Above: if mDestroyWindowHasBeenCalled==true, we were called by Destroy(), so don't call Destroy() again recursively.
 		// And in any case, pass it on to DefDlgProc() in case it does any extra cleanup:
 		break;
 
-	// For WM_ENTERMENULOOP/WM_EXITMENULOOP, there is similar code in MainWindowProc(), so maintain them together.
-	// WM_ENTERMENULOOP: One of the MENU BAR menus has been displayed, and then we know the user is still in
-	// the menu bar, even moving to different menus and/or menu items, until WM_EXITMENULOOP is received.
-	// Note: It seems that when window's menu bar is being displayed/navigated by the user, our thread
-	// is tied up in a message loop other than our own.  In other words, it's very similar to the
-	// TrackPopupMenuEx() call used to handle the tray menu, which is why g_MenuIsVisible can be used
-	// for both types of menus to indicate to MainWindowProc() that timed subroutines should not be
-	// checked or allowed to launch during such times.  Also, "break" is used rather than "return 0"
-	// to let DefWindowProc()/DefaultDlgProc() take whatever action it needs to do for these.
-	// UPDATE: The value of g_MenuIsVisible is checked before changing it because it might already be
-	// set to MENU_TYPE_POPUP (apparently, TrackPopupMenuEx sometimes/always generates WM_ENTERMENULOOP).
-	// BAR vs. POPUP currently doesn't matter (as long as its non-zero); thus, the above is done for
-	// maintainability.
+		// For WM_ENTERMENULOOP/WM_EXITMENULOOP, there is similar code in MainWindowProc(), so maintain them together.
+		// WM_ENTERMENULOOP: One of the MENU BAR menus has been displayed, and then we know the user is still in
+		// the menu bar, even moving to different menus and/or menu items, until WM_EXITMENULOOP is received.
+		// Note: It seems that when window's menu bar is being displayed/navigated by the user, our thread
+		// is tied up in a message loop other than our own.  In other words, it's very similar to the
+		// TrackPopupMenuEx() call used to handle the tray menu, which is why g_MenuIsVisible can be used
+		// for both types of menus to indicate to MainWindowProc() that timed subroutines should not be
+		// checked or allowed to launch during such times.  Also, "break" is used rather than "return 0"
+		// to let DefWindowProc()/DefaultDlgProc() take whatever action it needs to do for these.
+		// UPDATE: The value of g_MenuIsVisible is checked before changing it because it might already be
+		// set to MENU_TYPE_POPUP (apparently, TrackPopupMenuEx sometimes/always generates WM_ENTERMENULOOP).
+		// BAR vs. POPUP currently doesn't matter (as long as its non-zero); thus, the above is done for
+		// maintainability.
 	case WM_ENTERMENULOOP:
 		if (!g_MenuIsVisible) // See comments above.
 			g_MenuIsVisible = MENU_TYPE_BAR;
@@ -9795,16 +9784,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		break;
 
 	} // switch()
-
-	if (!pgui)
-		pgui = GuiType::FindGui(hWnd);
-	if (pgui && pgui->mEvents.IsMonitoring(iMsg, GUI_EVENTKIND_MESSAGE))
-	{
-		ExprTokenType param[] = { (__int64)wParam, (__int64)(DWORD_PTR)lParam, (__int64)iMsg, (__int64)(size_t)hWnd };
-		InitNewThread(0, false, true);
-		pgui->mEvents.Call(param, 4, iMsg, GUI_EVENTKIND_MESSAGE, pgui);
-		ResumeUnderlyingThread();
-	}
 
 	// This will handle anything not already fully handled and returned from above:
 	return DefDlgProc(hWnd, iMsg, wParam, lParam);
