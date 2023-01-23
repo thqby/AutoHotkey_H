@@ -375,27 +375,20 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 		if (len > aFuncCount) {
 			auto& funcs = g_script->mFuncs.mItem;
 			for (int i = aFuncCount; i < len; i++) {
-				if (auto cl = ((UserFunc*)(funcs[i]))->mClass)
-					cl->Release();
-				funcs[i]->Release(), funcs[i] = NULL;
+				auto &fn = (UserFunc *&)funcs[i];
+				if (fn->mClass)
+					fn->mClass->Release();
+#ifndef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
+				if (fn->mIsFuncExpression == -1)
+					fn->mJumpToLine->Free();
+#endif // !KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
+				fn->Release(), fn = nullptr;
 			}
 			g_script->mFuncs.mCount = aFuncCount;
 		}
-		for (Line* line = aTempLine; line; line = line->mPrevLine) {
-			for (int i = 0; i < line->mArgc; ++i) {
-				ArgStruct& this_arg = line->mArg[i];
-				if (!this_arg.is_expression || !this_arg.postfix)
-					continue;
-				for (ExprTokenType* token = this_arg.postfix; token->symbol != SYM_INVALID; ++token) {
-					if (token->symbol == SYM_OBJECT)
-						token->object->Release();
-				}
-			}
-			line->FreeDerefBufIfLarge();
-			if (line->mBreakpoint)
-				delete line->mBreakpoint;
-			delete line;
-		}
+		for (Line *line = aTempLine; line; line = line->mPrevLine)
+			line->Free();
+		Line::FreeDerefBufIfLarge();
 		// restore SimpleHeap
 		heapbkp.Restore();
 		LeaveCriticalSection(&g_CriticalTLSCallback);
@@ -519,29 +512,22 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 	}
 	len = g_script->mFuncs.mCount;
 	if (len > aFuncCount) {
-		auto& funcs = g_script->mFuncs.mItem;
+		auto &funcs = g_script->mFuncs.mItem;
 		for (int i = aFuncCount; i < len; i++) {
-			if (auto cl = ((UserFunc*)(funcs[i]))->mClass)
-				cl->Release();
-			funcs[i]->Release(), funcs[i] = NULL;
+			auto &fn = (UserFunc *&)funcs[i];
+			if (fn->mClass)
+				fn->mClass->Release();
+#ifndef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
+			if (fn->mIsFuncExpression == -1)
+				fn->mJumpToLine->Free();
+#endif // !KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
+			fn->Release(), fn = nullptr;
 		}
 		g_script->mFuncs.mCount = aFuncCount;
 	}
-	for (Line* line = aTempLine; line; line = line->mPrevLine) {
-		for (int i = 0; i < line->mArgc; ++i) {
-			ArgStruct& this_arg = line->mArg[i];
-			if (!this_arg.is_expression || !this_arg.postfix)
-				continue;
-			for (ExprTokenType* token = this_arg.postfix; token->symbol != SYM_INVALID; ++token) {
-				if (token->symbol == SYM_OBJECT)
-					token->object->Release();
-			}
-		}
-		line->FreeDerefBufIfLarge();
-		if (line->mBreakpoint)
-			delete line->mBreakpoint;
-		delete line;
-	}
+	for (Line *line = aTempLine; line; line = line->mPrevLine)
+		line->Free();
+	Line::FreeDerefBufIfLarge();
 	// restore SimpleHeap
 	heapbkp.Restore();
 	LeaveCriticalSection(&g_CriticalTLSCallback);

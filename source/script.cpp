@@ -494,9 +494,14 @@ Script::~Script() // Destructor.
 	}
 
 	for (i = 0; i < mFuncs.mCount; i++) {
-		if (auto cl = ((UserFunc*)(mFuncs.mItem[i]))->mClass)
-			cl->Release();
-		mFuncs.mItem[i]->Release();
+		auto fn = (UserFunc *&)mFuncs.mItem[i];
+		if (fn->mClass)
+			fn->mClass->Release();
+#ifndef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
+		if (fn->mIsFuncExpression == -1)
+			fn->mJumpToLine->Free();
+#endif // !KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
+		fn->Release();
 	}
 	free(mFuncs.mItem);
 
@@ -624,21 +629,9 @@ Script::~Script() // Destructor.
 	g_script = NULL;
 	if (mLastStaticLine)
 		mFirstLine->mPrevLine = mLastStaticLine;
-	for (Line* line = mLastLine; line; line = line->mPrevLine) {
-		for (int i = 0; i < line->mArgc; ++i) {
-			ArgStruct& this_arg = line->mArg[i];
-			if (!this_arg.is_expression || !this_arg.postfix)
-				continue;
-			for (ExprTokenType* token = this_arg.postfix; token->symbol != SYM_INVALID; ++token) {
-				if (token->symbol == SYM_OBJECT)
-					token->object->Release();
-			}
-		}
-		line->FreeDerefBufIfLarge();
-		if (line->mBreakpoint)
-			delete line->mBreakpoint;
-		delete line;
-	}
+	for (Line *line = mLastLine; line; line = line->mPrevLine)
+		line->Free();
+	Line::FreeDerefBufIfLarge();
 
 #define Free_Prototype(proto) proto->Release(), proto = nullptr
 
@@ -8555,7 +8548,7 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 					// This relies on there being no need for the fat arrow functions to
 					// remain in the Line list after this point (so for instance, there's
 					// no possibility of setting a breakpoint in one of these functions).
-					parent->mNextLine = body, body->mPrevLine = parent;
+					parent->mNextLine = body, body->mPrevLine = parent, func.mIsFuncExpression = -1;
 				#endif
 				}
 				else if (parent && parent->mActionType != ACT_BLOCK_BEGIN)
@@ -10602,6 +10595,23 @@ void Line::FreeDerefBufIfLarge()
 	// is still waiting to be freed (even if it isn't, it should be harmless to keep the timer running
 	// just in case, since each call to ExpandArgs() will reset/postpone the timer due to the script
 	// having demonstrated that it isn't idle).
+}
+
+void Line::Free()
+{
+	for (int i = 0; i < mArgc; ++i) {
+		ArgStruct &this_arg = mArg[i];
+		if (!this_arg.is_expression || !this_arg.postfix)
+			continue;
+		for (ExprTokenType *token = this_arg.postfix; token->symbol != SYM_INVALID; ++token) {
+			if (token->symbol == SYM_OBJECT)
+				token->object->Release();
+		}
+	}
+#ifdef CONFIG_DEBUGGER
+	if (mBreakpoint)
+		delete mBreakpoint;
+#endif
 }
 
 
