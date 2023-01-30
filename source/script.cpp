@@ -2068,7 +2068,7 @@ UINT Script::LoadFromFile(LPCTSTR aFileSpec)
 
 
 
-bool Script::IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf)
+bool Script::IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf, bool aIsFunc)
 // Helper function for LoadIncludedFile().
 // Caller passes in an aBuf containing a candidate line such as "function(x, y)"
 // Caller has ensured that aBuf is rtrim'd.
@@ -2095,7 +2095,7 @@ bool Script::IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf)
 		return false;
 	// Is it a control flow statement, such as "if(condition)"?
 	*action_end = '\0';
-	bool is_control_flow = ConvertActionType(aBuf);
+	bool is_control_flow = aIsFunc && ConvertActionType(aBuf);
 	*action_end = '(';
 	if (is_control_flow)
 		return false;
@@ -3181,7 +3181,7 @@ process_completed_line:
 				else
 					id = buf;
 			}
-			if (IsFunctionDefinition(id, next_buf))
+			if (IsFunctionDefinition(id, next_buf, false))
 			{
 				if (!DefineFunc(id, is_static))
 					return FAIL;
