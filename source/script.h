@@ -2510,7 +2510,7 @@ public:
 	bool mDisposed; // Simplifies Dispose().
 	bool mVisibleRefCounted; // Whether AddRef() has been done as a result of the window being shown.
 
-	SCROLLINFO *mVScroll, *mHScroll;
+	SCROLLINFO mVScroll, mHScroll;
 	#define MAX_GUI_FONTS 200  // v1.0.44.14: Increased from 100 to 200 due to feedback that 100 wasn't enough.  But to alleviate memory usage, the array is now allocated upon first use.
 	thread_local static FontType *sFont; // An array of structs, allocated upon first use.
 	thread_local static int sFontCount;
@@ -2600,7 +2600,7 @@ public:
 		, mStatusBarHwnd(NULL)
 		, mDefaultButtonIndex(-1), mEventSink(NULL)
 		, mMenu(NULL)
-		, mVScroll(NULL), mHScroll(NULL)
+		, mVScroll({ sizeof(SCROLLINFO),SIF_RANGE|SIF_PAGE,0 }), mHScroll({ sizeof(SCROLLINFO),SIF_RANGE|SIF_PAGE,0 })
 		// The styles DS_CENTER and DS_3DLOOK appear to be ineffectual in this case.
 		// Also note that WS_CLIPSIBLINGS winds up on the window even if unspecified, which is a strong hint
 		// that it should always be used for top level windows across all OSes.  Usenet posts confirm this.
