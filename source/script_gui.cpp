@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -2471,17 +2471,13 @@ FResult GuiType::Create(LPCTSTR aTitle)
 	if (mHwnd) // It already exists
 		return FR_E_FAILED; // Should be impossible since mHwnd is checked by caller.
 
-	WNDCLASSEX awc = { 0 };
-	thread_local static WNDCLASSEX wc = { 0 };
 	// Use a separate class for GUI, which gives it a separate WindowProc and allows it to be more
 	// distinct when used with the ahk_class method of addressing windows.
-	if (!sGuiWinClass || !GetClassInfoEx(g_hInstance, g_WindowClassGUI, &awc))
+	if (!sGuiWinClass)
 	{
-		if (wc.cbSize)
-			UnregisterClass(wc.lpszClassName, g_hInstance);
-		else
+		WNDCLASSEX wc = { 0 };
 			wc.cbSize = sizeof(wc);
-		wc.lpszClassName = SimpleHeap::Alloc(g_WindowClassGUI);
+		wc.lpszClassName = g_WindowClassGUI;
 		wc.hInstance = g_hInstance;
 		wc.lpfnWndProc = GuiWindowProc;
 		wc.hIcon = g_IconLarge;
@@ -2492,7 +2488,15 @@ FResult GuiType::Create(LPCTSTR aTitle)
 		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
 		wc.cbWndExtra = DLGWINDOWEXTRA;  // So that it will be the type that uses DefDlgProc() vs. DefWindowProc().
 		sGuiWinClass = RegisterClassEx(&wc);
-#ifndef _USRDLL  //Ignore errors since mostly AutoHotkey.exe alredy registered the class
+#ifdef _USRDLL
+		if (!sGuiWinClass && !(sGuiWinClass = GetClassInfoEx(g_hInstance, g_WindowClassGUI, &wc)))
+			return FR_E_WIN32;
+		if (wc.lpfnWndProc != GuiWindowProc)
+		{
+			sGuiWinClass = 0;
+			return FR_E_WIN32;
+		}
+#else
 		if (!sGuiWinClass)
 			return FR_E_WIN32;
 #endif
@@ -2502,8 +2506,6 @@ FResult GuiType::Create(LPCTSTR aTitle)
 		, mStyle, 0, 0, 0, 0, mOwner, NULL, g_hInstance, NULL))   )
 		return FR_E_WIN32;
 
-	if (!sGuiWinClass)
-		sGuiWinClass = (ATOM)GetClassLong(mHwnd, GCW_ATOM);
 	// Set the user pointer in the window to this GuiType object, so that it is possible to retrieve it back from the window handle.
 	SetWindowLongPtr(mHwnd, GWLP_USERDATA, (LONG_PTR)this);
 
@@ -9390,7 +9392,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 			SetScrollInfo(pgui->mHwnd, bar, &aScrollInfo, true);
 			return 0;
 		}
-		pgui->Event(GUI_HWND_TO_INDEX((HWND)lParam), LOWORD(wParam), GUI_EVENT_NONE, HIWORD(wParam));
+		pgui->Event(aControlIndex, LOWORD(wParam), GUI_EVENT_NONE, HIWORD(wParam));
 		return 0; // "If an application processes this message, it should return zero."
 
 	//case WM_ERASEBKGND:

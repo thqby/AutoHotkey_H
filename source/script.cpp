@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -1029,7 +1029,7 @@ ResultType Script::CreateWindows()
 	wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);  // Needed for ProgressBar. Old: (HBRUSH)GetStockObject(WHITE_BRUSH);
 	wc.lpszMenuName = MAKEINTRESOURCE(IDR_MENU_MAIN); // NULL; // "MainMenu";
 	g_ClassRegistered = RegisterClassEx(&wc);
-	if (g_FirstThreadID == g_MainThreadID && !g_ClassRegistered)
+	if (!g_ClassRegistered && (!GetClassInfoEx(g_hInstance, g_WindowClassMain, &wc) || wc.lpfnWndProc != MainWindowProc))
 	{
 		MsgBox(_T("RegClass")); // Short/generic msg since so rare.
 		return FAIL;
@@ -1079,9 +1079,6 @@ ResultType Script::CreateWindows()
 		return FAIL;
 	}
 
-	if (!(g_ClassRegistered))
-		SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (LONG_PTR)MainWindowProc);
-
 	// Now that all static initializers (such as for Object::sPrototype)
 	// are guaranteed to have been executed, construct the Tray menu.
 	mTrayMenu = new UserMenu(MENU_TYPE_POPUP);
@@ -1105,9 +1102,6 @@ ResultType Script::CreateWindows()
 		MsgBox(_T("CreateWindow")); // Short msg since so rare.
 		return FAIL;
 	}
-
-	if (!(g_ClassRegistered))
-		SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (LONG_PTR)MainWindowProc);
 
 	// FONTS: The font used by default, at least on XP, is GetStockObject(SYSTEM_FONT).
 	// Use something more appealing (monospaced seems preferable):
