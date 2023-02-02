@@ -1,4 +1,4 @@
-/*
+﻿/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -637,6 +637,7 @@ ObjectMemberMd GuiControlType::sMembers[] =
 	md_member(GuiControlType, Move, CALL, (In_Opt, Int32, X), (In_Opt, Int32, Y), (In_Opt, Int32, Width), (In_Opt, Int32, Height)),
 	md_member(GuiControlType, OnCommand, CALL, (In, Int32, NotifyCode), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
 	md_member(GuiControlType, OnEvent, CALL, (In, String, EventName), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
+	md_member(GuiControlType, OnMessage, CALL, (In, UInt32, Number), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
 	md_member(GuiControlType, OnNotify, CALL, (In, Int32, NotifyCode), (In, Variant, Callback), (In_Opt, Int32, AddRemove)),
 	md_member(GuiControlType, Opt, CALL, (In, String, Options)),
 	md_member(GuiControlType, Redraw, CALL, md_arg_none),
@@ -825,6 +826,13 @@ FResult GuiControlType::OnEvent(StrArg aEventName, ExprTokenType &aCallback, opt
 	if (!event_code || !SupportsEvent(event_code))
 		return FR_E_ARG(0);
 	return gui->OnEvent(this, event_code, GUI_EVENTKIND_EVENT, aCallback, aAddRemove);
+}
+
+
+FResult GuiControlType::OnMessage(UINT aNumber, ExprTokenType &aCallback, optl<int> aAddRemove)
+{
+	CTRL_THROW_IF_DESTROYED;
+	return gui->OnEvent(this, aNumber, GUI_EVENTKIND_MESSAGE, aCallback, aAddRemove);
 }
 
 
@@ -2256,6 +2264,7 @@ void GuiType::ControlRedraw(GuiControlType &aControl, bool aOnlyWithinTab)
 thread_local FontType *GuiType::sFont = NULL; // An array of structs, allocated upon first use.
 thread_local int GuiType::sFontCount = 0;
 thread_local HWND GuiType::sTreeWithEditInProgress = NULL;
+void *GuiType::sVTable = *(void **)&GuiType();
 
 
 
@@ -2397,6 +2406,8 @@ void GuiType::Dispose()
 	if (mMenu)
 		mMenu->Release();
 
+	if (g_MsgMonitor)
+		g_MsgMonitor->Delete(this);
 	mEvents.Dispose();
 	if (mEventSink && this != mEventSink)
 		mEventSink->Release();
@@ -2432,6 +2443,8 @@ void GuiControlType::Dispose()
 	//else do nothing, since this type has nothing more than a color stored in the union.
 	if (background_brush)
 		DeleteObject(background_brush);
+	if (g_MsgMonitor)
+		g_MsgMonitor->Delete(this);
 	events.Dispose();
 	if (name)
 		free(name);
@@ -2598,7 +2611,10 @@ FResult GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 	{
 		if (mon)
 			handlers.Delete(mon);
-		ApplyEventStyles(aControl, aEvent, false);
+		if (aEventKind == GUI_EVENTKIND_MESSAGE)
+			UpdateMsgMonitor(aControl, aEvent, 0);
+		else
+			ApplyEventStyles(aControl, aEvent, false);
 		return OK;
 	}
 	bool append = aMaxThreads >= 0;
@@ -2648,7 +2664,10 @@ FResult GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 	mon->instance_count = 0;
 	mon->max_instances = aMaxThreads;
 	mon->msg_type = aEventKind;
-	ApplyEventStyles(aControl, aEvent, true);
+	if (aEventKind == GUI_EVENTKIND_MESSAGE)
+		UpdateMsgMonitor(aControl, aEvent, aMaxThreads);
+	else
+		ApplyEventStyles(aControl, aEvent, true);
 	return OK;
 }
 
@@ -2726,6 +2745,39 @@ void GuiType::ApplyEventStyles(GuiControlType *aControl, UINT aEvent, bool aAdde
 		current_style ^= style_bit; // Toggle it.
 		SetWindowLong(hwnd, style_type, current_style);
 	}
+}
+
+
+
+void GuiType::UpdateMsgMonitor(GuiControlType *aControl, UINT aMsg, int aMaxThreads)
+{
+	IObject *obj = this;
+	auto events = &mEvents;
+	if (aControl)
+		obj = aControl, events = &aControl->events;
+	auto pmonitor = g_MsgMonitor->Find(aMsg, obj, GUI_EVENTKIND_MESSAGE);
+	if (pmonitor)
+	{
+		if (!aMaxThreads && !events->IsMonitoring(aMsg, GUI_EVENTKIND_MESSAGE))
+			g_MsgMonitor->Delete(pmonitor);
+	}
+	else if (aMaxThreads)
+	{
+		if (pmonitor = g_MsgMonitor->Add(aMsg, obj, aMaxThreads > 0))
+		{
+			obj->Release();
+			pmonitor->msg_type = GUI_EVENTKIND_MESSAGE;
+			pmonitor->instance_count = 0;
+			pmonitor->max_instances = aMaxThreads < 0 ? -aMaxThreads : aMaxThreads;
+		}
+	}
+	if (!aControl)
+		return;
+	// Using subclassing technology will be able to handle messages
+	// delivered to controls through SendMessage.
+	if (aControl->events.MessageIsMonitoring())
+		SetWindowSubclass(aControl->hwnd, ControlWindowProc, (UINT_PTR)sVTable, (DWORD_PTR)aControl);
+	else RemoveWindowSubclass(aControl->hwnd, ControlWindowProc, (UINT_PTR)sVTable);
 }
 
 
@@ -4728,7 +4780,9 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPCTSTR aOptions, LPCTS
 			mCurrentTabIndex = 0;
 			++mTabControlCount;
 			// Override the tab's window-proc so that custom background color becomes possible:
-			g_TabClassProc = (WNDPROC)SetWindowLongPtr(control.hwnd, GWLP_WNDPROC, (LONG_PTR)TabWindowProc);
+			//g_TabClassProc = (WNDPROC)SetWindowLongPtr(control.hwnd, GWLP_WNDPROC, (LONG_PTR)TabWindowProc);
+			// SetWindowSubclass is more convenient to use.
+			SetWindowSubclass(control.hwnd, TabWindowProc, (UINT_PTR)&control, (DWORD_PTR)this);
 			// Doesn't work to remove theme background from tab:
 			//EnableThemeDialogTexture(control.hwnd, ETDT_DISABLE);
 		}
@@ -8557,6 +8611,23 @@ int GuiType::FindFont(FontType &aFont)
 
 
 
+LRESULT CALLBACK ControlWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+	if (iMsg == WM_NCDESTROY)
+		RemoveWindowSubclass(hWnd, ControlWindowProc, uIdSubclass);
+
+	LRESULT msg_reply;
+	if (g_MsgMonitor->Count() // Count is checked here to avoid function-call overhead.
+		&& (!g->CalledByIsDialogMessageOrDispatch || g->CalledByIsDialogMessageOrDispatchMsg != iMsg) // v1.0.44.11: If called by IsDialog or Dispatch but they changed the message number, check if the script is monitoring that new number.
+		&& MsgMonitor(hWnd, iMsg, wParam, lParam, NULL, msg_reply))
+		return msg_reply; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
+	//g->CalledByIsDialogMessageOrDispatch = false;
+
+	return DefSubclassProc(hWnd, iMsg, wParam, lParam);
+}
+
+
+
 LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 {
 	// If a message pump other than our own is running -- such as that of a dialog like MsgBox -- it will
@@ -8577,7 +8648,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		&& (!g->CalledByIsDialogMessageOrDispatch || g->CalledByIsDialogMessageOrDispatchMsg != iMsg) // v1.0.44.11: If called by IsDialog or Dispatch but they changed the message number, check if the script is monitoring that new number.
 		&& MsgMonitor(hWnd, iMsg, wParam, lParam, NULL, msg_reply))
 		return msg_reply; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
-	g->CalledByIsDialogMessageOrDispatch = false;
+	//g->CalledByIsDialogMessageOrDispatch = false;
 	// Fixed for v1.0.40.01: The above line was added to resolve a case where our caller did make the value
 	// true but the message it sent us results in a recursive call to us (such as when the user resizes a
 	// window by dragging its borders: that apparently starts a loop in DefDlgProc that calls this
@@ -8597,17 +8668,6 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	pgui = GuiType::FindGui(hWnd);
 	if (!pgui) // This avoids numerous checks below.
 		return DefDlgProc(hWnd, iMsg, wParam, lParam);
-
-	if (pgui->mEvents.IsMonitoring(iMsg, GUI_EVENTKIND_MESSAGE))
-	{
-		ExprTokenType param[] = { pgui, (__int64)wParam, (__int64)(DWORD_PTR)lParam, (__int64)iMsg };
-		InitNewThread(0, false, true);
-		INT_PTR retval;
-		auto result = pgui->mEvents.Call(param, 4, iMsg, GUI_EVENTKIND_MESSAGE, pgui, &retval);
-		ResumeUnderlyingThread();
-		if (result == EARLY_RETURN)
-			return retval;
-	}
 
 	switch (iMsg)
 	{
@@ -9773,49 +9833,45 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 
 
 
-LRESULT CALLBACK TabWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK TabWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
 	// Variables are kept separate up here for future expansion of this function (to handle
 	// more iMsgs/cases, etc.):
-	GuiType *pgui;
-	GuiControlType *pcontrol;
-	HWND parent_window;
+	//GuiType *pgui;
+	//GuiControlType *pcontrol;
+	//HWND parent_window;
 	HBRUSH bk_brush;
 	COLORREF bk_color;
 
 	switch (iMsg)
 	{
+	case WM_NCDESTROY:
+		RemoveWindowSubclass(hWnd, TabWindowProc, uIdSubclass);
+		break;
 	case WM_ERASEBKGND:
+		((GuiType *)dwRefData)->ControlGetBkColor(*(GuiControlType *)uIdSubclass, true, bk_brush, bk_color);
+		if (!bk_brush)
+			break; // Let default proc handle it.
+		// Can't use SetBkColor(), need a real brush to fill it.
+		RECT clipbox;
+		GetClipBox((HDC)wParam, &clipbox);
+		FillRect((HDC)wParam, &clipbox, bk_brush);
+		return 1; // "An application should return nonzero if it erases the background."
 	case WM_WINDOWPOSCHANGED:
-		parent_window = GetParent(hWnd);
-		// Relies on short-circuit boolean order:
-		if (  !(pgui = GuiType::FindGui(parent_window)) || !(pcontrol = pgui->FindControl(hWnd))  )
-			break;
-		switch (iMsg)
+		if ((LPWINDOWPOS(lParam)->flags & (SWP_NOMOVE | SWP_NOSIZE)) != (SWP_NOMOVE | SWP_NOSIZE)) // i.e. moved, resized or both.
 		{
-		case WM_ERASEBKGND:
-			pgui->ControlGetBkColor(*pcontrol, true, bk_brush, bk_color);
-			if (!bk_brush)
-				break; // Let default proc handle it.
-			// Can't use SetBkColor(), need a real brush to fill it.
-			RECT clipbox;
-			GetClipBox((HDC)wParam, &clipbox);
-			FillRect((HDC)wParam, &clipbox, bk_brush);
-			return 1; // "An application should return nonzero if it erases the background."
-		case WM_WINDOWPOSCHANGED:
-			if ((LPWINDOWPOS(lParam)->flags & (SWP_NOMOVE | SWP_NOSIZE)) != (SWP_NOMOVE | SWP_NOSIZE)) // i.e. moved, resized or both.
-			{
-				// This appears to allow the tab control to update its row count:
-				LRESULT r = CallWindowProc(g_TabClassProc, hWnd, iMsg, wParam, lParam);
-				// Update this tab control's dialog, if it has one, to match the new size/position.
-				pgui->UpdateTabDialog(hWnd);
-				return r;
-			}
+			// This appears to allow the tab control to update its row count:
+			//LRESULT r = CallWindowProc(g_TabClassProc, hWnd, iMsg, wParam, lParam);
+			LRESULT r = DefSubclassProc(hWnd, iMsg, wParam, lParam);
+			// Update this tab control's dialog, if it has one, to match the new size/position.
+			((GuiType *)dwRefData)->UpdateTabDialog(hWnd);
+			return r;
 		}
 	}
 
 	// This will handle anything not already fully handled and returned from above:
-	return CallWindowProc(g_TabClassProc, hWnd, iMsg, wParam, lParam);
+	//return CallWindowProc(g_TabClassProc, hWnd, iMsg, wParam, lParam);
+	return DefSubclassProc(hWnd, iMsg, wParam, lParam);
 }
 
 
@@ -10112,6 +10168,36 @@ bool GuiType::ControlWmNotify(GuiControlType &aControl, LPNMHDR aNmHdr, INT_PTR 
 	ResumeUnderlyingThread();
 
 	// Consider this notification fully handled only if a non-empty value was returned.
+	return result == EARLY_RETURN;
+}
+
+
+bool GuiType::MsgMonitor(GuiControlType *aControl, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg, INT_PTR &aRetVal)
+{
+	MsgMonitorList &events = aControl ? aControl->events : mEvents;
+
+	InitNewThread(0, false, true);
+	DEBUGGER_STACK_PUSH(_T("OnMessage"))
+	AddRef();
+
+	g_script->mLastPeekTime = GetTickCount();
+	if (apMsg)
+		g->EventInfo = apMsg->time;
+
+	ExprTokenType param[] =
+	{
+		aControl ? (IObject *)aControl : (IObject *)this,
+		(__int64)awParam,
+		(__int64)(DWORD_PTR)alParam,
+		(__int64)aMsg
+	};
+	ResultType result = events.Call(param, _countof(param), aMsg
+		, GUI_EVENTKIND_MESSAGE, this, &aRetVal);
+
+	Release();
+	DEBUGGER_STACK_POP()
+	ResumeUnderlyingThread();
+
 	return result == EARLY_RETURN;
 }
 

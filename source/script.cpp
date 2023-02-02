@@ -1,4 +1,4 @@
-/*
+﻿/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -773,7 +773,7 @@ Script::~Script() // Destructor.
 	g_DestroyWindowCalled = false;
 	g_hWndEdit = NULL;
 	g_hFontEdit = NULL;
-	g_TabClassProc = NULL;
+	//g_TabClassProc = NULL;
 	g_modifiersLR_logical = 0;
 	g_modifiersLR_logical_non_ignored = 0;
 	g_modifiersLR_physical = 0;

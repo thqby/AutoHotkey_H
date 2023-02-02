@@ -1981,6 +1981,8 @@ public:
 
 	MsgMonitorList() : mCount(0), mCountMax(0), mMonitor(NULL), mTop(NULL) {}
 	void Dispose();
+	void Delete(IObject *aObj);
+	BOOL MessageIsMonitoring();
 };
 
 
@@ -2339,6 +2341,7 @@ struct GuiControlType : public Object
 	FResult Move(optl<int> aX, optl<int> aY, optl<int> aWidth, optl<int> aHeight);
 	FResult OnCommand(int aNotifyCode, ExprTokenType &aCallback, optl<int> aAddRemove);
 	FResult OnEvent(StrArg aEventName, ExprTokenType &aCallback, optl<int> aAddRemove);
+	FResult OnMessage(UINT aNumber, ExprTokenType &aCallback, optl<int> aAddRemove);
 	FResult OnNotify(int aNotifyCode, ExprTokenType &aCallback, optl<int> aAddRemove);
 	FResult Opt(StrArg aOptions);
 	FResult Redraw();
@@ -2449,7 +2452,8 @@ struct GuiControlOptionsType
 };
 
 LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam);
-LRESULT CALLBACK TabWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK TabWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
+LRESULT CALLBACK ControlWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
 
 class GuiType : public Object
 {
@@ -2515,6 +2519,7 @@ public:
 	thread_local static FontType *sFont; // An array of structs, allocated upon first use.
 	thread_local static int sFontCount;
 	thread_local static HWND sTreeWithEditInProgress; // Needed because TreeView's edit control for label-editing conflicts with IDOK (default button).
+	static void *sVTable;
 
 	// Don't overload new and delete operators in this case since we want to use real dynamic memory
 	// (since GUIs can be destroyed and recreated, over and over).
@@ -2649,6 +2654,7 @@ public:
 	FResult OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind, ExprTokenType &aCallback, optl<int> aAddRemove);
 	FResult OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind, IObject *aFunc, LPTSTR aMethodName, int aMaxThreads);
 	void ApplyEventStyles(GuiControlType *aControl, UINT aEvent, bool aAdded);
+	void UpdateMsgMonitor(GuiControlType *aControl, UINT aMsg, int aMaxThreads);
 	static LPTSTR sEventNames[];
 	static LPTSTR ConvertEvent(GuiEventType evt);
 	static GuiEventType ConvertEvent(LPCTSTR evt);
@@ -2718,6 +2724,7 @@ public:
 
 	void Event(GuiIndexType aControlIndex, UINT aNotifyCode, USHORT aGuiEvent = GUI_EVENT_NONE, UINT_PTR aEventInfo = 0);
 	bool ControlWmNotify(GuiControlType &aControl, LPNMHDR aNmHdr, INT_PTR &aRetVal);
+	bool MsgMonitor(GuiControlType *aControl, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg, INT_PTR &aRetVal);
 
 	static WORD TextToHotkey(LPCTSTR aText);
 	static LPTSTR HotkeyToText(WORD aHotkey, LPTSTR aBuf);

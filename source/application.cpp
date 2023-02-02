@@ -1452,12 +1452,10 @@ break_out_of_main_switch:
 			{
 				g->CalledByIsDialogMessageOrDispatch = true; // In case there is any way IsDialogMessage() can call one of our own window proc's rather than that of a MsgBox, etc.
 				g->CalledByIsDialogMessageOrDispatchMsg = msg.message; // Added in v1.0.44.11 because it's known that IsDialogMessage can change the message number (e.g. WM_KEYDOWN->WM_NOTIFY for UpDowns)
-				if (IsDialogMessage(fore_window, &msg))  // This message is for it, so let it process it.
-				{
-					g->CalledByIsDialogMessageOrDispatch = false;
-					continue;  // This message is done, so start a new iteration to get another msg.
-				}
+				msg_was_handled = IsDialogMessage(fore_window, &msg);  // This message is for it, so let it process it.
 				g->CalledByIsDialogMessageOrDispatch = false;
+				if (msg_was_handled)
+					continue;  // This message is done, so start a new iteration to get another msg.
 			}
 		}
 		// Translate keyboard input for any of our thread's windows that need it:
@@ -1740,14 +1738,37 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 	// Linear search vs. binary search should perform better on average because the vast majority
 	// of message monitoring scripts are expected to monitor only a few message numbers.
 	for (inst.index = 0; inst.index < inst.count; ++inst.index)
-		if ((*g_MsgMonitor)[inst.index].msg == aMsg)
+	{
+		auto &monitor = (*g_MsgMonitor)[inst.index];
+		if (monitor.msg == aMsg)
 		{
-			if (MsgMonitor(inst, aWnd, aMsg, awParam, alParam, apMsg, aMsgReply))
+			if (monitor.msg_type == GUI_EVENTKIND_MESSAGE)
 			{
-				result = true;
-				break;
+				HWND hwnd;
+				GuiType *pgui;
+				GuiControlType *pcontrol;
+				if (*(void **)monitor.union_value == GuiType::sVTable)
+				{
+					pcontrol = nullptr;
+					pgui = (GuiType *)monitor.func;
+					hwnd = pgui->mHwnd;
+				}
+				else
+				{
+					pcontrol = (GuiControlType *)monitor.func;
+					pgui = pcontrol->gui;
+					hwnd = pcontrol->hwnd;
+				}
+				if (hwnd != aWnd || g_nThreads >= g_MaxThreadsTotal
+					|| !pgui->MsgMonitor(pcontrol, aMsg, awParam, alParam, apMsg, (INT_PTR &)aMsgReply))
+					continue;
 			}
+			else if (!MsgMonitor(inst, aWnd, aMsg, awParam, alParam, apMsg, aMsgReply))
+				continue;
+			result = true;
+			break;
 		}
+	}
 
 	return result;
 }

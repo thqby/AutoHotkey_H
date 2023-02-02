@@ -3199,6 +3199,7 @@ ResultType MsgMonitorList::Call(ExprTokenType *aParamValue, int aParamCount, UIN
 	ResultType result = OK;
 	__int64 retval = 0;
 	BOOL thread_used = FALSE;
+	UINT_PTR event_info = g->EventInfo;
 	
 	for (MsgMonitorInstance inst (*this); inst.index < inst.count; ++inst.index)
 	{
@@ -3214,6 +3215,7 @@ ResultType MsgMonitorList::Call(ExprTokenType *aParamValue, int aParamCount, UIN
 		
 		// Set last found window (as documented).
 		g->hWndLastUsed = aGui->mHwnd;
+		g->EventInfo = event_info;
 		
 		// If we're about to call a method of the Gui itself, don't pass the Gui as the first parameter
 		// since it will be in `this`.  Doing this here rather than when the parameters are built ensures

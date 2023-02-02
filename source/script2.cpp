@@ -155,7 +155,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		&& (!g->CalledByIsDialogMessageOrDispatch || g->CalledByIsDialogMessageOrDispatchMsg != iMsg) // v1.0.44.11: If called by IsDialog or Dispatch but they changed the message number, check if the script is monitoring that new number.
 		&& MsgMonitor(hWnd, iMsg, wParam, lParam, NULL, msg_reply))
 		return msg_reply; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
-	g->CalledByIsDialogMessageOrDispatch = false; // v1.0.40.01.
+	//g->CalledByIsDialogMessageOrDispatch = false; // v1.0.40.01.
 
 	TRANSLATE_AHK_MSG(iMsg, wParam)
 	
@@ -2907,11 +2907,12 @@ void MsgMonitorList::Delete(MsgMonitorStruct *aMonitor)
 	--mCount;  // Must be done prior to the below.
 	LPVOID release_me = aMonitor->union_value;
 	bool is_method = aMonitor->is_method;
+	UCHAR msg_type = aMonitor->msg_type;
 	if (mon_index < mCount) // An element other than the last is being removed. Shift the array to cover/delete it.
 		memmove(aMonitor, aMonitor + 1, (mCount - mon_index) * sizeof(MsgMonitorStruct));
 	if (is_method)
 		free(release_me);
-	else
+	else if (this != g_MsgMonitor || msg_type != GUI_EVENTKIND_MESSAGE)
 		reinterpret_cast<IObject *>(release_me)->Release(); // Must be called last in case it calls a __delete() meta-function.
 }
 
@@ -2940,6 +2941,25 @@ BOOL MsgMonitorList::IsRunning(UINT aMsg, UCHAR aMsgType)
 }
 
 
+BOOL MsgMonitorList::MessageIsMonitoring()
+{
+	for (int i = 0; i < mCount; ++i)
+		if (mMonitor[i].msg_type == GUI_EVENTKIND_MESSAGE)
+			return TRUE;
+	return FALSE;
+}
+
+
+void MsgMonitorList::Delete(IObject *aObj)
+{
+	if (!mCount)
+		return;
+	for (auto pmonitor = mMonitor + mCount - 1; pmonitor >= mMonitor; --pmonitor)
+		if (pmonitor->func == aObj && pmonitor->msg_type == GUI_EVENTKIND_MESSAGE)
+			Delete(pmonitor);
+}
+
+
 void MsgMonitorList::Dispose()
 {
 	// Although other action taken by GuiType::Destroy() ensures the event list isn't
@@ -2951,7 +2971,7 @@ void MsgMonitorList::Dispose()
 		--mCount;
 		if (mMonitor[mCount].is_method)
 			free(mMonitor[mCount].method_name);
-		else
+		else if (this != g_MsgMonitor || mMonitor[mCount].msg_type != GUI_EVENTKIND_MESSAGE)
 			mMonitor[mCount].func->Release();
 	}
 	free(mMonitor);

@@ -32,7 +32,7 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - Added support for custom types of `DllCall` and `ComCall`, `ComCall({index: 5, iid: '{xxxx...}'}, coclassptr, mytype := {ArgPassInfo: {NativeType: 'ptr', ScriptToNative: (v) => nativetype, NativeToScript: (v) => scripttype}}, param)`, the current type object can be obtained from `A_EventInfo` within the conversion function.
 
 - After beta.12
-  - Change `OnMessage(..., hwnd)` to `Gui.Prototype.OnMessage(EventName, Callback [, AddRemove])`, is similar to `Gui.Prototype.OnEvent(...)`
+  - Change `OnMessage(..., hwnd)` to `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, is similar to `Gui.Prototype.OnEvent(...)`
   - Added `Decimal` class, supports arbitrary precision decimal operations, `MsgBox Decimal('0.1') + Decimal('0.2') = '0.3'`, [lib_mpir](https://github.com/thqby/AutoHotkey_H/releases/tag/lib_mpir) is required to compile, [the source code of mpir](https://github.com/wbhart/mpir)
   - Added `Array.Prototype.Filter(callback: (value [, index]) => Integer) => Array`
   - Added `Array.Prototype.FindIndex(callback: (value [, index]) => Integer, start_index := 1) => Array`, if `start_index` less than 0 then reverse lookup
@@ -43,6 +43,9 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 
 - After beta.15
   - Added `#InitExec expression`, execute the expressions in load order before the script begins, is similar to the static initializer for v1
+
+- After 2.0.2
+  - Added `GuiControl.Prototype.OnMessage(Msg, Callback [, AddRemove])`, and `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, the parameter of the callback has changed, `Callback(GuiObj, wParam, lParam, Msg)`, `A_EventInfo` is the message posted time.
 
 ## Classes List
 ```typescript
