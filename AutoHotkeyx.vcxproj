@@ -308,6 +308,9 @@
     <ClCompile>
       <DebugInformationFormat Condition="$(ConfigDebug)">EditAndContinue</DebugInformationFormat>
     </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions Condition="$(ConfigDll)">_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
     <CustomBuild Include="source\libx64call\x64call.asm">
