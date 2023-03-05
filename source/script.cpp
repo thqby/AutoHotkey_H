@@ -436,20 +436,30 @@ Script::~Script() // Destructor.
 
 	int i;
 
+	// Disconnect Debugger
+	if (!g_DebuggerHost.IsEmpty())
+	{
+		g_DebuggerHost.Empty();
+		if (g_Debugger->IsConnected())
+			g_Debugger->Disconnect();
+	}
+
+	Hotstring::AllDestruct();
+	Hotkey::AllDestruct();
+
 	//reset count for OnMessage
 	g_MsgMonitor->Dispose();
 	mOnExit.Dispose();
 	mOnClipboardChange.Dispose();
 
-	// Disconnect Debugger
-	if (g_FirstThreadID == g_MainThreadID && !g_DebuggerHost.IsEmpty())
-	{
-		g_DebuggerHost.Empty();
-		g_Debugger->Disconnect();
+	if (mFirstTimer) {
+		auto timer = mFirstTimer;
+		mFirstTimer = NULL;
+		for (auto t = timer; t; t = timer) {
+			timer = timer->mNextTimer;
+			delete t;
+		}
 	}
-
-	Hotstring::AllDestruct();
-	Hotkey::AllDestruct();
 
 	if (mClassPropertyDef)
 		free(mClassPropertyDef), mClassPropertyDef = NULL;
@@ -712,8 +722,6 @@ Script::~Script() // Destructor.
 
 	mFirstGroup = NULL;
 	mLastGroup = NULL;
-
-	mFirstTimer = NULL;
 
 	g_nMessageBoxes = 0;
 	g_nFileDialogs = 0;
@@ -2542,6 +2550,7 @@ process_completed_line:
 				}
 				// Below has a final +1 to include the terminator:
 				tmemmove(cp, cp1, _tcslen(cp1) + 1);
+				buf_length--;
 				// v2: The following is not done because 1) it is counter-intuitive for ` to affect two
 				// characters and 2) it hurts flexibility by preventing the escaping of a single colon
 				// immediately prior to the double-colon, such as ::lbl`:::.  Older comment:

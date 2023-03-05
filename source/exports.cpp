@@ -67,12 +67,10 @@ void callFuncDll(FuncAndToken * aToken, bool throwerr)
 	// See MsgSleep() for comments about the following section.
 	InitNewThread(0, false, true);
 	g->ExcptMode = EXCPTMODE_CATCH;
-	auto result = func->Invoke(*aToken->mResult, IT_CALL, nullptr, ExprTokenType(func), aToken->mParam, aToken->mParamCount);
+	func->Invoke(*aToken->mResult, IT_CALL, nullptr, ExprTokenType(func), aToken->mParam, aToken->mParamCount);
 	if (g->ThrownToken) {
 		if (throwerr)
 			g_script->UnhandledException(NULL);
-		else if (g->ThrownToken->symbol == SYM_STRING && !g->ThrownToken->mem_to_free)
-			aToken->mResult->Malloc(g->ThrownToken->marker, g->ThrownToken->marker_length);
 		else {
 			aToken->mResult->CopyValueFrom(*g->ThrownToken);
 			aToken->mResult->mem_to_free = g->ThrownToken->mem_to_free;
@@ -80,6 +78,8 @@ void callFuncDll(FuncAndToken * aToken, bool throwerr)
 			g->ThrownToken->mem_to_free = nullptr;
 		}
 	}
+	if (aToken->mResult->symbol == SYM_STRING && !aToken->mResult->mem_to_free)
+		aToken->mResult->Malloc(aToken->mResult->marker, aToken->mResult->marker_length);
 	ResumeUnderlyingThread();
 	return;
 }
@@ -575,8 +575,10 @@ LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPT
 					result.object->Release();
 			}
 			else SendMessage(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&aFuncAndToken, 0);
-			if (result.Result() == FAIL)
+			if (result.Result() == FAIL) {
+				free(result.mem_to_free);
 				return NULL;
+			}
 			TCHAR buf[MAX_INTEGER_LENGTH];
 			auto str = TokenToString(result, buf);
 			if (!result.mem_to_free)

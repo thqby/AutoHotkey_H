@@ -138,7 +138,7 @@ bif_impl FResult TrayTip(optl<StrArg> aText, optl<StrArg> aTitle, optl<StrArg> a
 // Main Window //
 /////////////////
 
-void callFuncDll(FuncAndToken* aFuncAndToken, bool throwerr = true);
+void callFuncDll(FuncAndToken* aFuncAndToken, bool throwerr);
 void callPromise(Promise* aPromise, HWND replyHwnd);
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -481,18 +481,11 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		return 0;
 
 	case AHK_EXECUTE_FUNCTION:
-		if (lParam < 65536) {
+		if (!lParam) {
 			if (auto token = (FuncAndToken*)wParam) {
-				callFuncDll(token);
-				if (token->mResult->symbol == SYM_OBJECT) {
-					if (lParam) {
-						auto obj = token->mResult->object;
-						MarshalObjectToToken(obj, *token->mResult);
-						obj->Release();
-					}
-					else
-						token->mResult->Free();
-				}
+				callFuncDll(token, true);
+				if (token->mResult->symbol == SYM_OBJECT)
+					token->mResult->object->Release();
 			}
 		}
 		else {
@@ -500,9 +493,10 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			if (p->mState & 4)
 				p->Release();
 			else {
+				auto fn = p->ToBoundFunc();
 				p->mReply = (HWND)wParam;
-				g_script->UpdateOrCreateTimer(p->ToBoundFunc(), true, -1, true, p->mPriority);
-				// callPromise(p, (HWND)wParam);
+				g_script->UpdateOrCreateTimer(fn, true, -1, true, p->mPriority);
+				fn->Release();
 			}
 		}
 		return 1;

@@ -3653,7 +3653,7 @@ Func* Promise::ToBoundFunc() {
 		auto promise = (Promise*)aParam[0]->object;
 		callPromise(promise, promise->mReply);
 			}, 1, 1);
-	ExprTokenType t_this(this), * param[] = { &t_this };
+	ExprTokenType t_this(this), *param[] = { &t_this };
 	return BoundFunc::Bind(sCaller, IT_CALL, nullptr, param, 1);
 }
 
