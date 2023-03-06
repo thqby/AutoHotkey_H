@@ -46,6 +46,7 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 
 - After 2.0.2
   - Added `GuiControl.Prototype.OnMessage(Msg, Callback [, AddRemove])`, and `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, the parameter of the callback has changed, `Callback(GuiObj, wParam, lParam, Msg)`, `A_EventInfo` is the message posted time.
+  - Added `JSON.parse(text, keep_type := true, as_map := true)` optional parameters, supports keys without quotation marks and `null` can be used as `unset` in array literal.
 
 ## Classes List
 ```typescript
@@ -77,7 +78,9 @@ class JSON {
   static true => ComValue
   static false => ComValue
 
-  static parse(objtext) => Map | Array
+  // @param keep_type If true, convert true/false/null to JSON.true / JSON.false / JSON.null, otherwise 1 / 0 / ''
+  // @param as_map If true, convert `{}` to Map, otherwise Object
+  static parse(text, keep_type := true, as_map := true) => Map | Array
 
   // the object include map,array,object and custom objects with `__enum` metagenics
   // @param space The number of Spaces or string used for indentation

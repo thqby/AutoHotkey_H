@@ -3433,7 +3433,7 @@ ObjectMember DynaToken::sMembers[] =
 
 ObjectMember JSON::sMembers[] =
 {
-	Object_Method(Parse, 1, 2),
+	Object_Method(Parse, 1, 3),
 	Object_Method(Stringify, 1, 2),
 	Object_Property_get(True),
 	Object_Property_get(False),
