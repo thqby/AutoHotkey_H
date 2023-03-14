@@ -9867,7 +9867,7 @@ unquoted_literal:
 					case SYM_STRING:
 						// Is this a quoted string (invalid here) or unquoted property name?
 						for (cp = this_infix->marker - 1; IS_SPACE_OR_TAB(*cp); --cp);
-						if (IS_IDENTIFIER_CHAR(*cp))
+						if (IS_IDENTIFIER_CHAR(*cp) || *cp == '"' || *cp == '\'')
 							break;
 					default:
 						return LineError(_T("Invalid property name in object literal."));
