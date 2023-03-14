@@ -29,7 +29,7 @@ BIF_DECL(BIF_Cast)
 	int source_type = 0; // 1 Char; 2 Uchar; 3 Short; 4 UShort; 5 Int; 6 UInt; 7 Float; 8 Double; 9 Int64
 	size_t target_size = sizeof(DWORD_PTR); // Set defaults.
 	BOOL is_integer = TRUE;   //
-	BOOL is_unsigned = (aParamCount > 3) ? FALSE : TRUE; // This one was added v1.0.48 to support unsigned __int64 the way DllCall does.
+	BOOL is_unsigned = FALSE;
 
 	LPTSTR type = TokenToString(*aParam[0]); // No need to pass aBuf since any numeric value would not be recognized anyway.
 	if (ctoupper(*type) == 'U') // Unsigned; but in the case of NumPut, it matters only for UInt64.
@@ -2845,12 +2845,12 @@ void JSON::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType*
 
 void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamCount)
 {
-	ExprTokenType val{}, _true(JSON::_true), _false(JSON::_false), _null(JSON::_null);
-	size_t keylen, len, deep = 0, stacksz = 64;
+	ExprTokenType val{}, _true(JSON::_true), _false(JSON::_false), _null(JSON::_null), _miss;
+	size_t keylen, len, deep = 0, stacksz = 64, commas = 0;
 	LPTSTR b, beg, key = NULL, t = NULL;
 	Object::String valbuf, keybuf;
 	Object** stack, * cur;
-	TCHAR c, endc, nul[5] = {};
+	TCHAR c, quot, endc, nul[5] = {};
 	bool isarr = false, escape = false, polarity, nonempty = false, as_map = ParamIndexToOptionalBOOL(2, TRUE);
 	double_conversion::StringToDoubleConverter converter(4, 0, __builtin_nan("0"), 0, 0);
 
@@ -2861,7 +2861,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 		_true.SetValue(1), _false.SetValue(0), _null.SetValue(_T(""), 0);
 	valbuf.SetCapacity(0x1000), keybuf.SetCapacity(0x1000);
 	stack = (Object**)malloc(stacksz * sizeof(Object*));
-	stack[0] = nullptr;
+	stack[0] = nullptr, _miss.symbol = SYM_MISSING;
 
 #define ltrim while ((c = *beg) == ' ' || c == '\t' || c == '\r' || c == '\n') beg++;
 
@@ -2891,7 +2891,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 		break;
 	}
 
-	for (val.symbol = SYM_MISSING; ; beg++) {
+	for (val.symbol = SYM_INVALID; ; beg++) {
 		ltrim;
 		switch (c)
 		{
@@ -2903,11 +2903,13 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			goto error;
 		case '{':
 		case '[':
-			if (val.symbol != SYM_MISSING)
+			if (val.symbol != SYM_INVALID)
 				goto error;
 			if (c == '[') {
-				if (isarr)
+				if (isarr) {
+					for (; commas; commas--) ((Array*)cur)->Append(_miss);
 					((Array*)cur)->Append(ExprTokenType(stack[deep] = Array::Create()));
+				}
 				else if (key) {
 					stack[deep] = Array::Create();
 					as_map ? ((Map*)cur)->SetItem(key, stack[deep]) : cur->SetOwnProp(key, stack[deep]);
@@ -2917,9 +2919,11 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 					goto error;
 			}
 			else {
-				if (isarr)
+				if (isarr) {
+					for (; commas; commas--) ((Array*)cur)->Append(_miss);
 					((Array*)cur)->Append(ExprTokenType(stack[deep] = as_map ? Map::Create(nullptr, 0, true) :
 						Object::Create(nullptr, 0, nullptr, true))), isarr = false;
+				}
 				else if (key) {
 					as_map ? ((Map*)cur)->SetItem(key, stack[deep] = Map::Create(nullptr, 0, true)) :
 						cur->SetOwnProp(key, stack[deep] = Object::Create(nullptr, 0, nullptr, true));
@@ -2928,7 +2932,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				else
 					goto error;
 			}
-			cur = stack[deep++], cur->Release(), nonempty = false;
+			cur = stack[deep++], cur->Release(), nonempty = false, commas = 0;
 			if (deep == stacksz) {
 				auto p = (Object**)realloc(stack, (stacksz *= 2) * sizeof(Object*));
 				if (!p) {
@@ -2940,8 +2944,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			break;
 		case '}':
 		case ']':
-			if ((c == ']' && (!isarr || nonempty && val.symbol == SYM_MISSING)) ||
-				(c == '}' && (isarr || nonempty && val.symbol == SYM_MISSING)))
+			if (isarr != (c == ']'))
 				goto error;
 			if (deep == 1) {
 				for (++beg;; ++beg) {
@@ -2956,22 +2959,18 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			val.symbol = SYM_OBJECT, stack[--deep] = NULL, cur = stack[deep - 1];
 			isarr = cur->mBase == Array::sPrototype, nonempty = true;
 			break;
-		case ',':
-			if (val.symbol == SYM_MISSING)
-				goto error;
-			val.symbol = SYM_MISSING;
-			break;
+		case '\'':
 		case '"':
-			if (val.symbol != SYM_MISSING)
+			if (val.symbol != SYM_INVALID)
 				goto error;
-			t = ++beg, escape = false;
-			while ((c = *beg) != '"') {
+			t = ++beg, escape = false, quot = c;
+			while ((c = *beg) != quot) {
 				if (c == '\\') {
 					if (!(c = *(++beg)))
 						goto error;
 					escape = true;
 				}
-				else if (c == '\r' || c == '\n')
+				else if (c == '\r' || c == '\n' && beg[-1] != '\r')
 					goto error;
 				beg++;
 			}
@@ -2982,21 +2981,20 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 					buf->SetCapacity(max(len + 1, buf->Capacity() * 2));
 				beg = t;
 				LPTSTR p = t = buf->Value();
-				while ((c = *beg) != '"') {
+				while ((c = *beg) != quot) {
 					if (c == '\\') {
 						switch (c = *(++beg))
 						{
-						case '"': *p++ = '"'; break;
-						case '\\': *p++ = '\\'; break;
-						case '/': *p++ = '/'; break;
 						case 'b': *p++ = '\b'; break;
 						case 'f': *p++ = '\f'; break;
 						case 'n': *p++ = '\n'; break;
 						case 'r': *p++ = '\r'; break;
 						case 't': *p++ = '\t'; break;
+						case 'v': *p++ = '\v'; break;
 						case 'u':
+						case 'x':
 							*p = 0;
-							for (int i = 4; i; i--) {
+							for (int i = c == 'u' ? 4 : 2; i; i--) {
 								*p *= 16, c = *++beg;
 								if (c >= '0' && c <= '9')
 									*p += c - '0';
@@ -3009,8 +3007,10 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 							}
 							p++;
 							break;
-						default:
-							goto error;
+						case '\r': beg[1] == '\n' && beg++;
+						case '\n': break;
+						case '0': c = 0;
+						default: *p++ = c; break;
 						}
 					}
 					else
@@ -3021,8 +3021,10 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			}
 			else
 				t[len] = '\0';
-			if (isarr)
+			if (isarr) {
+				for (; commas; commas--) ((Array*)cur)->Append(_miss);
 				val.SetValue(t, len), ((Array*)cur)->Append(val), t[len] = '"';
+			}
 			else {
 				if (!key) {
 					key = t, keylen = len, endc = '"', beg++;
@@ -3044,6 +3046,12 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			}
 			nonempty = true;
 			break;
+		case ',':
+			if (val.symbol == SYM_INVALID)
+				commas++;
+			else
+				commas = 0, val.symbol = SYM_INVALID;
+			break;
 		default:
 #define expect_str(str)               \
 	for (int i = 0; str[i] != 0; ++i) \
@@ -3052,7 +3060,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			goto error;               \
 		c = *++beg;                   \
 	}
-			if (val.symbol != SYM_MISSING)
+			if (val.symbol != SYM_INVALID)
 				goto error;
 			if (!isarr && !key) {
 				auto end = find_identifier_end(beg);
@@ -3085,48 +3093,51 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				}
 				else if (c == 'n') {
 					expect_str(_T("null"));
-					val.CopyValueFrom(_null);
 					if (isarr)
 						val.symbol = SYM_MISSING, ((Object*)cur)->SetOwnProp(_T("Default"), _null);
+					else val.CopyValueFrom(_null);
 				}
 				else {
 					expect_str(_T("true"));
 					val.CopyValueFrom(_true);
 				}
 				nonempty = true, beg--;
-				if (isarr)
-					((Array*)cur)->Append(val), val.symbol = SYM_INTEGER;
+				if (isarr) {
+					for (; commas; commas--) ((Array*)cur)->Append(_miss);
+					((Array*)cur)->Append(val);
+				}
 				else {
 					as_map ? ((Map*)cur)->SetItem(key, val) : cur->SetOwnProp(key, val);
 					key[keylen] = endc, key = NULL;
 				}
 				break;
 			default:
-				t = beg;
-				if (c == '-')
-					polarity = true, c = *++beg;
-				else polarity = false;
-				if (c == '0')
-					c = *++beg, val.value_int64 = 0;
-				else if (c > '0' && c <= '9') {
-					UINT64 i = 0;
-					while (c >= '0' && c <= '9')
-						i = i * 10 + c - '0', c = *++beg;
-					val.value_int64 = polarity ? -(__int64)i : (__int64)i;
+				t = beg, polarity = c == '-';
+				if (polarity || c == '+')
+					c = *++beg;
+				if (c >= '0' && c <= '9') {
+					bool is_hex = IS_HEX(beg);
+					val.SetValue(istrtoi64(t, &beg));
+					if (!is_hex) c = *beg;
 				}
-				else
-					goto error;
-				if (c == '.' || c == 'e' || c == 'E') {
-					int l;
-					val.symbol = SYM_FLOAT;
-					val.value_double = converter.StringToDouble<TCHAR>(t, 2147483647, &l);
-					beg = t + l - 1;
+				else if (c != '.') {
+					if (c == 'N') {
+						expect_str(_T("NaN"));
+						val.value_int64 = 0xffffffffffffffff;
+					}
+					else {
+						expect_str(_T("Infinity"));
+						val.value_int64 = polarity ? 0xfff0000000000000 : 0x7ff0000000000000;
+					}
+					val.symbol = SYM_FLOAT, c = 0;
 				}
-				else
-					beg--, val.symbol = SYM_INTEGER;
-				nonempty = true;
-				if (isarr)
+				if (c == '.' || c == 'e' || c == 'E')
+					val.SetValue(ATOF(t, &beg));
+				beg--, nonempty = true;
+				if (isarr) {
+					for (; commas; commas--) ((Array*)cur)->Append(_miss);
 					((Array*)cur)->Append(val);
+				}
 				else {
 					as_map ? ((Map*)cur)->SetItem(key, val) : cur->SetOwnProp(key, val);
 					key[keylen] = endc, key = NULL;
@@ -3808,37 +3819,39 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 			}
 			else
 				var->ToToken(aResultToken);
-			if (aResultToken.symbol == SYM_STRING)
-				aResultToken.Malloc(aResultToken.marker, aResultToken.marker_length ? aResultToken.marker_length : -1);
-			else if (atls.tls && (obj = TokenToObject(aResultToken))) {
-				if (comobj = dynamic_cast<ComObject*>(obj)) {
-					if (comobj->mVarType == VT_DISPATCH || comobj->mVarType == VT_UNKNOWN)
-						obj = comobj->mUnknown, iunk = comobj->mVarType == VT_UNKNOWN;
-					else if (!(comobj->mVarType & ~VT_TYPEMASK)) {
-						comobj->ToVariant(vv);
-						VariantToToken(vv, aResultToken);
-						obj->Release();
-						obj = nullptr;
-					}
-				}
-				if (obj) {
-					atls.~AutoTLS();
-					if ((stream = (LPSTREAM)SendMessage(mHwnd, AHK_THREADVAR, (WPARAM)obj, !iunk)) && SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, iunk ? IID_IUnknown : IID_IDispatch, (LPVOID*)&obj))) {
-						IObject* pobj;
-						if (!iunk && SUCCEEDED(obj->QueryInterface(IID_IObjectComCompatible, (LPVOID*)&pobj)))
+			if (atls.tls) {
+				if (aResultToken.symbol == SYM_STRING)
+					!aResultToken.mem_to_free &&aResultToken.Malloc(aResultToken.marker, aResultToken.marker_length ? aResultToken.marker_length : -1);
+				else if (obj = TokenToObject(aResultToken)) {
+					if (comobj = dynamic_cast<ComObject *>(obj)) {
+						if (comobj->mVarType == VT_DISPATCH || comobj->mVarType == VT_UNKNOWN)
+							obj = comobj->mUnknown, iunk = comobj->mVarType == VT_UNKNOWN;
+						else if (!(comobj->mVarType & ~VT_TYPEMASK)) {
+							comobj->ToVariant(vv);
+							VariantToToken(vv, aResultToken);
 							obj->Release();
-						else pobj = new ComObject((__int64)obj, iunk ? VT_UNKNOWN : VT_DISPATCH);
-						aResultToken.Free();
-						_f_return(pobj);
+							obj = nullptr;
+						}
 					}
-					else {
-						auto err = GetLastError();
-						aResultToken.Free();
-						if (stream && !iunk && SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, IID_IUnknown, (LPVOID*)&obj)))
-							_f_return(new ComObject((__int64)obj, VT_UNKNOWN));
-						aResultToken.SetExitResult(FAIL);
-						CoReleaseMarshalData(stream), stream->Release();
-						_f_throw_win32(err);
+					if (obj) {
+						atls.~AutoTLS();
+						if ((stream = (LPSTREAM)SendMessage(mHwnd, AHK_THREADVAR, (WPARAM)obj, !iunk)) && SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, iunk ? IID_IUnknown : IID_IDispatch, (LPVOID *)&obj))) {
+							IObject *pobj;
+							if (!iunk && SUCCEEDED(obj->QueryInterface(IID_IObjectComCompatible, (LPVOID *)&pobj)))
+								obj->Release();
+							else pobj = new ComObject((__int64)obj, iunk ? VT_UNKNOWN : VT_DISPATCH);
+							aResultToken.Free();
+							_f_return(pobj);
+						}
+						else {
+							auto err = GetLastError();
+							aResultToken.Free();
+							if (stream && !iunk && SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, IID_IUnknown, (LPVOID *)&obj)))
+								_f_return(new ComObject((__int64)obj, VT_UNKNOWN));
+							aResultToken.SetExitResult(FAIL);
+							CoReleaseMarshalData(stream), stream->Release();
+							_f_throw_win32(err);
+						}
 					}
 				}
 			}

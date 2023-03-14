@@ -195,9 +195,8 @@ EXPORT LPTSTR ahkGetVar(LPTSTR name, int getVar, DWORD aThreadID)
 			}
 			else {
 				TCHAR buf[MAX_NUMBER_SIZE];
-				ExprTokenType exp = { _T("") };
-				if (!ahkvar->IsObject())
-					ahkvar->ToToken(exp);
+				ExprTokenType exp;
+				ahkvar->ToTokenSkipAddRef(exp);
 				auto str = TokenToString(exp, buf);
 				return _tcsdup(str);
 			}
@@ -738,7 +737,30 @@ bool STDMETHODCALLTYPE IAhkApi::TokenToNumber(ExprTokenType& aInput, ExprTokenTy
 
 bool STDMETHODCALLTYPE IAhkApi::VarAssign(Var* aVar, ExprTokenType& aToken) { return aVar->Assign(aToken) == OK; }
 
-void STDMETHODCALLTYPE IAhkApi::VarToToken(Var* aVar, ExprTokenType& aToken) { aVar->ToTokenSkipAddRef(aToken); }
+void STDMETHODCALLTYPE IAhkApi::VarToToken(Var* aVar, ExprTokenType& aToken) {
+	if (aVar->mType == VAR_VIRTUAL) {
+		FuncResult result_token;
+		result_token.symbol = SYM_INTEGER; // For _f_return_i() and consistency with BIFs.
+		aVar->Get(result_token);
+		if (result_token.Exited())
+			result_token.symbol = SYM_INVALID;
+		else if (result_token.symbol == SYM_STRING) {
+			if (result_token.mem_to_free)
+				aVar->_AcceptNewMem(result_token.mem_to_free, result_token.marker_length);
+			else {
+				size_t length;
+				LPTSTR value = TokenToString(result_token, result_token.buf, &length);
+				if (aVar->AssignString(nullptr, length))
+					tmemcpy(result_token.marker = aVar->mCharContents, value, (result_token.marker_length = length) + 1);
+				else result_token.symbol = SYM_INVALID;
+			}
+			aVar->mAttrib &= ~VAR_ATTRIB_VIRTUAL_OPEN;
+		}
+		aToken.CopyValueFrom(result_token);
+	}
+	else
+		aVar->ToTokenSkipAddRef(aToken);
+}
 
 void STDMETHODCALLTYPE IAhkApi::VarFree(Var* aVar, int aWhenToFree) { aVar->Free(aWhenToFree); }
 
@@ -809,7 +831,7 @@ void* STDMETHODCALLTYPE IAhkApi::GetProcAddressCrc32(HMODULE aModule, UINT aCRC3
 bool STDMETHODCALLTYPE IAhkApi::Script_GetVar(LPTSTR aVarName, ExprTokenType& aValue) {
 	auto var = g_script ? g_script->FindGlobalVar(aVarName) : nullptr;
 	if (var) {
-		var->ToTokenSkipAddRef(aValue);
+		VarToToken(var, aValue);
 		return true;
 	}
 	return false;
