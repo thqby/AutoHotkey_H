@@ -4681,13 +4681,14 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 
 		if (!_tcsnicmp(parameter, _T("AutoHotkey"), 10))
 		{
-			if (!parameter[10]) // Just #requires AutoHotkey; would seem silly to warn the user in this case.
+			int o = _tcsnicmp(parameter + 10, _T("_H"), 2) ? 10 : 12;
+			if (!parameter[o]) // Just #requires AutoHotkey; would seem silly to warn the user in this case.
 				return CONDITION_TRUE;
 
-			if (IS_SPACE_OR_TAB(parameter[10]))
+			if (IS_SPACE_OR_TAB(parameter[o]))
 			{
 				TCHAR word[32];
-				for (LPCTSTR end, cp = parameter + 11; ; cp = end)
+				for (LPCTSTR end, cp = parameter + 1 + o; ; cp = end)
 				{
 					cp = omit_leading_whitespace(cp);
 					if (!*cp)
