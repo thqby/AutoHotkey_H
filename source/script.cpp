@@ -895,94 +895,42 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 
 		aScriptFilename = buf; // Use the entire path, including the exe's directory.
 	}
-	if (g_hResource) //It is a compiled exe
+	if (*aScriptFilename == '*')
 	{
-		PROCESS_BASIC_INFORMATION pbi;
-		ULONG ReturnLength;
-
-		HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
-			FALSE, GetCurrentProcessId());
-		PFN_NT_QUERY_INFORMATION_PROCESS pfnNtQueryInformationProcess =
-			(PFN_NT_QUERY_INFORMATION_PROCESS)GetProcAddress(
-			GetModuleHandle(_T("ntdll.dll")), "NtQueryInformationProcess");
-		NTSTATUS status = pfnNtQueryInformationProcess(
-			hProcess, ProcessBasicInformation,
-			(PVOID)&pbi, sizeof(pbi), &ReturnLength);
-		if (pbi.PebBaseAddress->ProcessParameters->CommandLine.Length) // && ReadProcessMemory(hProcess, &pbi.PebBaseAddress->ProcessParameters->CommandLine.Buffer,
-			//&commandLineContents, CommanLineLength, NULL))
+		if (!aScriptFilename[1]) // Read script from stdin.
 		{
-			int dllargc = 0;
-			TCHAR *param;
-			LPWSTR *dllargv = CommandLineToArgvW(pbi.PebBaseAddress->ProcessParameters->CommandLine.Buffer, &dllargc);
-			if (dllargc > 1 && pbi.PebBaseAddress->ProcessParameters->CommandLine.Length) // Only process if parameters were given
-			{
-				for (int i = 1; i < dllargc; ++i) // Start at 1 because 0 contains the program name.
-				{
-					param = dllargv[i]; // For performance and convenience.
-					if (!_tcsncmp(param, _T("/"), 1))
-						continue;
-					else // since this is not a  switch, the end of the [Switches] section has been reached (by design).
-					{
-						if (GetFileAttributes(param) == 0xFFFFFFFF)
-						{
-							if (!GetModuleFileName(hInstance, buf, _countof(buf))) //Get dll path
-								GetModuleFileName(NULL, buf, _countof(buf)); //due to MemoryLoadLibrary dll path might be empty
-						}
-						else
-						{
-							if (!GetFullPathName(param, _countof(buf), buf, NULL)) // This is also relied upon by mIncludeLibraryFunctionsThenExit.  Succeeds even on nonexistent files.
-							{
-								LocalFree(dllargv);
-								return FAIL;
-							}
-						}
-						break;  // No more switches allowed after this point.
-					}
-				}
-			}
-			LocalFree(dllargv);
-		}
-		CloseHandle(hProcess);
-	}
-	else
-	{
-		if (*aScriptFilename == '*')
-		{
-			if (!aScriptFilename[1]) // Read script from stdin.
-			{
-				mKind = ScriptKindStdIn;
-				buf[0] = '*';
-				buf[1] = '\0';
-				// Seems best to disable #SingleInstance for stdin scripts.
-				g_AllowOnlyOneInstance = SINGLE_INSTANCE_OFF;
-			}
-			else
-			{
-				mKind = ScriptKindResource;
-				g_AllowMainWindow = false;
-				_stprintf(buf, _T("%s"), aScriptFilename);
-			}
+			mKind = ScriptKindStdIn;
+			buf[0] = '*';
+			buf[1] = '\0';
+			// Seems best to disable #SingleInstance for stdin scripts.
+			g_AllowOnlyOneInstance = SINGLE_INSTANCE_OFF;
 		}
 		else
 		{
-			mKind = ScriptKindFile;
-			if (aScriptFilename != buf)
-			{
-				// In case the script is a relative filespec (relative to current working dir):
-				buf_length = GetFullPathName(aScriptFilename, _countof(buf), buf, NULL); // Succeeds even on nonexistent files.
-				if (!buf_length || buf_length >= _countof(buf))
-					return FAIL; // Due to rarity, no error msg, just abort.
-			}
+			mKind = ScriptKindResource;
+			g_AllowMainWindow = false;
+			_stprintf(buf, _T("%s"), aScriptFilename);
 		}
-#endif
-		if (mKind != ScriptKindStdIn)
+	}
+	else
+	{
+		mKind = ScriptKindFile;
+		if (aScriptFilename != buf)
 		{
-			// Using the correct case not only makes it look better in title bar & tray tool tip,
-			// it also helps with the detection of "this script already running" since otherwise
-			// it might not find the dupe if the same script name is launched with different
-			// lowercase/uppercase letters:
-			ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // This might change the length, e.g. due to expansion of 8.3 filename.
+			// In case the script is a relative filespec (relative to current working dir):
+			buf_length = GetFullPathName(aScriptFilename, _countof(buf), buf, NULL); // Succeeds even on nonexistent files.
+			if (!buf_length || buf_length >= _countof(buf))
+				return FAIL; // Due to rarity, no error msg, just abort.
 		}
+	}
+#endif
+	if (mKind != ScriptKindStdIn)
+	{
+		// Using the correct case not only makes it look better in title bar & tray tool tip,
+		// it also helps with the detection of "this script already running" since otherwise
+		// it might not find the dupe if the same script name is launched with different
+		// lowercase/uppercase letters:
+		ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // This might change the length, e.g. due to expansion of 8.3 filename.
 	}
 	mFileSpec = SimpleHeap::Alloc(buf);  // The full spec is stored for convenience.
 	LPTSTR filename_marker;
