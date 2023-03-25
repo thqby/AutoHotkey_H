@@ -99,7 +99,7 @@
     <IntDir>$(ProjectDir)temp\$(Platform)\$(Configuration)\</IntDir>
     <BinDir>$(ProjectDir)bin</BinDir>
     <OutDir>$(BinDir)\</OutDir>
-    <OutDir Condition="$(ConfigDebug)">$(BinDir)_debug\</OutDir>
+    <OutDir Condition="$(ConfigDebug)">$(BinDir)_debug\$(Platform)\</OutDir>
     <OutDir Condition="$(ConfigMinSize)">$(BinDir)_minimal\</OutDir>
     <BinSuffixChar Condition="'$(CharacterSet)'=='MultiByte'">A</BinSuffixChar>
     <BinTypeWord>$(CharacterSet)</BinTypeWord>
@@ -110,6 +110,10 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
+      <!-- pre-processor definition: ENABLE_DECIMAL -->
+      <PreprocessorDefinitions Condition="Exists('$(ProjectDir)source\lib_mpir\')">ENABLE_DECIMAL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- pre-processor definition: ENABLE_VLD -->
+      <PreprocessorDefinitions Condition="$(ConfigDebug) AND Exists('$(ProjectDir)source\Visual Leak Detector\')">ENABLE_VLD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader Condition="!$(ConfigDebug)">Use</PrecompiledHeader>
       <AdditionalIncludeDirectories>$(ProjectDir)source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -134,15 +138,15 @@
   <PropertyGroup Condition="false and $(ConfigRelease)">
     <PackerName>upx</PackerName>
     <PackerName Condition="'$(Platform)'=='x64'">mpress</PackerName>
-    <PackerPath Condition="'$(PackerPath)'=='' AND exists('$(PackerName).exe')">$(PackerName).exe</PackerPath>
-    <PackerPath Condition="'$(PackerPath)'=='' AND exists('..\$(PackerName).exe')">..\$(PackerName).exe</PackerPath>
+    <PackerPath Condition="'$(PackerPath)'=='' AND Exists('$(PackerName).exe')">$(PackerName).exe</PackerPath>
+    <PackerPath Condition="'$(PackerPath)'=='' AND Exists('..\$(PackerName).exe')">..\$(PackerName).exe</PackerPath>
     <PackerArgs Condition="'$(PackerArgs)'=='' AND '$(PackerName)'=='upx'"> --best --no-lzma --filter=73 --compress-icons=0</PackerArgs>
     <PackerArgs Condition="'$(PackerArgs)'=='' AND '$(PackerName)'=='mpress'"> -x</PackerArgs>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(PackerName)'!=''">
     <PostBuildEvent>
       <Command>echo $(PackerName).exe disabled or not found, skipping compression</Command>
-      <Command Condition="exists('$(PackerPath)')">$(PackerPath)$(PackerArgs) "$(TargetPath)" &amp; exit 0</Command>
+      <Command Condition="Exists('$(PackerPath)')">$(PackerPath)$(PackerArgs) "$(TargetPath)" &amp; exit 0</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <!-- FILES -->
@@ -304,13 +308,14 @@
     <ClCompile>
       <TreatWarningAsError Condition="!$(ConfigDebug)">true</TreatWarningAsError>
       <EnableFiberSafeOptimizations Condition="$(ConfigRelease)">true</EnableFiberSafeOptimizations>
-    </ClCompile>
-    <ClCompile>
       <DebugInformationFormat Condition="$(ConfigDebug)">EditAndContinue</DebugInformationFormat>
     </ClCompile>
     <ResourceCompile>
       <PreprocessorDefinitions Condition="$(ConfigDll)">_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
+    <Midl>
+      <TypeLibraryName Condition="$(ConfigDll)">$(IntDir)..\AutoHotkey.tlb</TypeLibraryName>
+    </Midl>
   </ItemDefinitionGroup>
   <ItemGroup>
     <CustomBuild Include="source\libx64call\x64call.asm">
@@ -413,5 +418,11 @@
       <AhkTlogHeader>^@(AhkVersionOutput,'|')</AhkTlogHeader>
     </PropertyGroup>
     <WriteLinesToFile File="$(TLogLocation)ahkversion.read.1.tlog" Lines="$(AhkTlogHeader);@(AhkVersionInput)" Overwrite="true" />
+  </Target>
+  <Target Name="CopyVLDFiles" Condition="$(ConfigDebug) AND Exists('$(ProjectDir)source\Visual Leak Detector\')" AfterTargets="Build">
+    <ItemGroup>
+      <VLDFiles Include="$(ProjectDir)source\Visual Leak Detector\bin\Win$(PlatformArchitecture)\*.*"/>
+    </ItemGroup>
+    <Copy SourceFiles="@(VLDFiles)" DestinationFolder="$(BinDir)_debug\$(Platform)\" SkipUnchangedFiles="true"/>
   </Target>
 </Project>

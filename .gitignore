@@ -8,6 +8,7 @@
 *.user
 /source/ComServer_i.c
 /source/ComServer_h.h
+/source/Visual Leak Detector/
 /.vs
 /.vscode
 /bin*/

@@ -86,6 +86,7 @@
     </ClCompile>
     <Link> <!-- note linker settings don't apply to lib_pcre -->
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreSpecificDefaultLibraries>libcmt;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
     </Link>
   </ItemDefinitionGroup>
   

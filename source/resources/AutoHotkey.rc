@@ -46,11 +46,11 @@ IDR_AUTOHOTKEY          REGISTRY                "AutoHotkey.rgs"
 IDR_COMSERVER           REGISTRY                "COMServer.rgs"
 
 // TYPELIB
-// ReleaseDll must be build before DebugDll to update .tlb file
+
 #ifdef _WIN64
-1            TYPELIB                 "temp\\x64\\MT_ReleaseDll\\AutoHotkeyx.tlb"
+1            TYPELIB                 "temp\\x64\\AutoHotkey.tlb"
 #else
-1            TYPELIB                 "temp\\Win32\\MT_ReleaseDll\\AutoHotkeyx.tlb"
+1            TYPELIB                 "temp\\Win32\\AutoHotkey.tlb"
 #endif
 #endif
 

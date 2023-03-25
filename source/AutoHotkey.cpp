@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -22,13 +22,14 @@ GNU General Public License for more details.
 
 #include <iphlpapi.h>
 #include <initializer_list>
-#ifdef _DEBUG
+
+#ifdef ENABLE_VLD	// _DEBUG AND exists('source\Visual Leak Detector\')
 #ifdef _WIN64
-#pragma comment(lib, "D:/Program Files/Visual Leak Detector/lib/Win64/vld.lib")
+#pragma comment(lib, "source/Visual Leak Detector/lib/Win64/vld.lib")
 #else
-#pragma comment(lib, "D:/Program Files/Visual Leak Detector/lib/Win32/vld.lib")
+#pragma comment(lib, "source/Visual Leak Detector/lib/Win32/vld.lib")
 #endif // _WIN64
-#include "D:/Program Files/Visual Leak Detector/include/vld.h"	// find memory leaks
+#include "Visual Leak Detector/include/vld.h"	// find memory leaks
 #endif
 
 #ifdef ENABLE_TLS_CALLBACK

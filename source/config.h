@@ -40,5 +40,3 @@
 #ifdef _WINDLL
 #define _USRDLL
 #endif // _WINDLL
-
-#define ENABLE_DECIMAL
