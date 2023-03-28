@@ -10,6 +10,11 @@
 
 // AuotHotkey2
 
+AuotHotkey2::AuotHotkey2()
+{
+	IAhkApi::Initialize();
+}
+
 STDMETHODIMP AuotHotkey2::InterfaceSupportsErrorInfo(REFIID riid)
 {
 	static const IID* const arr[] =
@@ -79,7 +84,7 @@ HRESULT __stdcall AuotHotkey2::ahkPause(/*in*/ VARIANT aThreadID,/*in,optional*/
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	TCHAR buf[MAX_INTEGER_SIZE];
 	*paused = ::ahkPause(aChangeTo.vt == VT_BSTR ? OLE2T(aChangeTo.bstrVal) : Variant2T(aChangeTo, buf), ThreadID) ? VARIANT_TRUE : VARIANT_FALSE;
 	return S_OK;
@@ -90,7 +95,7 @@ HRESULT __stdcall AuotHotkey2::ahkReady(/*in*/ VARIANT aThreadID,/*out*/VARIANT_
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	*ready = ::ahkReady(ThreadID) ? VARIANT_TRUE : VARIANT_FALSE;
 	return S_OK;
 }
@@ -101,7 +106,7 @@ HRESULT __stdcall AuotHotkey2::ahkFindLabel(/*in*/ VARIANT aThreadID,/*in*/VARIA
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	TCHAR buf[MAX_INTEGER_SIZE];
 	*aLabelPointer = ::ahkFindLabel(aLabelName.vt == VT_BSTR ? OLE2T(aLabelName.bstrVal) : Variant2T(aLabelName, buf), ThreadID);
 	return S_OK;
@@ -113,7 +118,9 @@ HRESULT __stdcall AuotHotkey2::ahkGetVar(/*in*/ VARIANT aThreadID,/*in*/VARIANT 
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	AutoTLS atls;
-	if (ThreadID == 0 || !atls.Enter(ThreadID))
+	if (ThreadID == 0)
+		ThreadID = CURRENT_THREADID;
+	if (!atls.Enter(ThreadID))
 		return E_INVALIDARG;
 
 	TCHAR buf[MAX_INTEGER_SIZE];
@@ -127,6 +134,8 @@ HRESULT __stdcall AuotHotkey2::ahkGetVar(/*in*/ VARIANT aThreadID,/*in*/VARIANT 
 	if (var->mType == VAR_VIRTUAL) {
 		aToken.symbol = SYM_INTEGER;
 		var->Get(aToken);
+		if (aToken.symbol == SYM_OBJECT)
+			aToken.object->AddRef();
 	}
 	else
 		var->ToToken(aToken);
@@ -179,7 +188,9 @@ HRESULT __stdcall AuotHotkey2::ahkAssign(/*in*/ VARIANT aThreadID,/*in*/VARIANT 
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	AutoTLS atls;
-	if (ThreadID == 0 || !atls.Enter(ThreadID))
+	if (ThreadID == 0)
+		ThreadID = CURRENT_THREADID; 
+	if (!atls.Enter(ThreadID))
 		return E_INVALIDARG;
 	TCHAR namebuf[MAX_INTEGER_SIZE];
 	ResultToken val;
@@ -207,7 +218,7 @@ HRESULT __stdcall AuotHotkey2::ahkExecuteLine(/*in*/ VARIANT aThreadID,/*[in,opt
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	*pLine = ::ahkExecuteLine(Variant2I(line), Variant2I(aMode), Variant2I(wait), ThreadID);
 	return S_OK;
 }
@@ -218,7 +229,7 @@ HRESULT __stdcall AuotHotkey2::ahkLabel(/*in*/ VARIANT aThreadID,/*[in]*/ VARIAN
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	TCHAR buf[MAX_INTEGER_SIZE];
 	*success = ::ahkLabel(aLabelName.vt == VT_BSTR ? OLE2T(aLabelName.bstrVal) : Variant2T(aLabelName, buf), Variant2I(nowait), ThreadID) ? VARIANT_TRUE : VARIANT_FALSE;
 	return S_OK;
@@ -230,7 +241,7 @@ HRESULT __stdcall AuotHotkey2::ahkFindFunc(/*in*/ VARIANT aThreadID,/*[in]*/ VAR
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	TCHAR buf[MAX_INTEGER_SIZE];
 	*pFunc = ::ahkFindFunc(FuncName.vt == VT_BSTR ? OLE2T(FuncName.bstrVal) : Variant2T(FuncName, buf), ThreadID);
 	return S_OK;
@@ -326,7 +337,7 @@ HRESULT __stdcall AuotHotkey2::ahkFunction(/*in*/ VARIANT aThreadID,/*[in]*/ VAR
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	TCHAR buf[MAX_INTEGER_SIZE];
 	return ahkFunctionVariant(FuncName.vt == VT_BSTR ? OLE2T(FuncName.bstrVal) : Variant2T(FuncName, buf), *returnVal
 		, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, ThreadID, 1);
@@ -338,7 +349,7 @@ HRESULT __stdcall AuotHotkey2::ahkPostFunction(/*in*/ VARIANT aThreadID,/*[in]*/
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	TCHAR buf[MAX_INTEGER_SIZE];
 	return ahkFunctionVariant(FuncName.vt == VT_BSTR ? OLE2T(FuncName.bstrVal) : Variant2T(FuncName, buf), *returnVal
 		, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, ThreadID, 0);
@@ -350,7 +361,7 @@ HRESULT __stdcall AuotHotkey2::addScript(/*in*/ VARIANT aThreadID,/*[in]*/ VARIA
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	TCHAR buf[MAX_INTEGER_SIZE];
 	*success = ::addScript(script.vt == VT_BSTR ? OLE2T(script.bstrVal) : Variant2T(script, buf), Variant2I(waitexecute), ThreadID);
 	return S_OK;
@@ -362,7 +373,7 @@ HRESULT __stdcall AuotHotkey2::ahkExec(/*in*/ VARIANT aThreadID,/*[in]*/ VARIANT
 		return DISP_E_BADPARAMCOUNT;
 	DWORD ThreadID = Variant2I(aThreadID);
 	if (ThreadID == 0)
-		return E_INVALIDARG;
+		ThreadID = CURRENT_THREADID;
 	TCHAR buf[MAX_INTEGER_SIZE];
 	*success = ::ahkExec(script.vt == VT_BSTR ? OLE2T(script.bstrVal) : Variant2T(script, buf), ThreadID) ? VARIANT_TRUE : VARIANT_FALSE;
 	return S_OK;

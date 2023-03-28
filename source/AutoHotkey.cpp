@@ -1,4 +1,4 @@
-/*
+﻿/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -117,8 +117,10 @@ ResultType ThreadExecuteScript();
 int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nCmdShow)
 {
 #ifdef ENABLE_TLS_CALLBACK
+#ifndef _DEBUG
 	if (!g_TlsDoExecute)
 		return 0;
+#endif // !_DEBUG
 #else
 	if (!g_crypt_code[0]) {
 		int i = 0;

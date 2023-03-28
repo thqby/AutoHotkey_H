@@ -484,6 +484,7 @@ public:
 	Object *GetUnresolvedClass(LPTSTR &aName);
 	
 	ResultType Invoke(IObject_Invoke_PARAMS_DECL);
+	void __Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
 	static ObjectMember sMembers[];
 	static ObjectMember sClassMembers[];

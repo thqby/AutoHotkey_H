@@ -1,5 +1,5 @@
 #pragma once
-#ifdef ENABLE_DECIMAL
+#ifdef ENABLE_DECIMAL		// exists('source\lib_mpir\')
 
 #include "lib_mpir/mpir.h"
 
@@ -8,7 +8,7 @@ class Decimal : public ObjectBase
 	mpz_t z;
 	mpir_si e;
 
-	thread_local static mpir_si sCarryPrec;;
+	thread_local static mpir_si sCarryPrec;
 	thread_local static mpir_si sPrec;
 	thread_local static mpir_si sOutputPrec;
 

@@ -34,12 +34,12 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - After beta.12
   - Change `OnMessage(..., hwnd)` to `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, is similar to `Gui.Prototype.OnEvent(...)`
   - Added `Decimal` class, supports arbitrary precision decimal operations, `MsgBox Decimal('0.1') + Decimal('0.2') = '0.3'`, [lib_mpir](https://github.com/thqby/AutoHotkey_H/releases/tag/lib_mpir) is required to compile, [the source code of mpir](https://github.com/wbhart/mpir)
-  - Added `Array.Prototype.Filter(callback: (value [, index]) => Integer) => Array`
-  - Added `Array.Prototype.FindIndex(callback: (value [, index]) => Integer, start_index := 1) => Array`, if `start_index` less than 0 then reverse lookup
+  - Added `Array.Prototype.Filter(callback: (value [, index]) => Boolean) => Array`
+  - Added `Array.Prototype.FindIndex(callback: (value [, index]) => Boolean, start_index := 1) => Integer`, if `start_index` less than 0 then reverse lookup
   - Added `Array.Prototype.IndexOf(val_to_find, start_index := 1) => Integer`
-  - Added `Array.Prototype.Join(separator := '') => String`
-  - Added `Array.Prototype.Map(callback: (value [, index]) => Integer) => Array`
-  - Added `Array.Prototype.Sort(callback?: (a, b) => Integer) => Array`, sort in place and return and the default is random sort
+  - Added `Array.Prototype.Join(separator := ',') => String`
+  - Added `Array.Prototype.Map(callback: (value [, index]) => Any) => Array`
+  - Added `Array.Prototype.Sort(callback?: (a, b) => Integer) => $this`, sort in place and return and the default is random sort
 
 - After beta.15
   - Added `#InitExec expression`, execute the expressions in load order before the script begins, is similar to the static initializer for v1
@@ -47,6 +47,8 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - After 2.0.2
   - Added `GuiControl.Prototype.OnMessage(Msg, Callback [, AddRemove])`, and `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, the parameter of the callback has changed, `Callback(GuiObj, wParam, lParam, Msg)`, `A_EventInfo` is the message posted time.
   - Added `JSON.parse(text, keep_type := true, as_map := true)` optional parameters, `null` can be used as `unset` in array literal.
+  - Added `Object.Prototype.__Item[Prop]`, it's same as `Obj.%Prop%`
+  - Added `Object.Prototype.Get(Prop [, Default])`
   - `JSON.parse` supports [JSON5](https://spec.json5.org/) format.
   - The keys of object literals support quoted strings, `v := {'key':val}`
 

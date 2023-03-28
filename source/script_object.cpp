@@ -593,9 +593,11 @@ void Map::Clear()
 
 ObjectMember Object::sMembers[] =
 {
+	Object_Member(__Item, __Item, 0, IT_SET, 1, 1),
 	Object_Method1(Clone, 0, 0),
 	Object_Method1(DefineProp, 2, 2),
 	Object_Method1(DeleteProp, 1, 1),
+	Object_Member(Get, __Item, 0, IT_CALL, 1, 2),
 	Object_Method1(GetOwnPropDesc, 1, 1),
 	Object_Method1(HasOwnProp, 1, 1),
 	Object_Method1(OwnProps, 0, 0),
@@ -603,6 +605,28 @@ ObjectMember Object::sMembers[] =
 };
 
 LPTSTR Object::sMetaFuncName[] = { _T("__Get"), _T("__Set"), _T("__Call") };
+
+
+void Object::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+{
+	TCHAR buf[MAX_NUMBER_LENGTH];
+	ExprTokenType t_this(this);
+	int index = IS_INVOKE_SET ? 1 : 0;
+	LPTSTR name = TokenToString(*aParam[index], buf);
+	if (!*name && TokenToObject(*aParam[index]))
+		_o_throw_type(_T("String"), *aParam[index]);
+	auto result = Invoke(aResultToken, aFlags & ~IT_CALL | IF_IGNORE_DEFAULT, name, t_this, aParam, index);
+	if (!index && result == INVOKE_NOT_HANDLED)
+	{
+		if (!ParamIndexIsOmitted(1))
+			aResultToken.CopyValueFrom(*aParam[1]);
+		else if (g_DefaultObjectValue)
+			aResultToken.ReturnPtr(g_DefaultObjectValue);
+		else
+			aResultToken.UnknownMemberError(t_this, IT_GET, name);
+	}
+}
+
 
 ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 {
@@ -867,7 +891,7 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 			method->AddRef();
 			return aResultToken.Return(method);
 		}
-		else if (g_DefaultObjectValue)
+		else if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
 			return aResultToken.ReturnPtr(g_DefaultObjectValue);
 	}
 
@@ -925,8 +949,8 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 		{
 			if (ParamIndexIsOmitted(1))
 			{
-				auto result = Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType { this }, nullptr, 0);
-				if (result == INVOKE_NOT_HANDLED || (aResultToken.symbol == SYM_STRING && aResultToken.marker == g_DefaultObjectValue))
+				auto result = Invoke(aResultToken, IT_GET | IF_IGNORE_DEFAULT, _T("Default"), ExprTokenType { this }, nullptr, 0);
+				if (result == INVOKE_NOT_HANDLED)
 					_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
 				return;
 			}
@@ -2131,8 +2155,8 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 				aResultToken.CopyValueFrom(*aParam[1]);
 				return;
 			}
-			auto result = Object::Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType{this}, nullptr, 0);
-			if (result != INVOKE_NOT_HANDLED && (aResultToken.symbol != SYM_STRING || aResultToken.marker != g_DefaultObjectValue))
+			auto result = Object::Invoke(aResultToken, IT_GET | IF_IGNORE_DEFAULT, _T("Default"), ExprTokenType{this}, nullptr, 0);
+			if (result != INVOKE_NOT_HANDLED)
 				_o_return_retval;
 			_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
 		}
@@ -2240,8 +2264,8 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 
 	case M_Join:
 	{
-		auto js = ParamIndexToOptionalString(0);
 		auto buf = aResultToken.buf;
+		auto js = ParamIndexToOptionalStringDef(0, _T(","), buf);
 		ExprTokenType token;
 		TString tmp;
 		for (size_t i = 0; i < mLength; i++)

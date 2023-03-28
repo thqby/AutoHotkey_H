@@ -46,7 +46,7 @@ class AuotHotkey2 :
 	public IDispatchImpl<ICOMServer, &IID_ICOMServer, &LIBID_AutoHotkey, /*wMajor =*/ 1, /*wMinor =*/ 0>
 {
 public:
-	// AuotHotkey2() : m_pUnkMarshaler(nullptr) {}
+	AuotHotkey2();
 	//~AuotHotkey2();
 
 	DECLARE_REGISTRY_RESOURCEID(IDR_COMSERVER)

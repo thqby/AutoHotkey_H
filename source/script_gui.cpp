@@ -2264,7 +2264,7 @@ void GuiType::ControlRedraw(GuiControlType &aControl, bool aOnlyWithinTab)
 thread_local FontType *GuiType::sFont = NULL; // An array of structs, allocated upon first use.
 thread_local int GuiType::sFontCount = 0;
 thread_local HWND GuiType::sTreeWithEditInProgress = NULL;
-void *GuiType::sVTable = *(void **)&GuiType();
+void *GuiType::sVTable = NULL;
 
 
 
@@ -2489,7 +2489,7 @@ FResult GuiType::Create(LPCTSTR aTitle)
 	if (!sGuiWinClass)
 	{
 		WNDCLASSEX wc = { 0 };
-			wc.cbSize = sizeof(wc);
+		wc.cbSize = sizeof(wc);
 		wc.lpszClassName = g_WindowClassGUI;
 		wc.hInstance = g_hInstance;
 		wc.lpfnWndProc = GuiWindowProc;
@@ -2501,6 +2501,7 @@ FResult GuiType::Create(LPCTSTR aTitle)
 		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
 		wc.cbWndExtra = DLGWINDOWEXTRA;  // So that it will be the type that uses DefDlgProc() vs. DefWindowProc().
 		sGuiWinClass = RegisterClassEx(&wc);
+		sVTable = *(void **)this;
 #ifdef _USRDLL
 		if (!sGuiWinClass && !(sGuiWinClass = GetClassInfoEx(g_hInstance, g_WindowClassGUI, &wc)))
 			return FR_E_WIN32;
