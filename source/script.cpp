@@ -909,7 +909,6 @@ ResultType Script::Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestar
 		{
 			mKind = ScriptKindResource;
 			g_AllowMainWindow = false;
-			_stprintf(buf, _T("%s"), aScriptFilename);
 		}
 	}
 	else
