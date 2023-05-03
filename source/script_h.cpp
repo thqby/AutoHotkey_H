@@ -2846,22 +2846,30 @@ void JSON::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType*
 void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamCount)
 {
 	ExprTokenType val{}, _true(JSON::_true), _false(JSON::_false), _null(JSON::_null), _miss;
-	size_t keylen, len, deep = 0, stacksz = 64, commas = 0;
+	size_t keylen, len, commas = 0;
 	LPTSTR b, beg, key = NULL, t = NULL;
 	Object::String valbuf, keybuf;
-	Object** stack, * cur;
 	TCHAR c, quot, endc, nul[5] = {};
-	bool isarr = false, escape = false, polarity, nonempty = false, as_map = ParamIndexToOptionalBOOL(2, TRUE);
+	bool success = true, isarr = true, escape = false, polarity, nonempty = false, as_map = ParamIndexToOptionalBOOL(2, TRUE);
 	double_conversion::StringToDoubleConverter converter(4, 0, __builtin_nan("0"), 0, 0);
-
+	Array stack, *top = &stack;
+	Object *temp;
+	auto &deep = stack.mLength;
+	union
+	{
+		IObject *cur;
+		Object *cur_obj;
+		Array *cur_arr;
+		Map *cur_map;
+	};
+	cur_arr = top;
 	b = beg = TokenIsPureNumeric(*aParam[0]) ? (LPTSTR)TokenToInt64(*aParam[0]) : TokenToString(*aParam[0]);
 	if (b < (void*)65536)
 		_o_throw_param(0);
 	if (!ParamIndexToOptionalBOOL(1, TRUE))
 		_true.SetValue(1), _false.SetValue(0), _null.SetValue(_T(""), 0);
 	valbuf.SetCapacity(0x1000), keybuf.SetCapacity(0x1000);
-	stack = (Object**)malloc(stacksz * sizeof(Object*));
-	stack[0] = nullptr, _miss.symbol = SYM_MISSING;
+	_miss.symbol = SYM_MISSING;
 
 #define ltrim while ((c = *beg) == ' ' || c == '\t' || c == '\r' || c == '\n') beg++;
 
@@ -2878,19 +2886,6 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 		return t == '/';
 	};
 
-	while (true) {
-		ltrim;
-		if (c == '/' && trim_comment() && beg++)
-			continue;
-		if (c == '{')
-			cur = stack[deep++] = as_map ? Map::Create(nullptr, 0, true) : Object::Create(nullptr, 0, nullptr, true);
-		else if (c == '[')
-			cur = stack[deep++] = Array::Create(), isarr = true;
-		else goto error;
-		beg++;
-		break;
-	}
-
 	for (val.symbol = SYM_INVALID; ; beg++) {
 		ltrim;
 		switch (c)
@@ -2900,6 +2895,10 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				goto error;
 			break;
 		case '\0':
+			if (deep == 1 && cur_arr == top) {
+				stack.mItem[0].ReturnMove(aResultToken);
+				goto ret;
+			}
 			goto error;
 		case '{':
 		case '[':
@@ -2907,12 +2906,14 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				goto error;
 			if (c == '[') {
 				if (isarr) {
-					for (; commas; commas--) ((Array*)cur)->Append(_miss);
-					((Array*)cur)->Append(ExprTokenType(stack[deep] = Array::Create()));
+					for (; commas; commas--)
+						if (!(success = cur_arr->Append(_miss)))
+							goto error;
+					success = cur_arr->Append(ExprTokenType(temp = Array::Create()));
 				}
 				else if (key) {
-					stack[deep] = Array::Create();
-					as_map ? ((Map*)cur)->SetItem(key, stack[deep]) : cur->SetOwnProp(key, stack[deep]);
+					temp = Array::Create();
+					success = as_map ? cur_map->SetItem(key, temp) : cur_obj->SetOwnProp(key, temp);
 					key[keylen] = endc, key = NULL, isarr = true;
 				}
 				else
@@ -2920,44 +2921,42 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			}
 			else {
 				if (isarr) {
-					for (; commas; commas--) ((Array*)cur)->Append(_miss);
-					((Array*)cur)->Append(ExprTokenType(stack[deep] = as_map ? Map::Create(nullptr, 0, true) :
+					for (; commas; commas--)
+						if (!(success = cur_arr->Append(_miss)))
+							goto error;
+					success = cur_arr->Append(ExprTokenType(temp = as_map ? Map::Create(nullptr, 0, true) :
 						Object::Create(nullptr, 0, nullptr, true))), isarr = false;
 				}
 				else if (key) {
-					as_map ? ((Map*)cur)->SetItem(key, stack[deep] = Map::Create(nullptr, 0, true)) :
-						cur->SetOwnProp(key, stack[deep] = Object::Create(nullptr, 0, nullptr, true));
+					success = as_map ? cur_map->SetItem(key, temp = Map::Create(nullptr, 0, true)) :
+						cur_obj->SetOwnProp(key, temp = Object::Create(nullptr, 0, nullptr, true));
 					key[keylen] = endc, key = NULL;
 				}
 				else
 					goto error;
 			}
-			cur = stack[deep++], cur->Release(), nonempty = false, commas = 0;
-			if (deep == stacksz) {
-				auto p = (Object**)realloc(stack, (stacksz *= 2) * sizeof(Object*));
-				if (!p) {
-					stacksz = 0;
-					goto error;
-				}
-				stack = p;
-			}
+			cur = temp, temp->Release(), nonempty = false, commas = 0;
+			if (!success)
+				goto error;
 			break;
 		case '}':
 		case ']':
 			if (isarr != (c == ']'))
 				goto error;
-			if (deep == 1) {
+			if (deep < 2) {
+				if (!deep || stack.mItem[0].symbol != SYM_OBJECT)
+					goto error;
 				for (++beg;; ++beg) {
 					ltrim;
 					if (!c) break;
 					if (c != '/' || !trim_comment())
 						goto error;
 				}
-				aResultToken.SetValue(stack[0]);
+				stack.mItem[0].ReturnMove(aResultToken);
 				goto ret;
 			}
-			val.symbol = SYM_OBJECT, stack[--deep] = NULL, cur = stack[deep - 1];
-			isarr = cur->mBase == Array::sPrototype, nonempty = true;
+			val.symbol = SYM_OBJECT, stack.mItem[--deep].symbol = SYM_MISSING, cur = stack.mItem[deep - 1].object;
+			isarr = cur_obj->mBase == Array::sPrototype, nonempty = true;
 			break;
 		case '\'':
 		case '"':
@@ -3022,12 +3021,14 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			else
 				t[len] = '\0';
 			if (isarr) {
-				for (; commas; commas--) ((Array*)cur)->Append(_miss);
-				val.SetValue(t, len), ((Array*)cur)->Append(val), t[len] = '"';
+				for (; commas; commas--)
+					if (!(success = cur_arr->Append(_miss)))
+						goto error;
+				val.SetValue(t, len), success = cur_arr->Append(val), t[len] = quot;
 			}
 			else {
 				if (!key) {
-					key = t, keylen = len, endc = '"', beg++;
+					key = t, keylen = len, endc = quot, beg++;
 					while (true) {
 						ltrim;
 						if (c != ':')
@@ -3040,10 +3041,12 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				}
 				else {
 					val.SetValue(t, len);
-					as_map ? ((Map*)cur)->SetItem(key, val) : cur->SetOwnProp(key, val);
+					success = as_map ? cur_map->SetItem(key, val) : cur_obj->SetOwnProp(key, val);
 					key[keylen] = t[len] = endc, key = NULL;
 				}
 			}
+			if (!success)
+				goto error;
 			nonempty = true;
 			break;
 		case ',':
@@ -3051,6 +3054,8 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				commas++;
 			else
 				commas = 0, val.symbol = SYM_INVALID;
+			if (cur_arr == top)
+				goto error;
 			break;
 		default:
 #define expect_str(str)               \
@@ -3094,7 +3099,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				else if (c == 'n') {
 					expect_str(_T("null"));
 					if (isarr)
-						val.symbol = SYM_MISSING, ((Object*)cur)->SetOwnProp(_T("Default"), _null);
+						val.symbol = SYM_MISSING, cur_obj->SetOwnProp(_T("Default"), _null);
 					else val.CopyValueFrom(_null);
 				}
 				else {
@@ -3103,13 +3108,17 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				}
 				nonempty = true, beg--;
 				if (isarr) {
-					for (; commas; commas--) ((Array*)cur)->Append(_miss);
-					((Array*)cur)->Append(val);
+					for (; commas; commas--)
+						if (!(success = cur_arr->Append(_miss)))
+							goto error;
+					success = cur_arr->Append(val);
 				}
 				else {
-					as_map ? ((Map*)cur)->SetItem(key, val) : cur->SetOwnProp(key, val);
+					success = as_map ? cur_map->SetItem(key, val) : cur_obj->SetOwnProp(key, val);
 					key[keylen] = endc, key = NULL;
 				}
+				if (!success)
+					goto error;
 				break;
 			default:
 				t = beg, polarity = c == '-';
@@ -3135,21 +3144,23 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 					val.SetValue(ATOF(t, &beg));
 				beg--, nonempty = true;
 				if (isarr) {
-					for (; commas; commas--) ((Array*)cur)->Append(_miss);
-					((Array*)cur)->Append(val);
+					for (; commas; commas--)
+						if (!(success = cur_arr->Append(_miss)))
+							goto error;
+					success = cur_arr->Append(val);
 				}
 				else {
-					as_map ? ((Map*)cur)->SetItem(key, val) : cur->SetOwnProp(key, val);
+					success = as_map ? cur_map->SetItem(key, val) : cur_obj->SetOwnProp(key, val);
 					key[keylen] = endc, key = NULL;
 				}
+				if (!success)
+					goto error;
 				break;
 			}
 		}
 	}
 error:
-	if (stack[0])
-		stack[0]->Release();
-	if (!stacksz)
+	if (!success)
 		aResultToken.MemoryError();
 	else {
 		TCHAR msg[60];
@@ -3165,7 +3176,6 @@ error:
 	}
 ret:
 	if (key) key[keylen] = endc;
-	free(stack);
 }
 
 void JSON::Stringify(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamCount)
@@ -3186,10 +3196,13 @@ void JSON::Stringify(ResultToken& aResultToken, ExprTokenType* aParam[], int aPa
 		objcolon = indent ? _T("\": ") : _T("\":");
 		deep = 0;
 		appendObj(obj, ParamIndexToOptionalBOOL(2, true));
-		ToToken(aResultToken);
 	}
-	else
-		_o_throw_type(_T("Object"), *aParam[0]);
+	else if (TokenIsPureNumeric(*aParam[0])) {
+		TCHAR numbuf[MAX_NUMBER_LENGTH];
+		append(TokenToString(*aParam[0], numbuf));
+	}
+	else str.append('"'), append(TokenToString(*aParam[0])), str.append('"');
+	ToToken(aResultToken);
 }
 
 void JSON::append(LPTSTR s) {
