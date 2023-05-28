@@ -111,7 +111,7 @@
   <ItemDefinitionGroup>
     <ClCompile>
       <!-- pre-processor definition: ENABLE_DECIMAL -->
-      <PreprocessorDefinitions Condition="Exists('$(ProjectDir)source\lib_mpir\')">ENABLE_DECIMAL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="Exists('$(ProjectDir)source\lib_mpir\win$(PlatformArchitecture)\mpir.lib')">ENABLE_DECIMAL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <!-- pre-processor definition: ENABLE_VLD -->
       <PreprocessorDefinitions Condition="$(ConfigDebug) AND Exists('$(ProjectDir)source\Visual Leak Detector\')">ENABLE_VLD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader Condition="!$(ConfigDebug)">Use</PrecompiledHeader>

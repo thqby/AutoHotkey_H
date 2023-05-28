@@ -475,6 +475,12 @@ void InitErrorBox(HWND hwnd, ErrorBoxParam &error)
 		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)footer);
 	}
 
+	NONCLIENTMETRICS ncm{ sizeof(NONCLIENTMETRICS) };
+	SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS), &ncm, 0);
+	_tcscpy(cf.szFaceName, ncm.lfCaptionFont.lfFaceName);
+	cf.dwMask = CFM_FACE;
+	SendMessage(re, EM_SETCHARFORMAT, SCF_DEFAULT, (LPARAM)&cf);
+
 #ifdef CONFIG_DEBUGGER
 	ExprTokenType tk;
 	if (   error.stack_index >= 0

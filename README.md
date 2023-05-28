@@ -17,7 +17,7 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - The object structure is the same as the AHK_L version
 - Remove built-in variable `NULL`
 - Remove standard library in autohotkey.exe resource, but libraries can still be loaded from resources.
-- Remove `CriticalObject`, it is not a safe way to use objects in multithreading
+- Remove `CriticalObject`, in some cases, it is not a safe way to use objects in multithreading
 - Remove the same hot string that defined in multiple threads firing at the same time
 - `DynaCall` object has `Param[index]` property, used to retrieve and set default parameters, the index is the same as the position of the argument when it is called.
 - `CryptAES` and Zip functions, parameter `Size` is not needed when previous parameter is an `Object` with `Ptr` and `Size` properties.
