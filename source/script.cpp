@@ -1,4 +1,4 @@
-/*
+﻿/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -8615,6 +8615,7 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 			
 			line->mActionType = ACT_EXPRESSION;
 			line->mNextLine->mPrevLine = line->mPrevLine;
+			line->Free(true, true);
 			if (line->mPrevLine = mExecLineBeforeAutoExec)
 				mExecLineBeforeAutoExec->mNextLine = line;
 			mFirstLine->mPrevLine = mExecLineBeforeAutoExec = line;
@@ -10571,8 +10572,9 @@ void Line::FreeDerefBufIfLarge()
 	// having demonstrated that it isn't idle).
 }
 
-void Line::Free()
+void Line::Free(bool aSkipFatArrowBlockBreakpoint, bool aOnlyBreakpoint)
 {
+	if (!aOnlyBreakpoint)
 	for (int i = 0; i < mArgc; ++i) {
 		ArgStruct &this_arg = mArg[i];
 		if (!this_arg.is_expression || !this_arg.postfix)
@@ -10584,7 +10586,17 @@ void Line::Free()
 	}
 #ifdef CONFIG_DEBUGGER
 	if (mBreakpoint)
-		delete mBreakpoint;
+	{
+		auto bp = mBreakpoint;
+		auto line = this, prev = mPrevLine;
+		mBreakpoint = nullptr;
+		while (prev && prev->mLineNumber == mLineNumber && prev->mFileIndex == mFileIndex)
+			prev = (line = prev)->mPrevLine;
+		if (aSkipFatArrowBlockBreakpoint && LineIsFatArrowBlock(line))
+			return;
+		SetBreakpointForLineGroup(line, nullptr);
+		delete bp;
+	}
 #endif
 }
 
@@ -11606,7 +11618,7 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			line->mPrevLine->mNextLine = line->mNextLine;
 			line->mNextLine->mPrevLine = line->mPrevLine;
 			// AHK_H: Avoid memory leaks when the script exits
-			line->Free();
+			line->Free(true);
 			if (aMode == ONLY_ONE_LINE)
 				return result;
 			line = line->mNextLine;

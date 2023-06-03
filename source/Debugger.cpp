@@ -152,12 +152,19 @@ void SetBreakpointForLineGroup(Line *line, Breakpoint *bp)
 		// Under the conditions established by FindFirstLineForBreakpoint(), this line can
 		// only be the block-begin of a fat-arrow function, which is always followed by a
 		// return and block-end, then either another fat-arrow or the final expression Line.
-		ASSERT(LineIsFatArrowBlock(line) && line->mNextLine->mActionType == ACT_RETURN
+		// ASSERT(LineIsFatArrowBlock(line) && line->mNextLine->mActionType == ACT_RETURN
+		//	&& line->mNextLine->mNextLine->mActionType == ACT_BLOCK_END);
+		ASSERT(line->mAttribute && line->mRelatedLine && line->mNextLine->mActionType == ACT_RETURN
 			&& line->mNextLine->mNextLine->mActionType == ACT_BLOCK_END);
+		// ACT_STATIC line has been removed
+		auto skip = !(line->mRelatedLine->mLineNumber == line->mLineNumber
+			&& line->mRelatedLine->mFileIndex == line->mFileIndex);
 		line = line->mNextLine; // Set it to the return.
 		if (!line)
 			return; // Shouldn't happen.
 		line->mBreakpoint = bp;
+		if (skip)
+			return;
 		if (   !(line = line->mNextLine)     // Set it to the block-end.
 			|| !(line = line->mNextLine)   ) // Set it to the next fat-arrow block-begin or the final expression.
 			return; // Shouldn't happen.
