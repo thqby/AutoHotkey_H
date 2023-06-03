@@ -332,7 +332,6 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 		LeaveCriticalSection(&g_CriticalTLSCallback);
 		return 0;
 	}
-	Line* aLastStaticLine = g_script->mLastStaticLine;
 	int HotkeyCount = Hotkey::sHotkeyCount;
 	HotkeyCriterion* aFirstHotExpr = g_FirstHotExpr, * aLastHotExpr = g_LastHotExpr;
 	g_FirstHotExpr = NULL; g_LastHotExpr = NULL;
@@ -353,12 +352,6 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 		g->CurrentMacro = (UserFunc*)aCurrMacro;
 		Line* aTempLine = g_script->mLastLine;
 		Line* aExecLine = g_script->mFirstLine;
-		if (g_script->mLastStaticLine && g_script->mLastStaticLine != aLastStaticLine && aExecLine) {
-			aExecLine->mPrevLine = g_script->mLastStaticLine;
-			if (aLastStaticLine)
-				aLastStaticLine->mNextLine->mPrevLine = NULL, aLastStaticLine->mNextLine = NULL;
-		}
-		g_script->mLastStaticLine = aLastStaticLine;
 		g_script->mIsReadyToExecute = true;
 		RESTORE_G_SCRIPT;
 		Line::sSourceFileCount = aSourceFileIdx;
@@ -459,7 +452,6 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 			}
 		}
 	}
-	Line* aLastStaticLine = g_script->mLastStaticLine;
 	int HotkeyCount = Hotkey::sHotkeyCount;
 	HotkeyCriterion *aFirstHotExpr = g_FirstHotExpr,*aLastHotExpr = g_LastHotExpr;
 	g_FirstHotExpr = NULL;g_LastHotExpr = NULL;
@@ -481,12 +473,6 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 	g->CurrentMacro = (UserFunc*)aCurrMacro;
 	Line *aTempLine = g_script->mLastLine;
 	Line *aExecLine = g_script->mFirstLine;
-	if (g_script->mLastStaticLine && g_script->mLastStaticLine != aLastStaticLine && aExecLine) {
-		aExecLine->mPrevLine = g_script->mLastStaticLine;
-		if (aLastStaticLine && aLastStaticLine->mNextLine)
-			aLastStaticLine->mNextLine->mPrevLine = NULL, aLastStaticLine->mNextLine = NULL;
-	}
-	g_script->mLastStaticLine = aLastStaticLine;
 	g_script->mIsReadyToExecute = true;
 	RESTORE_G_SCRIPT;
 	

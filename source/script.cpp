@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -599,15 +599,8 @@ Script::~Script() // Destructor.
 		UnregisterClass(g_WindowClassMain, g_hInstance);
 		g_ClassRegistered = 0;
 	}
-	while (g_FirstHotExpr && g_FirstHotExpr->ThreadID == g_MainThreadID)
-		g_FirstHotExpr = g_FirstHotExpr->NextExpr;
-	if (g_LastHotExpr && g_LastHotExpr->ThreadID == g_MainThreadID)
-		g_LastHotExpr = g_FirstHotExpr;
-	for (HotkeyCriterion *cp = g_FirstHotExpr;cp; cp = cp->NextExpr)
-	{
-		if (cp->NextExpr && cp->NextExpr->ThreadID == g_MainThreadID)
-			cp->NextExpr = cp->NextExpr->NextExpr;
-	}
+	for (auto cp = g_FirstHotExpr; cp; cp = cp->NextExpr)
+		cp->Callback->Release();
 
 	if (g_hAccelTable)
 		DestroyAcceleratorTable(g_hAccelTable);
@@ -637,8 +630,6 @@ Script::~Script() // Destructor.
 
 	IAhkApi::Finalize();
 	g_script = NULL;
-	if (mLastStaticLine)
-		mFirstLine->mPrevLine = mLastStaticLine;
 	for (Line *line = mLastLine; line; line = line->mPrevLine)
 		line->Free();
 	Line::FreeDerefBufIfLarge();
@@ -821,23 +812,6 @@ Script::~Script() // Destructor.
 	//	OleUninitialize();
 	//else
 		CoUninitialize();
-}
-
-
-
-void Script::ResolveLinesBeforeAutoExec()
-{
-	if (mExecLineBeforeAutoExec)
-	{
-		if (mExecLineBeforeAutoExec->mNextLine = mFirstLine)
-			mFirstLine->mPrevLine = mExecLineBeforeAutoExec;
-		else
-			mLastLine = mExecLineBeforeAutoExec;
-		mFirstLine = mExecLineBeforeAutoExec;
-		mExecLineBeforeAutoExec = nullptr;
-		while (mFirstLine->mPrevLine)
-			mFirstLine = mFirstLine->mPrevLine;
-	}
 }
 
 
@@ -1702,9 +1676,7 @@ LineNumberType Script::LoadFromText(LPTSTR aScript, LPCTSTR aPathToShow)
 	// function library auto-inclusions to be processed correctly.
 
 	// Load the main script file.  This will also load any files it includes with #Include.
-	auto result = LoadIncludedText(aScript, aPathToShow);
-	ResolveLinesBeforeAutoExec();
-	if (!result)
+	if (!LoadIncludedText(aScript, aPathToShow))
 		return LOADING_FAILED;
 
 #ifdef ENABLE_DLLCALL
@@ -1737,7 +1709,7 @@ LineNumberType Script::LoadFromText(LPTSTR aScript, LPCTSTR aPathToShow)
 	// Resolve any unresolved base classes.
 	if (mUnresolvedClasses)
 	{
-		result = ResolveClasses();
+		auto result = ResolveClasses();
 		mUnresolvedClasses->Release();
 		mUnresolvedClasses = NULL;
 		if (!result)
@@ -1945,9 +1917,7 @@ UINT Script::LoadFromFile(LPCTSTR aFileSpec)
 #endif
 
 	// Load the main script file.  This will also load any files it includes with #Include.
-	auto result = LoadIncludedFile(mKind == ScriptKindStdIn ? _T("*") : aFileSpec, false, false);
-	ResolveLinesBeforeAutoExec();
-	if (!result)
+	if (!LoadIncludedFile(mKind == ScriptKindStdIn ? _T("*") : aFileSpec, false, false))
 		return LOADING_FAILED;
 
 #ifdef ENABLE_DLLCALL
@@ -3011,7 +2981,7 @@ process_completed_line:
 		// Since above didn't "goto", it's not a label.
 		if (*buf == '#')
 		{
-			if (!_tcsnicmp(buf, _T("#HotIf"), 6) && IS_SPACE_OR_TAB(buf[6]))
+			if (!_tcsnicmp(buf, _T("#HotIf"), 6) && IS_SPACE_OR_TAB(buf[6]) || !_tcsnicmp(buf, _T("#InitExec"), 9) && IS_SPACE_OR_TAB(buf[9]))
 			{
 				// Allow an expression enclosed in ()/[]/{} to span multiple lines:
 				if (!GetLineContExpr(fp, buf, next_buf, phys_line_number, has_continuation_section))
@@ -4409,7 +4379,6 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 			return ScriptError(ERR_OUTOFMEM);
 
 		func->mJumpToLine->mAttribute = g->HotCriterion;	// Must be set for PreparseHotkeyIfExpr
-		g->HotCriterion->ThreadID = g_MainThreadID;
 
 		ASSERT(!g->CurrentFunc && !mLastHotFunc); // Should be null due to ACT_BLOCK_END and prior checks.
 		g->CurrentFunc = mLastHotFunc = pending_hotfunc; // Restore any pending hotkey function.
@@ -4665,21 +4634,12 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 	{
 		if (!parameter)
 			return ScriptError(ERR_PARAM1_REQUIRED);
-		if (g->CurrentFunc || g->CurrentMacro)
-			return ScriptError(_T("#InitExec are not allowed inside functions or classes."), aBuf);
-		auto line = mPendingRelatedLine;
-		auto result = ParseAndAddLine(parameter);
-		mPendingRelatedLine = line, line = mLastLine;
-		if (!result)
+		if (mClassObjectCount && !g->CurrentFunc || mLastHotFunc)
+			return ScriptError(ERR_INVALID_USAGE, aBuf);
+		if (!ParseAndAddLine(parameter, ACT_EXPRESSION))
 			return FAIL;
-		if (line->mActionType != ACT_EXPRESSION && line->mActionType != ACT_ASSIGNEXPR)
-			return ScriptError(ERR_UNRECOGNIZED_ACTION, aBuf);
-		if (mLastLine = mLastLine->mPrevLine)
-			mLastLine->mNextLine = nullptr;
-		else mFirstLine = nullptr;
-		if (line->mPrevLine = mExecLineBeforeAutoExec)
-			mExecLineBeforeAutoExec->mNextLine = line;
-		mExecLineBeforeAutoExec = line;
+		mCurrLine->mActionType = ACT_INITEXEC;
+		mCurrLine->mAttribute = g->CurrentFunc;
 		return CONDITION_TRUE;
 	}
 
@@ -8628,6 +8588,7 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 			case ACT_EXIT: // v2: It's from an automatic AddLine(), so should be excluded.
 			case ACT_BLOCK_END: // There's nothing following this line in the same block.
 			case ACT_CASE:
+			case ACT_INITEXEC:
 				continue;
 			}
 			if (IsLabelTarget(next_line))
@@ -8636,7 +8597,69 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 			sntprintf(buf, _countof(buf), _T("This line will never execute, due to %s preceding it."), g_act[line->mActionType].Name);
 			ScriptWarning(g_Warn_Unreachable, buf, _T(""), next_line);
 		}
+
+		// Check #InitExec
+		if (line->mActionType == ACT_INITEXEC)
+		{
+			auto func = g->CurrentFunc;
+			if (func && func->mJumpToLine == line)
+				func->mJumpToLine = line->mNextLine;
+			if (line->mPrevLine)
+			for (Line *parent = line->mPrevLine->mParentLine; parent && parent->mRelatedLine == line; parent = parent->mParentLine)
+				parent->mRelatedLine = line->mNextLine;
+
+			if (line->mPrevLine)
+				line->mPrevLine->mNextLine = line->mNextLine;
+			else if (line == mFirstLine)
+				mFirstLine = line->mNextLine;
+			
+			line->mActionType = ACT_EXPRESSION;
+			line->mNextLine->mPrevLine = line->mPrevLine;
+			if (line->mPrevLine = mExecLineBeforeAutoExec)
+				mExecLineBeforeAutoExec->mNextLine = line;
+			mFirstLine->mPrevLine = mExecLineBeforeAutoExec = line;
+		}
 	} // for()
+	
+	if (mExecLineBeforeAutoExec)
+	{
+		auto arg = SimpleHeap::Alloc<ArgStruct>(1);
+		auto token = SimpleHeap::Alloc<ExprTokenType>(3);
+		auto line = new Line(0, 0, ACT_EXPRESSION, arg, 1);
+		*arg = { 0,true,0,NULL,NULL,token,2,1 };
+		token[0].SetValue(new BuiltInFunc(_T("Auto-initexec"), [](ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount) {
+			auto line = g_script->mExecLineBeforeAutoExec;
+			if (line)
+			{
+				auto &cur_line = g_script->mCurrLine;
+				auto cur_fn = g->CurrentFunc;
+				auto cur_mcr = g->CurrentMacro;
+				ResultType result;
+				line->mNextLine = nullptr;
+				g->CurrentMacro = nullptr;
+				for (cur_line = line; line = cur_line->mPrevLine; cur_line = line);
+				for (line = cur_line; cur_line; cur_line = cur_line->mNextLine)
+				{
+					g->CurrentFunc = (UserFunc *)cur_line->mAttribute;
+					result = cur_line->ExpandArgs();
+					if (result != OK)
+						break;
+				}
+				g->CurrentFunc = cur_fn;
+				g->CurrentMacro = cur_mcr;
+				g_script->mExecLineBeforeAutoExec = g_script->mFirstLine = nullptr;
+				for (; line; line = line->mNextLine)
+					line->Free();
+				aResultToken.SetResult(result);
+			}
+			}, 0, 0));
+		token[1].symbol = SYM_FUNC;
+		token[1].callsite = new CallSite();
+		token[2].symbol = SYM_INVALID;
+		line->mNextLine = mFirstLine;
+		mFirstLine->mPrevLine = line;
+		mFirstLine = line;
+	}
 	// Return something non-NULL to indicate success:
 	return mLastLine;
 }
@@ -11582,13 +11605,8 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			// Remove this line from the main list, so that it won't be executed again during normal flow.
 			line->mPrevLine->mNextLine = line->mNextLine;
 			line->mNextLine->mPrevLine = line->mPrevLine;
-			// add static line to Script::mLastStaticLine list
-			if (g_script->mLastStaticLine) {
-				line->mPrevLine = g_script->mLastStaticLine;
-				g_script->mLastStaticLine = line;
-			}
-			else
-				line->mPrevLine = NULL, g_script->mLastStaticLine = line;
+			// AHK_H: Avoid memory leaks when the script exits
+			line->Free();
 			if (aMode == ONLY_ONE_LINE)
 				return result;
 			line = line->mNextLine;

@@ -267,6 +267,7 @@ Action g_act[] =
 	, {_T("Throw"), 0, 1}
 	, {_T("Switch"), 0, 2}
 	, {_T("Case"), 1, MAX_ARGS}
+	, {_T("#InitExec"), 1, 1}
 };
 // Below is the most maintainable way to determine the actual count?
 // Due to C++ lang. restrictions, can't easily make this a const because constants

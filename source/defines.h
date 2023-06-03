@@ -637,7 +637,8 @@ enum enum_act {
 , ACT_RETURN
 , ACT_TRY, ACT_CATCH, ACT_FINALLY, ACT_THROW // Keep TRY, CATCH and FINALLY together and in this order for range checks.
 , ACT_SWITCH, ACT_CASE // Keep ACT_TRY..ACT_CASE together for ACT_EXPANDS_ITS_OWN_ARGS.
-, ACT_LAST_NAMED_ACTION = ACT_CASE
+, ACT_INITEXEC
+, ACT_LAST_NAMED_ACTION = ACT_INITEXEC
 // ================================================================================
 // All others are not included in g_act, and are only used for misc. purposes:
 // ================================================================================
@@ -868,7 +869,6 @@ struct HotkeyCriterion
 	LPTSTR OriginalExpr; // For finding expr in #HotIf expr
 	IObject *Callback;
 	HotkeyCriterion *NextCriterion, *NextExpr;
-	DWORD ThreadID;
 	ResultType Eval(LPTSTR aHotkeyName); // For HOT_IF_CALLBACK.
 };
 
