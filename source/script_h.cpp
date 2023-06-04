@@ -2849,8 +2849,8 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 	size_t keylen, len, commas = 0;
 	LPTSTR b, beg, key = NULL, t = NULL;
 	Object::String valbuf, keybuf;
-	TCHAR c, quot, endc, nul[5] = {};
-	bool success = true, isarr = true, escape = false, polarity, nonempty = false, as_map = ParamIndexToOptionalBOOL(2, TRUE);
+	TCHAR c, quot, endc, tp = '\0', nul[5] = {};
+	bool success = true, escape = false, polarity, nonempty = false, as_map = ParamIndexToOptionalBOOL(2, TRUE);
 	double_conversion::StringToDoubleConverter converter(4, 0, __builtin_nan("0"), 0, 0);
 	Array stack, *top = &stack;
 	Object *temp;
@@ -2862,7 +2862,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 		Array *cur_arr;
 		Map *cur_map;
 	};
-	cur_arr = top;
+	cur = top;
 	b = beg = TokenIsPureNumeric(*aParam[0]) ? (LPTSTR)TokenToInt64(*aParam[0]) : TokenToString(*aParam[0]);
 	if (b < (void*)65536)
 		_o_throw_param(0);
@@ -2874,7 +2874,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 #define ltrim while ((c = *beg) == ' ' || c == '\t' || c == '\r' || c == '\n') beg++;
 
 	auto trim_comment = [&]() {
-		auto t = *(beg + 1);
+		auto t = beg[1];
 		if (t == '/')
 			beg = _tcschr(beg += 2, '\n');
 		else if (t == '*')
@@ -2895,68 +2895,49 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				goto error;
 			break;
 		case '\0':
-			if (deep == 1 && cur_arr == top) {
-				stack.mItem[0].ReturnMove(aResultToken);
-				goto ret;
-			}
-			goto error;
+			if (deep != 1)
+				goto error;
+			stack.mItem[0].ReturnMove(aResultToken);
+			goto ret;
 		case '{':
 		case '[':
 			if (val.symbol != SYM_INVALID)
 				goto error;
-			if (c == '[') {
-				if (isarr) {
-					for (; commas; commas--)
-						if (!(success = cur_arr->Append(_miss)))
-							goto error;
-					success = cur_arr->Append(ExprTokenType(temp = Array::Create()));
-				}
-				else if (key) {
-					temp = Array::Create();
-					success = as_map ? cur_map->SetItem(key, temp) : cur_obj->SetOwnProp(key, temp);
-					key[keylen] = endc, key = NULL, isarr = true;
-				}
-				else
+			if (tp == '}') {
+				if (!key)
 					goto error;
+				temp = c == '[' ? Array::Create() :
+					as_map ? Map::Create(nullptr, 0, true) :
+					Object::Create(nullptr, 0, nullptr, true);
+				success = as_map ? cur_map->SetItem(key, temp) : cur_obj->SetOwnProp(key, temp);
+				key[keylen] = endc, key = NULL;
 			}
 			else {
-				if (isarr) {
-					for (; commas; commas--)
-						if (!(success = cur_arr->Append(_miss)))
-							goto error;
-					success = cur_arr->Append(ExprTokenType(temp = as_map ? Map::Create(nullptr, 0, true) :
-						Object::Create(nullptr, 0, nullptr, true))), isarr = false;
-				}
-				else if (key) {
-					success = as_map ? cur_map->SetItem(key, temp = Map::Create(nullptr, 0, true)) :
-						cur_obj->SetOwnProp(key, temp = Object::Create(nullptr, 0, nullptr, true));
-					key[keylen] = endc, key = NULL;
-				}
-				else
-					goto error;
+				for (; commas; commas--)
+					if (!(success = cur_arr->Append(_miss)))
+						goto error;
+				temp = c == '[' ? Array::Create() :
+					as_map ? Map::Create(nullptr, 0, true) :
+					Object::Create(nullptr, 0, nullptr, true);
+				success = cur_arr->Append(ExprTokenType(temp));
 			}
-			cur = temp, temp->Release(), nonempty = false, commas = 0;
+			temp->Release();
 			if (!success)
 				goto error;
+			tp = c + 2, nonempty = false, commas = 0;
+			stack.Append(ExprTokenType(cur = temp));
 			break;
 		case '}':
 		case ']':
-			if (isarr != (c == ']'))
+			if (c != tp)
 				goto error;
-			if (deep < 2) {
-				if (!deep || stack.mItem[0].symbol != SYM_OBJECT)
-					goto error;
-				for (++beg;; ++beg) {
-					ltrim;
-					if (!c) break;
-					if (c != '/' || !trim_comment())
-						goto error;
-				}
-				stack.mItem[0].ReturnMove(aResultToken);
-				goto ret;
-			}
-			val.symbol = SYM_OBJECT, stack.mItem[--deep].symbol = SYM_MISSING, cur = stack.mItem[deep - 1].object;
-			isarr = cur_obj->mBase == Array::sPrototype, nonempty = true;
+			cur->Release();
+			val.symbol = SYM_OBJECT, nonempty = true;
+			stack.mItem[--deep].symbol = SYM_MISSING;
+			if (deep == 1)
+				tp = '\0', cur = top;
+			else
+				tp = cur_obj->mBase == Array::sPrototype ? ']' : '}', cur = stack.mItem[deep - 1].object;
 			break;
 		case '\'':
 		case '"':
@@ -2975,11 +2956,11 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			}
 			len = beg - t;
 			if (escape) {
-				String* buf = isarr || key ? &valbuf : &keybuf;
-				if (len > buf->Capacity())
-					buf->SetCapacity(max(len + 1, buf->Capacity() * 2));
+				auto &buf = tp != '}' || key ? valbuf : keybuf;
+				if (len > buf.Capacity())
+					buf.SetCapacity(max(len + 1, buf.Capacity() * 2));
 				beg = t;
-				LPTSTR p = t = buf->Value();
+				LPTSTR p = t = buf;
 				while ((c = *beg) != quot) {
 					if (c == '\\') {
 						switch (c = *(++beg))
@@ -3020,23 +3001,16 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			}
 			else
 				t[len] = '\0';
-			if (isarr) {
-				for (; commas; commas--)
-					if (!(success = cur_arr->Append(_miss)))
-						goto error;
-				val.SetValue(t, len), success = cur_arr->Append(val), t[len] = quot;
-			}
-			else {
+			if (tp == '}') {
 				if (!key) {
 					key = t, keylen = len, endc = quot, beg++;
 					while (true) {
 						ltrim;
-						if (c != ':')
-							if (c == '/' && trim_comment() && beg++)
-								continue;
-							else
-								goto error;
-						break;
+						if (c == ':')
+							break;
+						if (c == '/' && trim_comment() && beg++)
+							continue;
+						goto error;
 					}
 				}
 				else {
@@ -3045,17 +3019,23 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 					key[keylen] = t[len] = endc, key = NULL;
 				}
 			}
+			else {
+				for (; commas; commas--)
+					if (!(success = cur_arr->Append(_miss)))
+						goto error;
+				val.SetValue(t, len), success = cur_arr->Append(val), t[len] = quot;
+			}
 			if (!success)
 				goto error;
 			nonempty = true;
 			break;
 		case ',':
+			if (cur == top)
+				goto error;
 			if (val.symbol == SYM_INVALID)
 				commas++;
 			else
 				commas = 0, val.symbol = SYM_INVALID;
-			if (cur_arr == top)
-				goto error;
 			break;
 		default:
 #define expect_str(str)               \
@@ -3067,7 +3047,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 	}
 			if (val.symbol != SYM_INVALID)
 				goto error;
-			if (!isarr && !key) {
+			if (tp == '}' && !key) {
 				auto end = find_identifier_end(beg);
 				if (keylen = end - beg) {
 					beg = end;
@@ -3098,7 +3078,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				}
 				else if (c == 'n') {
 					expect_str(_T("null"));
-					if (isarr)
+					if (tp == ']')
 						val.symbol = SYM_MISSING, cur_obj->SetOwnProp(_T("Default"), _null);
 					else val.CopyValueFrom(_null);
 				}
@@ -3107,15 +3087,15 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 					val.CopyValueFrom(_true);
 				}
 				nonempty = true, beg--;
-				if (isarr) {
+				if (tp == '}') {
+					success = as_map ? cur_map->SetItem(key, val) : cur_obj->SetOwnProp(key, val);
+					key[keylen] = endc, key = NULL;
+				}
+				else {
 					for (; commas; commas--)
 						if (!(success = cur_arr->Append(_miss)))
 							goto error;
 					success = cur_arr->Append(val);
-				}
-				else {
-					success = as_map ? cur_map->SetItem(key, val) : cur_obj->SetOwnProp(key, val);
-					key[keylen] = endc, key = NULL;
 				}
 				if (!success)
 					goto error;
@@ -3143,15 +3123,15 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 				if (c == '.' || c == 'e' || c == 'E')
 					val.SetValue(ATOF(t, &beg));
 				beg--, nonempty = true;
-				if (isarr) {
+				if (tp == '}') {
+					success = as_map ? cur_map->SetItem(key, val) : cur_obj->SetOwnProp(key, val);
+					key[keylen] = endc, key = NULL;
+				}
+				else {
 					for (; commas; commas--)
 						if (!(success = cur_arr->Append(_miss)))
 							goto error;
 					success = cur_arr->Append(val);
-				}
-				else {
-					success = as_map ? cur_map->SetItem(key, val) : cur_obj->SetOwnProp(key, val);
-					key[keylen] = endc, key = NULL;
 				}
 				if (!success)
 					goto error;
