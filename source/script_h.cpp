@@ -2937,7 +2937,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 			if (deep == 1)
 				tp = '\0', cur = top;
 			else
-				tp = cur_obj->mBase == Array::sPrototype ? ']' : '}', cur = stack.mItem[deep - 1].object;
+				cur = stack.mItem[deep - 1].object, tp = cur_obj->mBase == Array::sPrototype ? ']' : '}';
 			break;
 		case '\'':
 		case '"':
