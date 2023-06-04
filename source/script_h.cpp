@@ -3990,7 +3990,7 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 		else
 			_f_throw_param(0, _T("Object"));
 	case P_Ready:
-		_f_return(script ? script->mIsReadyToExecute : 0);
+		_f_return(script ? script->mIsReadyToExecute == true : 0);
 	case P_ThreadID:
 		_f_return(mThreadID);
 	case M_Wait:

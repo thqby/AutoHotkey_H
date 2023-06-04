@@ -414,7 +414,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		return 0;
 
 	case WM_WINDOWPOSCHANGED:
-		if (hWnd == g_hWnd && (LPWINDOWPOS(lParam)->flags & SWP_HIDEWINDOW) && g_script->mIsReadyToExecute)
+		if (hWnd == g_hWnd && (LPWINDOWPOS(lParam)->flags & SWP_HIDEWINDOW) && g_script->mIsReadyToExecute == true)
 		{
 			// HotKeyIt: call only if we are not already exiting -> g_hWnd == NULL
 			if (g_hWnd)
@@ -1562,7 +1562,7 @@ FResult SetWorkingDir(LPCTSTR aNewDir)
 	// working dir can change.  The exception is FileSelect(), which changes the working
 	// dir as the user navigates from folder to folder.  However, the whole purpose of
 	// maintaining g_WorkingDir is to workaround that very issue.
-	if (g_script->mIsReadyToExecute) // Callers want this done only during script runtime.
+	if (g_script->mIsReadyToExecute == true) // Callers want this done only during script runtime.
 		UpdateWorkingDir(aNewDir);
 	return OK;
 }

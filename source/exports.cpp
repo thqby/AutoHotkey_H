@@ -38,7 +38,7 @@
 	UserFunc *aCurrFunc  = g->CurrentFunc, *aCurrMacro  = g->CurrentMacro;\
 	int aClassObjectCount = g_script->mClassObjectCount;\
 	g_script->mClassObjectCount = NULL;g_script->mFirstLine = NULL;g_script->mLastLine = NULL;g->CurrentFunc = NULL, g->CurrentMacro = NULL;\
-	g_script->mNextLineIsFunctionBody = false;g_script->mIsReadyToExecute = (bool)-1;\
+	g_script->mNextLineIsFunctionBody = false;*(char *)&g_script->mIsReadyToExecute = -1;\
 	WarnMode aWarnMode = g_Warn_VarUnset;\
 	g_Warn_VarUnset = WARNMODE_OFF;
 
@@ -145,7 +145,7 @@ void callPromise(Promise * promise, HWND replyHwnd) {
 EXPORT int ahkReady(DWORD aThreadID) // HotKeyIt check if dll is ready to execute
 {
 	AutoTLS atls;
-	return (int)(atls.Enter(aThreadID) && g_script && !g_Reloading && g_script->mIsReadyToExecute);
+	return (int)(atls.Enter(aThreadID) && g_script && !g_Reloading && g_script->mIsReadyToExecute == true);
 }
 
 EXPORT int ahkPause(LPTSTR aChangeTo, DWORD aThreadID) //Change pause state of a running script

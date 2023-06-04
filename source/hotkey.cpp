@@ -1846,7 +1846,7 @@ ResultType Hotkey::TextToKey(LPCTSTR aText, bool aIsModifier, Hotkey *aThisHotke
 		if (   !(temp_sc = TextToSC(aText))   )
 			if (   !(temp_sc = (sc_type)ConvertJoy(aText, &joystick_id, true))   )  // Is there a joystick control/button?
 			{
-				if (!aText[1] && !g_script->mIsReadyToExecute)
+				if (!aText[1] && g_script->mIsReadyToExecute != true)
 				{
 					// At load time, single-character key names are always considered valid but show a
 					// warning if they can't be registered as hotkeys on the current keyboard layout.
@@ -2429,7 +2429,7 @@ ResultType Hotstring::AddHotstring(LPCTSTR aName, IObjectPtr aCallback, LPCTSTR 
 	}
 
 	++sHotstringCount;
-	if (!g_script->mIsReadyToExecute) // Caller is LoadIncludedFile(); allow BIF_Hotstring to manage this at runtime.
+	if (g_script->mIsReadyToExecute != true) // Caller is LoadIncludedFile(); allow BIF_Hotstring to manage this at runtime.
 		++sEnabledCount; // This works because the script can't be suspended during startup (aSuspend is always FALSE).
 	return OK;
 }

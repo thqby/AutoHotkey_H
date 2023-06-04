@@ -8118,7 +8118,7 @@ Var *Script::FindUpVar(LPCTSTR aVarName, size_t aVarNameLength, UserFunc &aInner
 		return nullptr;
 	// Since this local variable is not static, things need to be set up so that the inner
 	// function will capture it as an upvar at the appropriate time.
-	if (mIsReadyToExecute)
+	if (mIsReadyToExecute == true)
 	{
 		// This dynamic reference resolved to a variable that hasn't been captured by the
 		// current function, so is not safe to return.
