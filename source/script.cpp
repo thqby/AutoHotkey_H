@@ -1669,8 +1669,6 @@ LineNumberType Script::LoadFromText(LPTSTR aScript, LPCTSTR aPathToShow)
 // HotKeyIt H1 LoadFromText() for text instead LoadFromFile()
 // Returns the number of non-comment lines that were loaded, or LOADING_FAILED on error.
 {
-	mIsReadyToExecute = false;
-
 	// L4: Changed this next section to support lines added for #if (expression).
 	// Each #if (expression) is pre-parsed *before* the main script in order for
 	// function library auto-inclusions to be processed correctly.
@@ -1893,7 +1891,6 @@ void Script::TerminateApp(ExitReasons aExitReason, int aExitCode)
 UINT Script::LoadFromFile(LPCTSTR aFileSpec)
 // Returns the number of non-comment lines that were loaded, or LOADING_FAILED on error.
 {
-	mIsReadyToExecute = false;
 	if (!aFileSpec && !g_hResource)
 		aFileSpec = mFileSpec;
 
@@ -8378,7 +8375,10 @@ ResultType Script::PreparseExpressions(Line *aStartingLine)
 			// Otherwise, convert the expression text to postfix form and set is_expression
 			// based on whether the arg should be evaluated by ExpandExpression():
 			if (!line->ExpressionToPostfix(this_arg)) // Doing this here, after the script has been loaded, might improve the compactness/adjacent-ness of the compiled expressions in memory, which might improve performance due to CPU caching.
+			{
+				this_arg.postfix = nullptr;
 				return FAIL; // The function above already displayed the error msg.
+			}
 		}
 	}
 	return OK;

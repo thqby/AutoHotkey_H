@@ -38,7 +38,7 @@
 	UserFunc *aCurrFunc  = g->CurrentFunc, *aCurrMacro  = g->CurrentMacro;\
 	int aClassObjectCount = g_script->mClassObjectCount;\
 	g_script->mClassObjectCount = NULL;g_script->mFirstLine = NULL;g_script->mLastLine = NULL;g->CurrentFunc = NULL, g->CurrentMacro = NULL;\
-	g_script->mNextLineIsFunctionBody = false;g_script->mIsReadyToExecute = false;\
+	g_script->mNextLineIsFunctionBody = false;g_script->mIsReadyToExecute = (bool)-1;\
 	WarnMode aWarnMode = g_Warn_VarUnset;\
 	g_Warn_VarUnset = WARNMODE_OFF;
 
@@ -303,20 +303,20 @@ struct VarListBackup {
 };
 
 // HotKeyIt: addScript()
-EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
+UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 {
 	AutoTLS atls;
 	int ret = atls.Enter(aThreadID);
 	if (!ret)
 		return 0;
 	else if (ret == 2) {
-		ExprTokenType params[3] = { (__int64)addScript, _T("i==siui") };
-		ExprTokenType* param[] = { params, params + 1, params + 2 };
+		ExprTokenType params[4] = { (__int64)_addScript, _T("i==siuii") };
+		ExprTokenType* param[] = { params, params + 1, params + 2, params + 3 };
 		ResultToken result;
 		IObject* func = DynaToken::Create(param, 2);
-		FuncAndToken token = { func,&result,param,3 };
+		FuncAndToken token = { func,&result,param,4 };
 		auto hwnd = g_hWnd;
-		params[0].SetValue(script), params[1].SetValue(waitexecute), params[2].SetValue((__int64)aThreadID);
+		params[0].SetValue(script), params[1].SetValue(waitexecute), params[2].SetValue((UINT)aThreadID), params[3].SetValue(-_catch);
 		result.InitResult(_T(""));
 		atls.~AutoTLS();
 		SendMessage(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0);
@@ -339,6 +339,8 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 	
 	// Backup SimpleHeap to restore later
 	auto heapbkp = SimpleHeap::HeapBackUp();
+	int excp = g->ExcptMode;
+	g->ExcptMode |= EXCPTMODE_CATCH;
 	TCHAR tmp[MAX_PATH];
 	void* p = nullptr;
 	if (!g_script->mEncrypt)
@@ -348,12 +350,20 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 	if (g_script->LoadFromText(script,tmp) != TRUE)
 	{
 		RESTORE_IF_EXPR
+		g->ExcptMode = excp;
 		g->CurrentFunc = (UserFunc*)aCurrFunc;
 		g->CurrentMacro = (UserFunc*)aCurrMacro;
 		Line* aTempLine = g_script->mLastLine;
 		Line* aExecLine = g_script->mFirstLine;
+		Line *cur_line = g_script->mCurrLine;
 		g_script->mIsReadyToExecute = true;
 		RESTORE_G_SCRIPT;
+		if (g->ThrownToken) {
+			if (!_catch)
+				g_script->UnhandledException(cur_line, FAIL);
+			if (_catch < 1)
+				Script::FreeExceptionToken(g->ThrownToken);
+		}
 		Line::sSourceFileCount = aSourceFileIdx;
 		aVarBkp.~VarListBackup();
 		int len = g_script->mHotFuncs.mCount;
@@ -393,35 +403,49 @@ EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID)
 	g->CurrentFunc = (UserFunc*)aCurrFunc;
 	g->CurrentMacro = (UserFunc*)aCurrMacro;
 	Line *aTempLine = g_script->mFirstLine;
+	Line *cur_line = g_script->mCurrLine;
 	aLastLine->mNextLine = aTempLine;
 	aTempLine->mPrevLine = aLastLine;
 	aLastLine = g_script->mLastLine;
 	RESTORE_G_SCRIPT;
 	if (waitexecute) {
-		if (waitexecute == 1 || !g_hWnd)
+		if (waitexecute == 1 || !g_hWnd) {
 			aTempLine->ExecUntil(UNTIL_RETURN);
+			if (g->ThrownToken) {
+				if (!_catch)
+					g_script->UnhandledException(cur_line, FAIL);
+				if (_catch < 1)
+					Script::FreeExceptionToken(g->ThrownToken);
+			}
+		}
 		else
 			PostMessage(g_hWnd, AHK_EXECUTE, (WPARAM)aTempLine, 1);
 	}
+	g->ExcptMode = excp;
 	LeaveCriticalSection(&g_CriticalTLSCallback);
 	return (UINT_PTR)aTempLine;
 }
 
-EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
+EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID) {
+	return _addScript(script, waitexecute, aThreadID, int(g && (g->ExcptMode & EXCPTMODE_CATCH)));
+}
+
+int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 {
 	AutoTLS atls;
 	int ret = atls.Enter(aThreadID);
 	if (!ret)
 		return 0;
 	else if (ret == 2) {
-		ExprTokenType params[2] = { (__int64)ahkExec, _T("i==sui") };
-		ExprTokenType* param[] = { params, params + 1 };
+		ExprTokenType params[3] = { (__int64)_ahkExec, _T("i==suii") };
+		ExprTokenType *param[] = { params,params + 1,params + 2 };
 		ResultToken result;
 		IObject* func = DynaToken::Create(param, 2);
-		FuncAndToken token = { func,&result,param,2 };
+		FuncAndToken token = { func,&result,param,3 };
 		auto hwnd = g_hWnd;
-		params[0].SetValue(script), params[1].SetValue((__int64)aThreadID);
+		params[0].SetValue(script), params[1].SetValue((__int64)aThreadID), params[2].SetValue(-_catch);
 		result.InitResult(_T(""));
+		auto &throwtoken = g->ThrownToken;
 		atls.~AutoTLS();
 		SendMessage(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0);
 		func->Release();
@@ -460,6 +484,8 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 
 	// Backup SimpleHeap to restore later
 	auto heapbkp = SimpleHeap::HeapBackUp();
+	int excp = g->ExcptMode;
+	g->ExcptMode |= EXCPTMODE_CATCH;
 
 	if (!aThreadID)
 		g->CurrentMacro = g->CurrentFunc = aCurrMacro ? aCurrMacro : aCurrFunc;
@@ -473,6 +499,7 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 	g->CurrentMacro = (UserFunc*)aCurrMacro;
 	Line *aTempLine = g_script->mLastLine;
 	Line *aExecLine = g_script->mFirstLine;
+	Line *cur_line = g_script->mCurrLine;
 	g_script->mIsReadyToExecute = true;
 	RESTORE_G_SCRIPT;
 	
@@ -480,7 +507,15 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 		g_script->mLastLine->mNextLine = aExecLine;
 		aExecLine->ExecUntil(UNTIL_RETURN);
 		g_script->mLastLine->mNextLine = NULL;
+		cur_line = g_script->mCurrLine;
 		g_script->mCurrLine = aCurrLine;
+	}
+	g->ExcptMode = excp;
+	if (g->ThrownToken) {
+		if (!_catch)
+			g_script->UnhandledException(cur_line, FAIL);
+		if (_catch < 1)
+			Script::FreeExceptionToken(g->ThrownToken);
 	}
 	Line::sSourceFileCount = aSourceFileIdx;
 	if (fvbkp) {
@@ -517,6 +552,10 @@ EXPORT int ahkExec(LPTSTR script, DWORD aThreadID)
 	heapbkp.Restore();
 	LeaveCriticalSection(&g_CriticalTLSCallback);
 	return result == TRUE;
+}
+
+EXPORT int ahkExec(LPTSTR script, DWORD aThreadID) {
+	return _ahkExec(script, aThreadID, int(g && (g->ExcptMode & EXCPTMODE_CATCH)));
 }
 
 LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPTSTR param4, LPTSTR param5, LPTSTR param6, LPTSTR param7, LPTSTR param8, LPTSTR param9, LPTSTR param10, DWORD aThreadID, int sendOrPost)
