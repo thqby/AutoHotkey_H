@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -7541,31 +7541,19 @@ Var* Script::LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength)
 	return NULL;
 }
 
-Var* Script::LoadVarFromLib(LPTSTR aVarName) {
-#define RESTORE_G_SCRIPT \
-	mFirstLine = aFirstLine;\
-	mLastLine = aLastLine;\
-	mLastLine->mNextLine = NULL;\
-	mCurrLine = aCurrLine;\
-	mClassObjectCount = aClassObjectCount + mClassObjectCount;\
-	mCurrFileIndex = aCurrFileIndex;\
-	mNextLineIsFunctionBody = aNextLineIsFunctionBody;\
-	mCombinedLineNumber = aCombinedLineNumber;
+Var* Script::LoadVarFromLib(LPTSTR aVarName, bool &aErrorWasShown) {
+	Line *aFirstLine = mFirstLine, *aLastLine = mLastLine, *aCurrLine = mCurrLine;
+	Func *aCurrFunc = g->CurrentFunc, *aCurrMacro = g->CurrentMacro;
+	Var *var = nullptr;
+	mFirstLine = NULL, mLastLine = NULL, g->CurrentFunc = g->CurrentMacro = NULL;
 
-	int aCurrFileIndex = mCurrFileIndex, aCombinedLineNumber = mCombinedLineNumber, aClassObjectCount = mClassObjectCount;
-	bool aNextLineIsFunctionBody = mNextLineIsFunctionBody;
-	Line* aFirstLine = mFirstLine, * aLastLine = mLastLine, * aCurrLine = mCurrLine;
-	Func* aCurrFunc = g->CurrentFunc, *aCurrMacro = g->CurrentMacro;
-	mNextLineIsFunctionBody = false;
-	mClassObjectCount = 0;
-	mFirstLine = NULL, mLastLine = NULL, g->CurrentFunc = NULL;
-
-	bool error_was_shown = false, file_was_found = false;
+	bool file_was_found = false;
+	aErrorWasShown = false;
 	if (g_UseStdLib) {
 		// Save the working directory; see the similar line below for details.
 		LPTSTR prev_dir = GetWorkingDir();
 		// Attempt to include a script file from a Lib folder:
-		IncludeLibrary(aVarName, 0, error_was_shown, file_was_found);
+		IncludeLibrary(aVarName, 0, aErrorWasShown, file_was_found);
 		// Restore the working directory.
 		if (prev_dir)
 		{
@@ -7574,11 +7562,22 @@ Var* Script::LoadVarFromLib(LPTSTR aVarName) {
 		}
 	}
 	TCHAR aScriptName[MAX_VAR_NAME_LENGTH + 10];
-	if ((file_was_found && !error_was_shown) || _stprintf(aScriptName, _T("*LIB\\%s.AHK"), aVarName)
-		&& ((FindResource(g_hInstance, aScriptName + 5, _T("LIB")) || FindResource(NULL, aScriptName + 5, _T("LIB")))
-			&& LoadIncludedFile(aScriptName, false, false)))
+	if (!aErrorWasShown && (file_was_found || _stprintf(aScriptName, _T("*LIB\\%s.AHK"), aVarName)
+		&& ((FindResource(g_hInstance, aScriptName + 5, _T("LIB")) || FindResource(NULL, aScriptName + 5, _T("LIB"))))
+		&& !(aErrorWasShown = !LoadIncludedFile(aScriptName, false, false))))
 	{
-		if (PreparseExpressions(mFirstLine)
+		var = FindGlobalVar(aVarName);
+		if (!var || !var->IsReadOnly())
+		{
+			TCHAR msg_text[MAX_VAR_NAME_LENGTH + MAX_PATH + 50];
+			sntprintf(msg_text, _countof(msg_text), _T("Class or function \"%s\" cannot be found from file \"%s\".")
+				, aVarName, file_was_found ? g_script->CurrentFile() : aScriptName);
+			var = nullptr;
+			aErrorWasShown = true;
+			g_script->mCurrLine = aCurrLine;
+			g_script->ScriptError(msg_text);
+		}
+		else if (PreparseExpressions(mFirstLine)
 			&& PreparseExpressions(mHotFuncs) // mHotFuncs first in case they have nested functions, which would be in mFuncs.
 			&& PreparseExpressions(mFuncs)
 			&& PreparseVarRefs()
@@ -7586,28 +7585,25 @@ Var* Script::LoadVarFromLib(LPTSTR aVarName) {
 			&& PreprocessLocalVars(mFuncs)
 			&& AddLine(ACT_EXIT))
 		{
-			g->CurrentFunc = (UserFunc*)aCurrFunc;
-			g->CurrentMacro = (UserFunc*)aCurrMacro;
-			Line* aTempLine = mFirstLine;
-			Line* t = aLastLine->mPrevLine;
-			if (t && aLastLine->mActionType == ACT_EXIT) {
-				delete aLastLine;
-				aLastLine = t;
-			}
-			aLastLine->mNextLine = aTempLine;
-			aTempLine->mPrevLine = aLastLine;
+			if (aLastLine->mActionType == ACT_EXIT)
+				aLastLine = aLastLine->mPrevLine;
+			aLastLine->mNextLine = mFirstLine;
+			mFirstLine->mPrevLine = aLastLine;
 			aLastLine = mLastLine;
-			RESTORE_G_SCRIPT;
-			Var* var = FindGlobalVar(aVarName);
-			if (var && var->IsAssignedSomewhere())
-				return var;
-			return NULL;
+		}
+		else
+		{
+			var = nullptr;
+			aErrorWasShown = true;
+			for (auto line = mLastLine; line; line = line->mPrevLine)
+				line->Free();
 		}
 	}
-	g->CurrentFunc = (UserFunc*)aCurrFunc;
+	g->CurrentFunc = (UserFunc *)aCurrFunc;
 	g->CurrentMacro = (UserFunc *)aCurrMacro;
-	RESTORE_G_SCRIPT;
-	return NULL;
+	mFirstLine = aFirstLine;
+	mLastLine = aLastLine;
+	return var;
 }
 
 template<typename T, int S>
@@ -8648,7 +8644,7 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 				}
 				g->CurrentFunc = cur_fn;
 				g->CurrentMacro = cur_mcr;
-				g_script->mExecLineBeforeAutoExec = g_script->mFirstLine = nullptr;
+				g_script->mExecLineBeforeAutoExec = g_script->mFirstLine->mPrevLine = nullptr;
 				for (; line; line = line->mNextLine)
 					line->Free();
 				aResultToken.SetResult(result);
@@ -10495,10 +10491,14 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 					this_postfix->var_usage = VARREF_REF;
 					continue;
 				}
+				bool error_was_shown;
+				g_script->mCurrLine = this;
 				if (this_postfix->var->mScope == VAR_GLOBAL)
 				{
-					if (g_script->LoadVarFromLib(this_postfix->var->mName))
+					if (g_script->LoadVarFromLib(this_postfix->var->mName, error_was_shown))
 						continue;
+					if (error_was_shown)
+						return FAIL;
 					if (g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))
 						continue;
 				}
@@ -10507,8 +10507,13 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 					auto var = g_script->FindGlobalVar(this_postfix->var->mName);
 					if (var && var->mType == VAR_NORMAL && !var->IsAssignedSomewhere())
 						var = NULL;
-					if (var || (var = g_script->LoadVarFromLib(this_postfix->var->mName)) ||
-						(var = g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))) {
+					if (!var)
+					{
+						var = g_script->LoadVarFromLib(this_postfix->var->mName, error_was_shown);
+						if (error_was_shown)
+							return FAIL;
+					}
+					if (var || (var = g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))) {
 						g->CurrentFunc->mVars.Remove(this_postfix->var->mName);
 						if (g->CurrentFunc->mVars.mCount == 0 && g->CurrentFunc->mVars.mItem)
 						{

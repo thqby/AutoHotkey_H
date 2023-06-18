@@ -3036,7 +3036,7 @@ public:
 	void IncludeLibrary(LPTSTR aFuncName, size_t aFuncNameLength, bool &aErrorWasShown, bool &aFileWasFound);
 #endif
 	Var* LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength = 0);
-	Var* LoadVarFromLib(LPTSTR aVarName);
+	Var* LoadVarFromLib(LPTSTR aVarName, bool &aErrorWasShown);
 	Func *FindGlobalFunc(LPCTSTR aFuncName, size_t aFuncNameLength = 0);
 	static Func *GetBuiltInFunc(LPTSTR aFuncName);
 	static Func *GetBuiltInMdFunc(LPTSTR aFuncName);

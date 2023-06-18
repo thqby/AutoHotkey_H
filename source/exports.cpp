@@ -403,7 +403,6 @@ UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 	g->CurrentFunc = (UserFunc*)aCurrFunc;
 	g->CurrentMacro = (UserFunc*)aCurrMacro;
 	Line *aTempLine = g_script->mFirstLine;
-	Line *cur_line = g_script->mCurrLine;
 	aLastLine->mNextLine = aTempLine;
 	aTempLine->mPrevLine = aLastLine;
 	aLastLine = g_script->mLastLine;
@@ -413,7 +412,7 @@ UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 			aTempLine->ExecUntil(UNTIL_RETURN);
 			if (g->ThrownToken) {
 				if (!_catch)
-					g_script->UnhandledException(cur_line, FAIL);
+					g_script->UnhandledException(g_script->mCurrLine, FAIL);
 				if (_catch < 1)
 					Script::FreeExceptionToken(g->ThrownToken);
 			}
