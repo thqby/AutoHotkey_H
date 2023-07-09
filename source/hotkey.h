@@ -107,7 +107,7 @@ struct HotkeyVariant
 
 class Hotkey
 {
-private:
+public:
 	// These are done as static, rather than having an outer-class to contain all the hotkeys, because
 	// the hotkey ID is used as the array index for performance reasons.  Having an outer class implies
 	// the potential future use of more than one set of hotkeys, which could still be implemented
@@ -168,7 +168,6 @@ private:
 		if (mIsRegistered) Unregister();
 	}
 
-public:
 	thread_local static Hotkey **shk;
 	thread_local static int shkMax;
 
@@ -209,11 +208,10 @@ public:
 	HotkeyVariant *mFirstVariant, *mLastVariant; // v1.0.42: Linked list of variant hotkeys created via #HotIf directives.
 
 	// Make sHotkeyCount an alias for sNextID.  Make it const to enforce modifying the value in only one way:
-	thread_local static const HotkeyIDType &sHotkeyCount;
+	thread_local static HotkeyIDType &sHotkeyCount;
 	thread_local static bool sJoystickHasHotkeys[MAX_JOYSTICKS];
 	thread_local static DWORD sJoyHotkeyCount;
 
-	// static void AllDestructAndExit(int exit_code);
 	static void AllDestruct();
 
 	static FResult IfExpr(IObject *aExprObj);
@@ -226,7 +224,7 @@ public:
 	static bool PrefixHasNoEnabledSuffixes(int aVKorSC, bool aIsSC, bool &aSuppress);
 	HotkeyVariant *CriterionAllowsFiring(HWND *aFoundHWND = NULL, ULONG_PTR aExtraInfo = 0, LPTSTR aSingleChar = NULL);
 	static HotkeyVariant *CriterionFiringIsCertain(HotkeyIDType &aHotkeyIDwithFlags, bool aKeyUp, ULONG_PTR aExtraInfo
-		, UCHAR &aNoSuppress, bool &aFireWithNoSuppress, LPTSTR aSingleChar);
+		, bool &aFireWithNoSuppress, LPTSTR aSingleChar);
 	static modLR_type HotkeyRequiresModLR(HotkeyIDType aHotkeyIDwithoutflags, modLR_type aModLR);
 	static void TriggerJoyHotkeys(int aJoystickID, DWORD aButtonsNewlyDown);
 	void PerformInNewThreadMadeByCaller(HotkeyVariant &aVariant);
@@ -389,7 +387,7 @@ public:
 	// Constructor & destructor:
 	Hotstring(LPCTSTR aName, IObjectPtr aCallback, LPCTSTR aOptions, LPCTSTR aHotstring, LPCTSTR aReplacement
 		, bool aHasContinuationSection, UCHAR aSuspend);
-	~Hotstring() {}  // Note that mReplacement is sometimes malloc'd, sometimes from SimpleHeap, and sometimes the empty string.
+	~Hotstring() { free(mReplacement); mCallback = nullptr; }
 
 	void *operator new(size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
 	void *operator new[](size_t aBytes) {return SimpleHeap::Malloc(aBytes);}

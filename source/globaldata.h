@@ -38,15 +38,17 @@ thread_local extern HWND g_hWndEdit;  // The edit window, child of main.
 thread_local extern HFONT g_hFontEdit;
 thread_local extern HACCEL g_hAccelTable; // Accelerator table for main menu shortcut keys.
 
-typedef int (WINAPI *StrCmpLogicalW_type)(LPCWSTR, LPCWSTR);
-thread_local extern StrCmpLogicalW_type g_StrCmpLogicalW;
-thread_local extern WNDPROC g_TabClassProc;
+//typedef int (WINAPI *StrCmpLogicalW_type)(LPCWSTR, LPCWSTR);
+//extern StrCmpLogicalW_type g_StrCmpLogicalW;
+//thread_local extern WNDPROC g_TabClassProc;
 
 thread_local extern modLR_type g_modifiersLR_logical;   // Tracked by hook (if hook is active).
 thread_local extern modLR_type g_modifiersLR_logical_non_ignored;
 thread_local extern modLR_type g_modifiersLR_physical;  // Same as above except it's which modifiers are PHYSICALLY down.
 thread_local extern modLR_type g_modifiersLR_numpad_mask;  // Shift keys temporarily released by Numpad.
 thread_local extern modLR_type g_modifiersLR_ctrlaltdel_mask; // For excluding AltGr from Ctrl+Alt+Del handling.
+thread_local extern modLR_type g_modifiersLR_last_pressed;
+thread_local extern DWORD g_modifiersLR_last_pressed_time;
 
 thread_local extern key_type *pPrefixKey;
 
@@ -109,7 +111,9 @@ thread_local extern HWND g_HotExprLFW;
 thread_local extern HotkeyCriterion *g_FirstHotExpr, *g_LastHotExpr;
 
 extern int g_ScreenDPI;
-thread_local extern MenuTypeType g_MenuIsVisible;
+thread_local extern bool g_MenuIsVisible;
+thread_local extern HMENU g_MenuIsTempModeless;
+thread_local extern bool g_MenuIsTempTopmost;
 thread_local extern int g_nMessageBoxes;
 thread_local extern int g_nFileDialogs;
 thread_local extern int g_nFolderDialogs;
@@ -336,24 +340,23 @@ thread_local extern DISPID* g_DispIdSortByName;
 thread_local extern BuiltInFunc* g_sIsSetFunc;		// free it when thread terminates.
 extern LPSTR g_hWinAPI, g_hWinAPIlowercase; // loads WinAPI functions definitions from resource
 extern HRSRC g_hResource;		// for compiled AutoHotkey.exe
-thread_local extern int g_ExitCode;
-thread_local extern bool g_Reloading;
-EXPORT FARPROC g_ThreadExitApp;
 extern CRITICAL_SECTION g_Critical;
 extern AhkThreadInfo g_ahkThreads[MAX_AHK_THREADS];
 thread_local extern PVOID g_original_tls;
 thread_local extern CRITICAL_SECTION g_CriticalTLSCallback;
 thread_local extern HMODULE g_hMemoryModule;
 extern DWORD g_ProcessId;
-EXPORT extern DWORD g_FirstThreadID;
-thread_local extern bool g_UseStdLib;
+extern DWORD g_FirstThreadID;
 thread_local extern UINT g_MapCaseSense;
 thread_local extern LPTSTR g_DefaultObjectValue;
-thread_local extern ATOM g_ClassRegistered;
 thread_local extern LPWSTR g_WindowClassMain;
 thread_local extern LPWSTR g_WindowClassGUI;
+thread_local extern ATOM g_MainWinClass;
+thread_local extern ATOM g_GuiWinClass;
 thread_local extern bool g_TargetWindowError;
 thread_local extern bool g_TargetControlError;
+thread_local extern char g_Reloading;
+thread_local extern bool g_UseStdLib;
 
 
 #pragma optimize( "", off )
@@ -373,11 +376,7 @@ struct AutoTLS {
 		{
 			if (aThreadID)
 			{
-#ifndef _USRDLL
 				for (int i = 0; i < MAX_AHK_THREADS; i++)
-#else
-				for (int i = 1; i < MAX_AHK_THREADS; i++)
-#endif
 				{
 					if (g_ahkThreads[i].ThreadID == aThreadID)
 					{
@@ -390,7 +389,7 @@ struct AutoTLS {
 				if (!script)
 					return 0;
 			}
-#ifndef _USRDLL
+#ifndef CONFIG_DLL
 			else
 				Lock(0), g_original_tls = tls, script = g_ahkThreads[0].Script;
 #endif

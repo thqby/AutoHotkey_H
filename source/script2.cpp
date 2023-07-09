@@ -146,9 +146,6 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 	// and beyond, since the feature was never properly implemented in Win95:
 	static UINT WM_TASKBARCREATED = RegisterWindowMessage(_T("TaskbarCreated"));
 
-	if (iMsg == WM_NULL) // && g_FirstThreadID != g_MainThreadID)
-		SleepEx(0, true); // used to exit thread
-
 	// See GuiWindowProc() for details about this first section:
 	LRESULT msg_reply;
 	if (g->CalledByIsDialogMessageOrDispatch && g->CalledByIsDialogMessageOrDispatchMsg == iMsg)
@@ -191,7 +188,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			// by the old open-tray-on-mouse-down method:
 			//MButton::Send {RButton down}
 			//MButton up::Send {RButton up}
-			g_script->mTrayMenu->Display(false);
+			g_script->mTrayMenu->Display();
 			return 0;
 		} // Inner switch()
 		break;
@@ -413,7 +410,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		return 0;
 
 	case WM_WINDOWPOSCHANGED:
-		if (hWnd == g_hWnd && (LPWINDOWPOS(lParam)->flags & SWP_HIDEWINDOW) && g_script->mIsReadyToExecute == true)
+		if (hWnd == g_hWnd && (LPWINDOWPOS(lParam)->flags & SWP_HIDEWINDOW) && g_script->mIsReadyToExecute)
 		{
 			// HotKeyIt: call only if we are not already exiting -> g_hWnd == NULL
 			if (g_hWnd)
@@ -503,9 +500,6 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 	case AHK_THREADVAR:
 	{
 		LPSTREAM stream;
-		IUnknown* obj;
-		IObject* pobj;
-		IEnumVARIANT* penum;
 		if (!wParam)
 			return 0;
 		if (lParam < 65536) {
@@ -519,32 +513,66 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			auto token = (ExprTokenType*)wParam;
 			if (token->symbol == SYM_STREAM) {
 				token->symbol = SYM_INTEGER;
-				if (SUCCEEDED(CoGetInterfaceAndReleaseStream(stream = (LPSTREAM)token->value_int64, IID_IUnknown, (LPVOID*)&obj))) {
-					if (SUCCEEDED(obj->QueryInterface(IID_IObjectComCompatible, (LPVOID*)&pobj)))
-						obj->Release();
-					else if (SUCCEEDED(obj->QueryInterface(IID_IDispatch, (LPVOID*)&pobj)) || SUCCEEDED(obj->QueryInterface(IID__Object, (LPVOID*)&pobj)))
-						pobj = new ComObject(pobj), obj->Release();
-					else if (SUCCEEDED(obj->QueryInterface(IID_IEnumVARIANT, (void**)&penum)))
-						pobj = new ComEnum(penum), obj->Release();
-					else pobj = new ComObject((__int64)obj, VT_UNKNOWN);
+				if (auto pobj = UnMarshalObjectFromStream((LPSTREAM)token->value_int64))
 					return ((Var*)lParam)->AssignSkipAddRef(pobj) == OK;
-				}
-				else CoReleaseMarshalData(stream), stream->Release();
 				return 0;
 			}
-			else
-				return ((Var*)lParam)->Assign(*token) == OK;
+			return ((Var*)lParam)->Assign(*token) == OK;
 		}
 		break;
 	}
 
 	case WM_ENTERMENULOOP:
 		CheckMenuItem(GetMenu(g_hWnd), ID_FILE_PAUSE, g->IsPaused ? MF_CHECKED : MF_UNCHECKED); // This is the menu bar in the main window; the tray menu's checkmark is updated only when the tray menu is actually displayed.
-		if (!g_MenuIsVisible) // See comments in similar code in GuiWindowProc().
-			g_MenuIsVisible = MENU_TYPE_BAR;
+		g_MenuIsVisible = true; // See comments in similar code in GuiWindowProc().
 		break;
 	case WM_EXITMENULOOP:
-		g_MenuIsVisible = MENU_TYPE_NONE; // See comments in similar code in GuiWindowProc().
+		g_MenuIsVisible = false; // See comments in similar code in GuiWindowProc().
+		break;
+	case WM_INITMENUPOPUP:
+		InitMenuPopup((HMENU)wParam);
+		break;
+	case WM_UNINITMENUPOPUP:
+		UninitMenuPopup((HMENU)wParam);
+		break;
+	case WM_ACTIVATEAPP:
+		// Modeless menus correctly cancel when losing focus to another window within the same process,
+		// but not when losing focus to another app, so we handle that here if we made the menu modeless.
+		// Don't do it if the script made the menu modeless since in that case the script might want it
+		// to remain open.  It appears that WM_ACTIVATEAPP is sent to all top-level windows, so there's
+		// no need to handle this in GuiWindowProc().
+		if (!wParam && g_MenuIsTempModeless)
+			EndMenu();
+		break;
+	case WM_MENUSELECT:
+		// The following is a workaround for left click failing to activate a menu item in a modeless
+		// menu if the mouse was moved quickly from the main menu into a submenu (reproduced on Windows
+		// 7 and 11).  Strangely, double-click still activates the item.  Moving the selection restores
+		// normal behaviour, so the workaround just deselects the item and allows it to be reselected.
+		// Care must be taken to avoid a loop, because deselecting the item causes the parent menu to
+		// be reselected, which causes WM_MENUSELECT to be sent.
+		if (g_MenuIsTempModeless)
+		{
+			static HMENU sLastSelectedMenu = NULL; // Limits unnecessarily application of the workaround.
+			static bool sRecursiveCall = false; // Prevents looping due to MN_SELECTITEM causing WM_MENUSELECT.
+			if (sLastSelectedMenu != (HMENU)lParam && !sRecursiveCall)
+			{
+				sLastSelectedMenu = (HMENU)lParam; // Before SendMessage() below.
+				constexpr auto MF_WANTED = MF_MOUSESELECT | MF_HILITE; // Item selected by mouse.
+				constexpr auto MF_UNWANTED = MF_GRAYED | MF_DISABLED | MF_POPUP; // Items not needing the workaround.
+				HWND fore_win;
+				if (   (HMENU)lParam != g_MenuIsTempModeless // Only submenus need the workaround.
+					&& (HIWORD(wParam) & (MF_WANTED | MF_UNWANTED)) == MF_WANTED
+					&& (fore_win = GetForegroundWindow())
+					&& SendMessage(fore_win, MN_GETHMENU, 0, 0) == lParam   )
+				{
+					constexpr auto Mn_SELECTITEM = 0x01E5; // Undocumented message?
+					sRecursiveCall = true;
+					SendMessage(fore_win, Mn_SELECTITEM, -1, 0);
+					sRecursiveCall = false;
+				}
+			}
+		}
 		break;
 
 #ifdef CONFIG_DEBUGGER
@@ -1005,7 +1033,10 @@ UserFunc* Script::CreateHotFunc()
 	// Add one parameter to hold the name of the hotkey/hotstring when triggered:
 	func->mParam = SimpleHeap::Alloc<FuncParam>();
 	if ( !(func->mParam[0].var = AddVar(_T("ThisHotkey"), 10, &func->mVars, 0, VAR_DECLARE_LOCAL | VAR_LOCAL_FUNCPARAM)) )
+	{
+		delete func;
 		return nullptr;
+	}
 
 	func->mParam[0].default_type = PARAM_DEFAULT_NONE;
 	func->mParam[0].is_byref = false;
@@ -1561,7 +1592,7 @@ FResult SetWorkingDir(LPCTSTR aNewDir)
 	// working dir can change.  The exception is FileSelect(), which changes the working
 	// dir as the user navigates from folder to folder.  However, the whole purpose of
 	// maintaining g_WorkingDir is to workaround that very issue.
-	if (g_script->mIsReadyToExecute == true) // Callers want this done only during script runtime.
+	if (g_script->mIsReadyToExecute) // Callers want this done only during script runtime.
 		UpdateWorkingDir(aNewDir);
 	return OK;
 }
@@ -3272,7 +3303,9 @@ void Object::Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 	}
 
 	TCHAR stack_buf[SCRIPT_STACK_BUF_SIZE];
-	GetScriptStack(stack_buf, _countof(stack_buf), stack_top);
+	if (g_script->mIsReadyToExecute)
+		GetScriptStack(stack_buf, _countof(stack_buf), stack_top);
+	else stack_buf[0] = 0;
 	SetOwnProp(_T("Stack"), stack_buf);
 #endif
 

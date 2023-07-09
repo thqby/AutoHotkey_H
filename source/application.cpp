@@ -241,7 +241,6 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// (if they're installed).  Otherwise, there's greater risk of keyboard/mouse lag.
 			// PeekMessage(), depending on how, and how often it's called, will also do this, but
 			// I'm not as confident in it.
-			SleepEx(0, true); // used to exit thread
 			if (GetMessage(&msg, NULL, 0, MSG_FILTER_MAX) == -1) // -1 is an error, 0 means WM_QUIT
 				continue; // Error probably happens only when bad parameters were passed to GetMessage().
 			//else let any WM_QUIT be handled below.
@@ -332,7 +331,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// did a Sleep(0).
 				if (aSleepDuration == 0 && !sleep0_was_done)
 				{
-					SleepEx(0, true);
+					Sleep(0);
 					sleep0_was_done = true;
 					// Now start a new iteration of the loop that will see if we
 					// received any messages during the up-to-20ms delay (perhaps even more)
@@ -371,7 +370,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 					// when SendInput is unavailable).  Note that if aSleepDuration == 0, Sleep(0)
 					// was already called above or by a prior iteration.
 					if (aSleepDuration > 0)
-						SleepEx(5, true); // This is a somewhat arbitrary value: the intent of a value below 10 is to avoid yielding more than one timeslice on all systems even if they have unusual timeslice sizes / system timers.
+						Sleep(5); // This is a somewhat arbitrary value: the intent of a value below 10 is to avoid yielding more than one timeslice on all systems even if they have unusual timeslice sizes / system timers.
 					++messages_received; // Don't repeat this section.
 					continue;
 				}
@@ -431,7 +430,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// 1) aSleepDuration > 0
 				// 2) !empty_the_queue_via_peek
 				// 3) The above two combined with logic above means that g_DeferMessagesForUnderlyingPump==true.
-				SleepEx(5, true); // Since Peek() didn't find a message, avoid maxing the CPU.  This is a somewhat arbitrary value: the intent of a value below 10 is to avoid yielding more than one timeslice on all systems even if they have unusual timeslice sizes / system timers.
+				Sleep(5); // Since Peek() didn't find a message, avoid maxing the CPU.  This is a somewhat arbitrary value: the intent of a value below 10 is to avoid yielding more than one timeslice on all systems even if they have unusual timeslice sizes / system timers.
 				continue;
 			}
 			// else Peek() found a message, so process it below.
@@ -765,8 +764,10 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 						// keystrokes to the wrong window, or when the hotstring has become suspended.
 						continue;
 					// For details, see comments in the hotkey section of this switch().
-					if (!(hs->mHotCriterion->Type == HOT_IF_ACTIVE || hs->mHotCriterion->Type == HOT_IF_EXIST))
+					if (hs->mHotCriterion->Type == HOT_IF_NOT_ACTIVE || hs->mHotCriterion->Type == HOT_IF_NOT_EXIST)
 						criterion_found_hwnd = NULL; // For "NONE" and "NOT", there is no last found window.
+					else if (HOT_IF_REQUIRES_EVAL(hs->mHotCriterion->Type))
+						criterion_found_hwnd = g_HotExprLFW; // For #if WinExist(WinTitle) and similar.
 				}
 				else // No criterion, so it's a global hotstring.  It can always fire, but it has no "last found window".
 					criterion_found_hwnd = NULL;
@@ -1420,8 +1421,8 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// WM_CLOSE is handled by MainWindowProc().  However, this is kept here in case anything
 			// external ever explicitly posts a WM_QUIT to our thread's queue:
 			// return from message loop if we are exiting a thread.
-			if (g_FirstThreadID != g_MainThreadID) {
-				PostThreadMessage(g_MainThreadID, WM_QUIT, 0, 0);
+			if (msg.lParam == MAXLONG_PTR) {
+				PostThreadMessage(g_MainThreadID, WM_QUIT, g_script->mPendingExitCode = (int)msg.wParam, MAXLONG_PTR);
 				return false;
 			}
 			g_script->ExitApp(EXIT_CLOSE);
@@ -2099,7 +2100,54 @@ VOID CALLBACK RefreshInterruptibility(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DW
 	IsInterruptible(); // Search on RefreshInterruptibility for comments.
 }
 
-#ifndef _USRDLL
+
+
+void InitMenuPopup(HMENU aMenu)
+{
+	if (MenuIsModeless(aMenu))
+	{
+		// Modeless menus don't interfere with things in the same way as modal menus.
+		g_MenuIsVisible = false;
+	}
+}
+
+
+
+void UninitMenuPopup(HMENU aMenu)
+{
+	if (g_MenuIsTempModeless == aMenu)
+	{
+		g_MenuIsTempModeless = NULL;
+		// Restore the menu's previous style so that next time the menu is shown, we can identify it
+		// as one that we need to make temporarily modeless (i.e. not one the script has made modeless),
+		// and also in case the script calls TrackPopupMenuEx directly and expects it to wait.
+		MENUINFO mi;
+		mi.cbSize = sizeof(mi);
+		mi.fMask = MIM_STYLE;
+		if (GetMenuInfo(aMenu, &mi))
+		{
+			mi.dwStyle &= ~MNS_MODELESS;
+			SetMenuInfo(aMenu, &mi);
+		}
+		// Revert g_hWnd to non-topmost if appropriate.
+		if (g_MenuIsTempTopmost)
+			SetWindowPos(g_hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+	}
+}
+
+
+
+bool MenuIsModeless(HMENU aMenu)
+{
+	MENUINFO mi;
+	mi.cbSize = sizeof(mi);
+	mi.fMask = MIM_STYLE;
+	mi.dwStyle = 0;
+	GetMenuInfo(aMenu, &mi);
+	return (mi.dwStyle & MNS_MODELESS);
+}
+
+#ifndef CONFIG_DLL
 bool AHKModule()
 {
 #ifndef _DEBUG

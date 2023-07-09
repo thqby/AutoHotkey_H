@@ -121,10 +121,6 @@ __declspec(noinline) FResult GuiNoWindowError() { return FError(ERR_GUI_NO_WINDO
 __declspec(noinline) FResult ControlDestroyedError() { return FError(_T("The control is destroyed.")); }
 
 
-// Window class atom used by Guis.
-thread_local static ATOM sGuiWinClass;
-
-
 LPTSTR GuiControlType::sTypeNames[GUI_CONTROL_TYPE_COUNT] = { GUI_CONTROL_TYPE_NAMES };
 
 GuiControls GuiControlType::ConvertTypeName(LPCTSTR aTypeName)
@@ -1104,7 +1100,7 @@ GuiType *GuiType::FindGui(HWND aHwnd)
 {
 	// Check that this window is an AutoHotkey Gui.
 	ATOM atom = (ATOM)GetClassLong(aHwnd, GCW_ATOM);
-	if (atom != sGuiWinClass)
+	if (atom != g_GuiWinClass)
 		return NULL;
 
 	// Retrieve the GuiType object associated to it.
@@ -2490,7 +2486,7 @@ FResult GuiType::Create(LPCTSTR aTitle)
 
 	// Use a separate class for GUI, which gives it a separate WindowProc and allows it to be more
 	// distinct when used with the ahk_class method of addressing windows.
-	if (!sGuiWinClass)
+	if (!g_GuiWinClass)
 	{
 		WNDCLASSEX wc = { 0 };
 		wc.cbSize = sizeof(wc);
@@ -2504,25 +2500,27 @@ FResult GuiType::Create(LPCTSTR aTitle)
 		wc.hCursor = LoadCursor((HINSTANCE) NULL, IDC_ARROW);
 		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
 		wc.cbWndExtra = DLGWINDOWEXTRA;  // So that it will be the type that uses DefDlgProc() vs. DefWindowProc().
-		sGuiWinClass = RegisterClassEx(&wc);
+		RegisterClassEx(&wc);
+		auto err = GetLastError();
 		sVTable = *(void **)this;
-#ifdef _USRDLL
-		if (!sGuiWinClass && !(sGuiWinClass = GetClassInfoEx(g_hInstance, g_WindowClassGUI, &wc)))
-			return FR_E_WIN32;
-		if (wc.lpfnWndProc != GuiWindowProc)
+		if (!(g_GuiWinClass = GetClassInfoEx(g_hInstance, g_WindowClassGUI, &wc)) || wc.lpfnWndProc != GuiWindowProc)
 		{
-			sGuiWinClass = 0;
+			g_GuiWinClass = 0;
+			SetLastError(err);
 			return FR_E_WIN32;
 		}
-#else
-		if (!sGuiWinClass)
-			return FR_E_WIN32;
-#endif
 	}
 
 	if (   !(mHwnd = CreateWindowEx(mExStyle, g_WindowClassGUI, aTitle
 		, mStyle, 0, 0, 0, 0, mOwner, NULL, g_hInstance, NULL))   )
+	{
+		if (GetLastError() == ERROR_CANNOT_FIND_WND_CLASS)
+		{
+			g_GuiWinClass = 0;
+			return Create(aTitle);
+		}
 		return FR_E_WIN32;
+	}
 
 	// Set the user pointer in the window to this GuiType object, so that it is possible to retrieve it back from the window handle.
 	SetWindowLongPtr(mHwnd, GWLP_USERDATA, (LONG_PTR)this);
@@ -8690,13 +8688,13 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	case WM_MOUSEWHEEL:
 		if (pgui->mStyle & WS_VSCROLL)
 		{
-			thread_local static SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
+			if ((int)pgui->mVScroll.nPage > pgui->mVScroll.nMax)
+				break;
 
+			SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
 			GetScrollInfo(pgui->mHwnd, true, &aScrollInfo);
 			short scrolllines = ((short)HIWORD(wParam)) / 120 * -1 * SCROLL_STEP;
 			int new_pos = aScrollInfo.nPos + scrolllines;
-			if ((int)pgui->mVScroll.nPage > pgui->mVScroll.nMax)
-				break;
 			// Constrain scrollbar position to valid values
 			if (new_pos + (int)aScrollInfo.nPage > aScrollInfo.nMax)
 				new_pos = aScrollInfo.nMax - aScrollInfo.nPage;
@@ -8715,14 +8713,13 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	case WM_MOUSEHWHEEL:
 		if (pgui->mStyle & WS_HSCROLL)
 		{
-			thread_local static SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
+			if ((int)pgui->mHScroll.nPage > pgui->mHScroll.nMax)
+				break;
 
+			SCROLLINFO aScrollInfo = { sizeof(SCROLLINFO), SIF_ALL };
 			GetScrollInfo(pgui->mHwnd, false, &aScrollInfo);
 			short scrolllines = ((short)HIWORD(wParam)) / 120 * SCROLL_STEP;
 			int new_pos = aScrollInfo.nPos + scrolllines;
-
-			if ((int)pgui->mHScroll.nPage > pgui->mHScroll.nMax)
-				break;
 
 			// Constrain scrollbar position to valid values
 			if (new_pos + (int)aScrollInfo.nPage > aScrollInfo.nMax)
@@ -9409,6 +9406,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 	case WM_HSCROLL:
 		GuiIndexType aControlIndex;
 		aControlIndex = GUI_HWND_TO_INDEX((HWND)lParam);
+		pgui->Event(aControlIndex, LOWORD(wParam), GUI_EVENT_NONE, HIWORD(wParam));
 		if (aControlIndex >= pgui->mControlCount
 			|| (pgui->mControl[aControlIndex]->type != GUI_CONTROL_UPDOWN
 				&& pgui->mControl[aControlIndex]->type != GUI_CONTROL_SLIDER))
@@ -9461,9 +9459,7 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 
 			aScrollInfo.nPos = new_pos;
 			SetScrollInfo(pgui->mHwnd, bar, &aScrollInfo, true);
-			return 0;
 		}
-		pgui->Event(aControlIndex, LOWORD(wParam), GUI_EVENT_NONE, HIWORD(wParam));
 		return 0; // "If an application processes this message, it should return zero."
 
 	//case WM_ERASEBKGND:
@@ -9482,21 +9478,21 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		SetBkColor((HDC)wParam, pgui->mBackgroundColorWin);
 		return (LRESULT)pgui->mBackgroundBrushWin;
 
-		// It seems that scrollbars belong to controls (such as Edit and ListBox) do not send us
-		// WM_CTLCOLORSCROLLBAR (unlike the static messages we receive for radio and checkbox).
-		// Therefore, this section is commented out since it has no effect (it might be useful
-		// if a control's class window-proc is ever overridden with a new proc):
-		//case WM_CTLCOLORSCROLLBAR:
-		//	if (pgui->mBackgroundBrushWin)
-		//	{
-		//		// Since we're processing this msg rather than passing it on to the default proc, must set
-		//		// background color unconditionally, otherwise plain white will likely be used:
-		//		SetTextColor((HDC)wParam, pgui->mBackgroundColorWin);
-		//		SetBkColor((HDC)wParam, pgui->mBackgroundColorWin);
-		//		// Always return a real HBRUSH so that Windows knows we altered the HDC for it to use:
-		//		return (LRESULT)pgui->mBackgroundBrushWin;
-		//	}
-		//	break;
+	// It seems that scrollbars belong to controls (such as Edit and ListBox) do not send us
+	// WM_CTLCOLORSCROLLBAR (unlike the static messages we receive for radio and checkbox).
+	// Therefore, this section is commented out since it has no effect (it might be useful
+	// if a control's class window-proc is ever overridden with a new proc):
+	//case WM_CTLCOLORSCROLLBAR:
+	//	if (pgui->mBackgroundBrushWin)
+	//	{
+	//		// Since we're processing this msg rather than passing it on to the default proc, must set
+	//		// background color unconditionally, otherwise plain white will likely be used:
+	//		SetTextColor((HDC)wParam, pgui->mBackgroundColorWin);
+	//		SetBkColor((HDC)wParam, pgui->mBackgroundColorWin);
+	//		// Always return a real HBRUSH so that Windows knows we altered the HDC for it to use:
+	//		return (LRESULT)pgui->mBackgroundBrushWin;
+	//	}
+	//	break;
 
 	case WM_CTLCOLORSTATIC:
 	case WM_CTLCOLORLISTBOX:
@@ -9683,44 +9679,44 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		break;
 
 	case WM_CONTEXTMENU:
-	{
-		HWND clicked_hwnd = (HWND)wParam;
-		bool from_keyboard; // Whether Context Menu was generated from keyboard (AppsKey or Shift-F10).
-		if (   !(from_keyboard = (lParam == -1))   ) // Mouse click vs. keyboard event.
 		{
-			// If the click occurred above the client area, assume it was in title/menu bar or border.
-			// Let default proc handle it.
-			point_and_hwnd_type pah = {0};
-			pah.pt.x = LOWORD(lParam);
-			pah.pt.y = HIWORD(lParam);
-			POINT client_pt = pah.pt;
-			if (!ScreenToClient(hWnd, &client_pt) || client_pt.y < 0)
-				break; // Allows default proc to display standard system context menu for title bar.
-			// v1.0.38.01: Recognize clicks on pictures and text controls as occurring in that control
-			// (via A_GuiControl) rather than generically in the window:
-			if (clicked_hwnd == pgui->mHwnd)
+			HWND clicked_hwnd = (HWND)wParam;
+			bool from_keyboard; // Whether Context Menu was generated from keyboard (AppsKey or Shift-F10).
+			if (   !(from_keyboard = (lParam == -1))   ) // Mouse click vs. keyboard event.
 			{
-				// v1.0.40.01: Rather than doing "ChildWindowFromPoint(clicked_hwnd, client_pt)" -- which fails to
-				// detect text and picture controls (and perhaps others) when they're inside GroupBoxes and
-				// Tab controls -- use the MouseGetPos() method, which seems much more accurate.
-				EnumChildWindows(clicked_hwnd, EnumChildFindPoint, (LPARAM)&pah); // Find topmost control containing point.
-				clicked_hwnd = pah.hwnd_found; // Okay if NULL; the next stage will handle it.
+				// If the click occurred above the client area, assume it was in title/menu bar or border.
+				// Let default proc handle it.
+				point_and_hwnd_type pah = {0};
+				pah.pt.x = LOWORD(lParam);
+				pah.pt.y = HIWORD(lParam);
+				POINT client_pt = pah.pt;
+				if (!ScreenToClient(hWnd, &client_pt) || client_pt.y < 0)
+					break; // Allows default proc to display standard system context menu for title bar.
+				// v1.0.38.01: Recognize clicks on pictures and text controls as occurring in that control
+				// (via A_GuiControl) rather than generically in the window:
+				if (clicked_hwnd == pgui->mHwnd)
+				{
+					// v1.0.40.01: Rather than doing "ChildWindowFromPoint(clicked_hwnd, client_pt)" -- which fails to
+					// detect text and picture controls (and perhaps others) when they're inside GroupBoxes and
+					// Tab controls -- use the MouseGetPos() method, which seems much more accurate.
+					EnumChildWindows(clicked_hwnd, EnumChildFindPoint, (LPARAM)&pah); // Find topmost control containing point.
+					clicked_hwnd = pah.hwnd_found; // Okay if NULL; the next stage will handle it.
+				}
 			}
+			// Finding control_index requires only GUI_HWND_TO_INDEX (not FindControl) since context menu message
+			// never arrives for a ComboBox's Edit control (since that control has its own context menu).
+			control_index = GUI_HWND_TO_INDEX(clicked_hwnd); // Yields a small negative value on failure, which due to unsigned is seen as a large positive number.
+			if (control_index >= pgui->mControlCount) // The user probably clicked the parent window rather than inside one of its controls.
+				control_index = NO_CONTROL_INDEX;
+				// Above flags it as a non-control event. Must use NO_CONTROL_INDEX rather than something
+				// like 0xFFFFFFFF so that high-order bit is preserved for use below.
+			if (pgui->IsMonitoring(GUI_EVENT_CONTEXTMENU)
+				|| control_index != NO_CONTROL_INDEX && pgui->mControl[control_index]->events.IsMonitoring(GUI_EVENT_CONTEXTMENU))
+				POST_AHK_GUI_ACTION(hWnd, control_index, MAKEWORD(GUI_EVENT_CONTEXTMENU, from_keyboard), NO_EVENT_INFO);
+			return 0; // Return value doesn't matter.
 		}
-		// Finding control_index requires only GUI_HWND_TO_INDEX (not FindControl) since context menu message
-		// never arrives for a ComboBox's Edit control (since that control has its own context menu).
-		control_index = GUI_HWND_TO_INDEX(clicked_hwnd); // Yields a small negative value on failure, which due to unsigned is seen as a large positive number.
-		if (control_index >= pgui->mControlCount) // The user probably clicked the parent window rather than inside one of its controls.
-			control_index = NO_CONTROL_INDEX;
-		// Above flags it as a non-control event. Must use NO_CONTROL_INDEX rather than something
-		// like 0xFFFFFFFF so that high-order bit is preserved for use below.
-		if (pgui->IsMonitoring(GUI_EVENT_CONTEXTMENU)
-			|| control_index != NO_CONTROL_INDEX && pgui->mControl[control_index]->events.IsMonitoring(GUI_EVENT_CONTEXTMENU))
-			POST_AHK_GUI_ACTION(hWnd, control_index, MAKEWORD(GUI_EVENT_CONTEXTMENU, from_keyboard), NO_EVENT_INFO);
-		return 0; // Return value doesn't matter.
-	}
-	//else it's for some non-GUI window (probably impossible).  Let DefDlgProc() handle it.
-	break;
+		//else it's for some non-GUI window (probably impossible).  Let DefDlgProc() handle it.
+		break;
 
 	case WM_DROPFILES:
 	{
@@ -9815,29 +9811,41 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		// And in any case, pass it on to DefDlgProc() in case it does any extra cleanup:
 		break;
 
-		// For WM_ENTERMENULOOP/WM_EXITMENULOOP, there is similar code in MainWindowProc(), so maintain them together.
-		// WM_ENTERMENULOOP: One of the MENU BAR menus has been displayed, and then we know the user is still in
-		// the menu bar, even moving to different menus and/or menu items, until WM_EXITMENULOOP is received.
-		// Note: It seems that when window's menu bar is being displayed/navigated by the user, our thread
-		// is tied up in a message loop other than our own.  In other words, it's very similar to the
-		// TrackPopupMenuEx() call used to handle the tray menu, which is why g_MenuIsVisible can be used
-		// for both types of menus to indicate to MainWindowProc() that timed subroutines should not be
-		// checked or allowed to launch during such times.  Also, "break" is used rather than "return 0"
-		// to let DefWindowProc()/DefaultDlgProc() take whatever action it needs to do for these.
-		// UPDATE: The value of g_MenuIsVisible is checked before changing it because it might already be
-		// set to MENU_TYPE_POPUP (apparently, TrackPopupMenuEx sometimes/always generates WM_ENTERMENULOOP).
-		// BAR vs. POPUP currently doesn't matter (as long as its non-zero); thus, the above is done for
-		// maintainability.
+	// For WM_ENTERMENULOOP/WM_EXITMENULOOP, there is similar code in MainWindowProc(), so maintain them together.
+	// g_MenuIsVisible is tracked for the purpose of preventing thread interruptions while the program
+	// is in a modal menu loop, since the menu would become unresponsive until the interruption returns.
+	// WM_ENTERMENULOOP is received both when entering a modal menu loop (due to a menu bar or popup menu)
+	// and when a modeless menu is being displayed (in which case there's actually no menu loop).
+	// WM_INITMENUPOPUP is handled to verify which situation this is, so that new threads can launch
+	// while a modeless menu is being displayed.  We use this combination of messages rather than just
+	// the INIT messages because some scripts already suppress WM_ENTERMENULOOP to allow new threads.
+	// "break" is used rather than "return 0" to let DefWindowProc()/DefDlgProc() take whatever action
+	// it needs to do for these.
 	case WM_ENTERMENULOOP:
-		if (!g_MenuIsVisible) // See comments above.
-			g_MenuIsVisible = MENU_TYPE_BAR;
+		g_MenuIsVisible = true;
 		break;
 	case WM_EXITMENULOOP:
-		g_MenuIsVisible = MENU_TYPE_NONE; // See comments above.
+		g_MenuIsVisible = false; // See comments above.
 		break;
-
+	case WM_INITMENUPOPUP:
+		InitMenuPopup((HMENU)wParam);
+		break;
+	case WM_UNINITMENUPOPUP:
+		// This currently isn't needed in GuiWindowProc() because notifications for temp-modeless
+		// menus are always sent to g_hWnd, but it is kept here for symmetry/maintainability:
+		UninitMenuPopup((HMENU)wParam);
+		break;
+	case WM_NCACTIVATE:
+		if (!wParam && g_MenuIsTempModeless)
+		{
+			// The documentation is quite ambiguous, but it appears the return value of WM_NCACTIVATE
+			// affects whether the actual change of foreground window goes ahead, whereas the appearance
+			// of the nonclient area is controlled by whether or not DefDlgProc() is called.
+			return TRUE; // Allow change of foreground window, but appear to remain active.
+		}
+		break;
 	} // switch()
-
+	
 	// This will handle anything not already fully handled and returned from above:
 	return DefDlgProc(hWnd, iMsg, wParam, lParam);
 }

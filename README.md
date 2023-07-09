@@ -52,6 +52,9 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
   - `JSON.parse` supports [JSON5](https://spec.json5.org/) format.
   - The keys of object literals support quoted strings, `v := {'key':val}`
 
+- After 2.0.4
+  - The com component has changed for the dll version, some methods are incorporated into [IAutoHotkeyLib](README-LIB.md#lib-api).
+
 ## Classes List
 ```typescript
 class Decimal {
@@ -235,35 +238,8 @@ ZipRawMemory(AddOrBuf [, Size , Password]) => Buffer
 ### COM Interfaces
 ProgID: `AutoHotkey2.Script`  
 CLSID : `{934B0E6A-9B50-4248-884B-BE5A9BC66B39}`
-```cpp
-  HRESULT NewThread([in, optional]VARIANT script, [in, optional]VARIANT params, [in, optional]VARIANT title, [out, retval]DWORD* ThreadID);
-  
-  HRESULT ahkPause([in] VARIANT aThreadID, [in, optional]VARIANT aChangeTo, [out, retval]VARIANT_BOOL* paused);
-  
-  HRESULT ahkReady([in] VARIANT aThreadID, [out, retval]VARIANT_BOOL* ready);
-  
-  HRESULT ahkFindLabel([in] VARIANT aThreadID, [in] VARIANT aLabelName, [out, retval] UINT_PTR* pLabel);
-  
-  HRESULT ahkGetVar([in] VARIANT aThreadID, [in] VARIANT name, [in, optional] VARIANT getVar, [out, retval] VARIANT* returnVal);
-  
-  HRESULT ahkAssign([in] VARIANT aThreadID, [in] VARIANT name, [in, optional] VARIANT value, [out, retval] VARIANT_BOOL* success);
-  
-  HRESULT ahkExecuteLine([in] VARIANT aThreadID, [in, optional] VARIANT line, [in, optional] VARIANT aMode, [in, optional] VARIANT wait, [out, retval] UINT_PTR* pLine);
-  
-  HRESULT ahkLabel([in] VARIANT aThreadID, [in] VARIANT aLabelName, [in, optional] VARIANT nowait, [out, retval] VARIANT_BOOL* success);
-  
-  HRESULT ahkFindFunc([in] VARIANT aThreadID, [in] VARIANT FuncName, [out, retval] UINT_PTR* pFunc);
-  
-  //Call a function in the script currently executed by the AutoHotkey module. Parameters support all ahk types.
-  HRESULT ahkFunction([in] VARIANT aThreadID, [in] VARIANT FuncName, [in, optional] VARIANT param1, [in, optional] VARIANT param2, [in, optional] VARIANT param3, [in, optional] VARIANT param4, [in, optional] VARIANT param5, [in, optional] VARIANT param6, [in, optional] VARIANT param7, [in, optional] VARIANT param8, [in, optional] VARIANT param9, [in, optional] VARIANT param10, [out, retval] VARIANT* returnVal);
+The methods and properties exposed by the Lib object are defined in [ahklib.idl](source/ahklib.idl), in the  `IAutoHotkeyLib` interface.
 
-  //Async call a function in the script currently executed by the AutoHotkey module. Parameters support all ahk types except VarRef.
-  HRESULT ahkPostFunction([in] VARIANT aThreadID, [in] VARIANT FuncName, [in, optional] VARIANT param1, [in, optional] VARIANT param2, [in, optional] VARIANT param3, [in, optional] VARIANT param4, [in, optional] VARIANT param5, [in, optional] VARIANT param6, [in, optional] VARIANT param7, [in, optional] VARIANT param8, [in, optional] VARIANT param9, [in, optional] VARIANT param10, [out, retval] VARIANT* returnVal);
-  
-  HRESULT addScript([in] VARIANT aThreadID, [in] VARIANT script, [in, optional] VARIANT waitexecute, [out, retval] UINT_PTR* success);
-  
-  HRESULT ahkExec([in] VARIANT aThreadID, [in] VARIANT script, [out, retval] VARIANT_BOOL* success);
-```
 
 ### Export Functions
 ```cpp
@@ -300,7 +276,7 @@ int ahkExec(LPTSTR script, DWORD aThreadID = 0);
 
 ## How to Compile
 
-AutoHotkey v2 is developed with [Microsoft Visual Studio Community 2022](https://www.visualstudio.com/products/visual-studio-community-vs), which is a free download from Microsoft.
+AutoHotkey is developed with [Microsoft Visual Studio Community 2022](https://www.visualstudio.com/products/visual-studio-community-vs), which is a free download from Microsoft.
 
   - Get the source code.
   - Open AutoHotkeyx.sln in Visual Studio.

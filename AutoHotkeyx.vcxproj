@@ -3,11 +3,8 @@
   <PropertyGroup>
     <ProjectGuid>{31335317-2533-40F5-ACD8-361075C7C4CC}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-  </PropertyGroup>
-  <PropertyGroup>
-    <TargetName>AutoHotkey</TargetName>
     <ConfigurationType>Application</ConfigurationType>
-    <ConfigurationType Condition="'$(Configuration)'=='ReleaseDll' OR '$(Configuration)'=='DebugDll' OR '$(Configuration)'=='MT_ReleaseDll'">DynamicLibrary</ConfigurationType>
+    <ConfigurationType Condition="$(Configuration.Contains('Dll'))">DynamicLibrary</ConfigurationType>
   </PropertyGroup>
   <!--Project configurations-->
   <ItemGroup Label="ProjectConfigurations">
@@ -71,9 +68,10 @@
       <SubSystem>Windows</SubSystem>
       <AdditionalDependencies>wsock32.lib;winmm.lib;version.lib;comctl32.lib;odbc32.lib;odbccp32.lib;shlwapi.lib;crypt32.lib;psapi.lib;wininet.lib;uxtheme.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <StackReserveSize>4194304</StackReserveSize>
-      <TerminalServerAware>false</TerminalServerAware>
+      <TerminalServerAware Condition="!$(ConfigDll)">false</TerminalServerAware>
       <DataExecutionPrevention>false</DataExecutionPrevention>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
+      <ProgramDatabaseFile Condition="$(ConfigDll)">$(OutDir)\$(TargetName)_dll.pdb</ProgramDatabaseFile>
     </Link>
   </ItemDefinitionGroup>
   <!-- platform: win32 -->
@@ -124,6 +122,15 @@
       <AdditionalManifestFiles>source\resources\AutoHotkey.exe.manifest;%(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
   </ItemDefinitionGroup>
+  <!-- AutoHotkey.dll -->
+  <ItemDefinitionGroup Condition="$(ConfigDll)">
+    <ClCompile>
+      <PreprocessorDefinitions>CONFIG_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ResourceCompile>
+      <PreprocessorDefinitions>CONFIG_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
   <!-- self-contained: required settings -->
   <PropertyGroup Condition="!$(ConfigDll)">
     <TargetExt>.exe</TargetExt>
@@ -151,6 +158,12 @@
   </ItemDefinitionGroup>
   <!-- FILES -->
   <ItemGroup>
+    <ClCompile Include="source\ahklib.cpp">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="source\COMServer.cpp">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="source\ahkversion.cpp" />
     <ClCompile Include="source\application.cpp" />
     <ClCompile Include="source\AutoHotkey.cpp" />
@@ -222,16 +235,6 @@
     <ClCompile Include="source\var.cpp" />
     <ClCompile Include="source\window.cpp" />
     <ClCompile Include="source\WinGroup.cpp" />
-    <ClCompile Include="source\COMServer.cpp">
-      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="source\COMServer_i.c">
-      <PrecompiledHeader Condition="$(ConfigDll)">NotUsing</PrecompiledHeader>
-      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
-    </ClCompile>
-    <ClCompile Include="source\dllmain.cpp">
-      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="source\LiteZip.cpp" />
     <ClCompile Include="source\lowlevelbif.cpp" />
     <ClCompile Include="source\MemoryModule.cpp" />
@@ -251,6 +254,7 @@
     <ClInclude Include="source\debug.h" />
     <ClInclude Include="source\Debugger.h" />
     <ClInclude Include="source\defines.h" />
+    <ClInclude Include="source\DispObject.h" />
     <ClInclude Include="source\globaldata.h" />
     <ClInclude Include="source\hook.h" />
     <ClInclude Include="source\hotkey.h" />
@@ -276,12 +280,6 @@
     <ClInclude Include="source\var.h" />
     <ClInclude Include="source\window.h" />
     <ClInclude Include="source\WinGroup.h" />
-    <ClInclude Include="source\COMServer.h">
-      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
-    </ClInclude>
-    <ClInclude Include="source\COMServer_h.h">
-      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
-    </ClInclude>
     <ClInclude Include="source\exports.h" />
     <ClInclude Include="source\LiteZip.h" />
     <ClInclude Include="source\MemoryModule.h" />
@@ -334,13 +332,6 @@
       <Outputs>$(SolutionDir)temp\AutoHotkey.exe.manifest</Outputs>
       <SubType>Designer</SubType>
     </CustomBuild>
-    <None Include="source\resources\AutoHotkey.rgs">
-      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
-    </None>
-    <Midl Include="source\resources\COMServer.idl">
-      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
-      <OutputDirectory>source\</OutputDirectory>
-    </Midl>
     <None Include="source\resources\icon_filetype.ico" />
     <None Include="source\resources\icon_main.ico" />
     <None Include="source\resources\icon_pause.ico" />
@@ -371,6 +362,13 @@
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="debug.natvis" />
+  </ItemGroup>
+  <ItemGroup>
+    <Midl Include="source\ahklib.idl">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+      <OutputDirectory>$(ProjectDir)source\autogenerated</OutputDirectory>
+      <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
+    </Midl>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <!-- add version info from git -->
@@ -421,8 +419,8 @@
   </Target>
   <Target Name="CopyVLDFiles" Condition="$(ConfigDebug) AND Exists('$(ProjectDir)source\Visual Leak Detector\')" AfterTargets="Build">
     <ItemGroup>
-      <VLDFiles Include="$(ProjectDir)source\Visual Leak Detector\bin\Win$(PlatformArchitecture)\*.*"/>
+      <VLDFiles Include="$(ProjectDir)source\Visual Leak Detector\bin\Win$(PlatformArchitecture)\*.*" />
     </ItemGroup>
-    <Copy SourceFiles="@(VLDFiles)" DestinationFolder="$(BinDir)_debug\$(Platform)\" SkipUnchangedFiles="true"/>
+    <Copy SourceFiles="@(VLDFiles)" DestinationFolder="$(BinDir)_debug\$(Platform)\" SkipUnchangedFiles="true" />
   </Target>
 </Project>

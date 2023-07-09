@@ -38,12 +38,14 @@ public:
 
 	ULONG STDMETHODCALLTYPE Release()
 	{
-		if (mRefCount == 1)
+		auto refcount = InterlockedDecrement(&mRefCount);
+		if (refcount == 0)
 		{
 			// If an object is implemented by script, it may need to run cleanup code before the object
 			// is deleted.  This introduces the possibility that before it is deleted, the object ref
 			// is copied to another variable (AddRef() is called).  To gracefully handle this, let
 			// implementors decide when to delete and just decrement mRefCount if it doesn't happen.
+			InterlockedIncrement(&mRefCount);
 			if (Delete())
 				return 0; // Object was deleted, so cannot check or decrement --mRefCount.
 			// If the object is implemented correctly, false was returned because:
@@ -56,7 +58,7 @@ public:
 			// deletes the object and (erroneously) returns false, checking if mRefCount is still
 			// 1 may be just as unsafe as decrementing mRefCount as per usual.
 		}
-		return InterlockedDecrement(&mRefCount); // --mRefCount;
+		return refcount; // --mRefCount;
 	}
 
 	ULONG RefCount() { return mRefCount; }

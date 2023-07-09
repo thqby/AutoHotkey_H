@@ -42,13 +42,15 @@ thread_local HWND g_hWndEdit = NULL;
 thread_local HFONT g_hFontEdit = NULL;
 thread_local HACCEL g_hAccelTable = NULL;
 
-thread_local WNDPROC g_TabClassProc = NULL;
+//thread_local WNDPROC g_TabClassProc = NULL;
 
 thread_local modLR_type g_modifiersLR_logical = 0;
 thread_local modLR_type g_modifiersLR_logical_non_ignored = 0;
 thread_local modLR_type g_modifiersLR_physical = 0;
 thread_local modLR_type g_modifiersLR_numpad_mask = 0;
 thread_local modLR_type g_modifiersLR_ctrlaltdel_mask = 0;
+thread_local modLR_type g_modifiersLR_last_pressed = 0;
+thread_local DWORD g_modifiersLR_last_pressed_time;
 
 #ifdef FUTURE_USE_MOUSE_BUTTONS_LOGICAL
 thread_local WORD g_mouse_buttons_logical = 0;
@@ -130,7 +132,9 @@ static int GetScreenDPI()
 }
 
 int g_ScreenDPI = GetScreenDPI();
-thread_local MenuTypeType g_MenuIsVisible = MENU_TYPE_NONE;
+thread_local bool g_MenuIsVisible = false;
+thread_local HMENU g_MenuIsTempModeless = NULL;
+thread_local bool g_MenuIsTempTopmost = false;
 thread_local int g_nMessageBoxes = 0;
 thread_local int g_nFileDialogs = 0;
 thread_local int g_nFolderDialogs = 0;
@@ -475,23 +479,22 @@ thread_local DISPID* g_DispIdSortByName = NULL;
 thread_local BuiltInFunc* g_sIsSetFunc = NULL;		// stored IsSet, free it when thread terminates.
 LPSTR g_hWinAPI = NULL, g_hWinAPIlowercase = NULL;  // loads WinAPI functions definitions from resource
 HRSRC g_hResource = NULL;							// Set by WinMain()	// for compiled AutoHotkey.exe
-thread_local int g_ExitCode = 0;
-thread_local bool g_Reloading = false;
-EXPORT FARPROC g_ThreadExitApp = (FARPROC)&ThreadExitApp;
 CRITICAL_SECTION g_Critical;
 AhkThreadInfo g_ahkThreads[MAX_AHK_THREADS] = {};
 thread_local PVOID g_original_tls = NULL;
 thread_local CRITICAL_SECTION g_CriticalTLSCallback;
 thread_local HMODULE g_hMemoryModule = NULL; // Set by DllMain() used for COM 
-EXPORT DWORD g_FirstThreadID = 0;
+DWORD g_FirstThreadID = GetCurrentThreadId();
 DWORD g_ProcessId = GetCurrentProcessId();
-thread_local bool g_UseStdLib = false;
 thread_local UINT g_MapCaseSense = 1;
 thread_local LPTSTR g_DefaultObjectValue = NULL;
-thread_local ATOM g_ClassRegistered = 0;
 thread_local LPWSTR g_WindowClassMain = WINDOW_CLASS_MAIN;
 thread_local LPWSTR g_WindowClassGUI = WINDOW_CLASS_GUI;
+thread_local ATOM g_MainWinClass = 0;
+thread_local ATOM g_GuiWinClass = 0;
 thread_local bool g_TargetWindowError = true;
 thread_local bool g_TargetControlError = true;
+thread_local char g_Reloading = 0;
+thread_local bool g_UseStdLib = false;
 ULONGLONG g_crypt_code[6] = { 0 };
 TCHAR g_default_pwd[1] = { 0 };

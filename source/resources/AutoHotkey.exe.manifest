@@ -48,19 +48,17 @@
 	</application>
 </compatibility>
 <v3:application>
-	<v3:windowsSettings>
-		<dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
-		<!-- legacy -->
-		<dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2,permonitor</dpiAwareness>
-		<!-- falls back to pm if pmv2 is not available -->
+	<v3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings" xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+		<dpiAware>true</dpiAware>
+		<ws2:longPathAware>true</ws2:longPathAware>
 	</v3:windowsSettings>
 </v3:application>
 <v3:trustInfo>
 	<v3:security>
 		<v3:requestedPrivileges>
 			<!-- This prevents UAC from using heuristics to detect the program as an installer.
-					 It's normally inserted by the VC++ manifest tool, which is disabled for this
-					 project for reasons described above. -->
+					It's normally inserted by the VC++ manifest tool, which is disabled for this
+					project for reasons described above. -->
 			<v3:requestedExecutionLevel level="asInvoker" uiAccess="false" />
 		</v3:requestedPrivileges>
 	</v3:security>

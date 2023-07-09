@@ -1497,7 +1497,7 @@ BIV_DECL_R(BIV_DllDir) // HotKeyIt H1 path of loaded dll
 
 BIV_DECL_R(BIV_IsDll)
 {
-#ifdef _USRDLL
+#ifdef CONFIG_DLL
 	_f_return_b(true);
 #else
 	_f_return_b(false);

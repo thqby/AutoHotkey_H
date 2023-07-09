@@ -213,11 +213,16 @@ ResultType Line::LineError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aE
 	if (!aExtraInfo)
 		aExtraInfo = _T("");
 
-	if (g_script->mIsReadyToExecute)
+	if (g_script->mIsReadyToExecute || g->ExcptMode)
 	{
 		return g_script->RuntimeError(aErrorText, aExtraInfo, aErrorType, this);
 	}
-
+	
+#ifdef CONFIG_DLL
+	if (LibNotifyProblem(aErrorText, aExtraInfo, this))
+		return aErrorType;
+#endif
+	
 	if (g_script->mErrorStdOut && aErrorType != WARN)
 	{
 		// JdeB said:
@@ -243,14 +248,19 @@ ResultType Script::RuntimeError(LPCTSTR aErrorText, LPCTSTR aExtraInfo, ResultTy
 	ASSERT(aErrorText);
 	if (!aExtraInfo)
 		aExtraInfo = _T("");
-	
+
 	if ((g->ExcptMode || mOnError.Count()
 #ifdef CONFIG_DEBUGGER
 		|| g_Debugger->BreakOnExceptionIsEnabled()
 #endif
 		|| aPrototype) && aErrorType != WARN)
 		return ThrowRuntimeException(aErrorText, aExtraInfo, aLine, aErrorType, aPrototype);
-
+	
+#ifdef CONFIG_DLL
+	if (LibNotifyProblem(aErrorText, aExtraInfo, aLine))
+		return aErrorType;
+#endif
+	
 	return ShowError(aErrorText, aErrorType, aExtraInfo, aLine);
 }
 
@@ -561,6 +571,8 @@ INT_PTR CALLBACK ErrorBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			{
 				// Call the handler directly since g_hWnd might be NULL if this is a warning dialog.
 				HandleMenuItem(NULL, LOWORD(wParam), NULL);
+				if (LOWORD(wParam) == ID_FILE_RELOADSCRIPT)
+					EndDialog(hwnd, IDCANCEL);
 				return TRUE;
 			}
 		}
@@ -696,6 +708,17 @@ ResultType Script::ScriptError(LPCTSTR aErrorText, LPCTSTR aExtraInfo)
 	if (!aExtraInfo) // In case the caller explicitly called it with NULL.
 		aExtraInfo = _T("");
 
+	if (g->ExcptMode)
+	{
+		Line aLine(g_script->mCurrFileIndex, g_script->mCombinedLineNumber, ACT_THROW, nullptr, 0);
+		return ThrowRuntimeException(aErrorText, aExtraInfo, &aLine, FAIL);
+	}
+	
+#ifdef CONFIG_DLL
+	if (LibNotifyProblem(aErrorText, aExtraInfo, nullptr))
+		return FAIL;
+#endif
+	
 	if (g_script->mErrorStdOut && !g_script->mIsReadyToExecute) // i.e. runtime errors are always displayed via dialog.
 	{
 		// See LineError() for details.
@@ -1082,6 +1105,14 @@ ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
 			return FAIL; // Exit thread.
 		}
 	}
+	
+#ifdef CONFIG_DLL
+	if (LibNotifyProblem(*token))
+	{
+		g.ThrownToken = token; // See comments above.
+		return FAIL;
+	}
+#endif
 
 	if (Object *ex = dynamic_cast<Object *>(TokenToObject(*token)))
 	{
@@ -1164,12 +1195,17 @@ bool Line::CatchThis(ExprTokenType &aThrown) // ACT_CATCH
 
 void Script::ScriptWarning(WarnMode warnMode, LPCTSTR aWarningText, LPCTSTR aExtraInfo, Line *line)
 {
-	if (warnMode == WARNMODE_OFF)
-		return;
-
 	if (!line) line = mCurrLine;
 	int fileIndex = line ? line->mFileIndex : mCurrFileIndex;
 	FileIndexType lineNumber = line ? line->mLineNumber : mCombinedLineNumber;
+	
+#ifdef CONFIG_DLL
+	if (LibNotifyProblem(aWarningText, aExtraInfo, line, true))
+		return;
+#endif
+	
+	if (warnMode == WARNMODE_OFF)
+		return;
 
 	TCHAR buf[MSGBOX_TEXT_SIZE];
 	auto n = FormatStdErr(buf, _countof(buf), aWarningText, aExtraInfo, fileIndex, lineNumber, true);

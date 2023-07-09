@@ -487,8 +487,6 @@ struct ResultToken : public ExprTokenType
 			free(mem_to_free);
 	}
 
-	void StealMem(Var *aVar);
-	
 	void AcceptMem(LPTSTR aNewMem, size_t aLength)
 	{
 		symbol = SYM_STRING;
@@ -1076,8 +1074,6 @@ UNICODE_CHECK inline size_t CHECK_SIZEOF(size_t n) { return n; }
 #else
 #define UNICODE_CHECK
 #endif
-
-#define EXPORT extern "C" __declspec(dllexport)
 
 #ifdef ENABLE_DLLCALL
 

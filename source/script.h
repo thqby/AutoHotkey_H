@@ -1301,6 +1301,10 @@ public:
 	LPTSTR mName;
 	Line *mJumpToLine;
 	Label *mPrevLabel, *mNextLabel;  // Prev & Next items in linked list.
+#ifdef CONFIG_DLL
+	LineNumberType mLineNumber;
+	FileIndexType mFileIndex;
+#endif
 
 	Label(LPTSTR aLabelName)
 		: mName(aLabelName) // Caller gave us a pointer to dynamic memory for this.
@@ -1504,6 +1508,11 @@ public:
 	int mParamCount = 0; // The function's maximum number of parameters.  For UDFs, also the number of items in the mParam array.
 	int mMinParams = 0;  // The number of mandatory parameters (populated for both UDFs and built-in's).
 	bool mIsVariadic = false; // Whether to allow mParamCount to be exceeded.
+
+#ifdef CONFIG_DLL
+	LineNumberType mLineNumber = 0;
+	FileIndexType mFileIndex = 0;
+#endif
 
 	virtual bool IsBuiltIn() = 0; // FIXME: Should not need to rely on this.
 	virtual bool ArgIsOutputVar(int aArg) = 0;
@@ -2067,7 +2076,7 @@ public:
 	FResult Rename(StrArg aItemName, optl<StrArg> aNewName);
 	FResult SetColor(ExprTokenType *aColor, optl<BOOL> aApplyToSubmenus);
 	FResult SetIcon(StrArg aItemName, StrArg aIconFile, optl<int> aIconNumber, optl<int> aIconWidth);
-	FResult Show(optl<int> aX, optl<int> aY);
+	FResult Show(optl<int> aX, optl<int> aY, optl<BOOL> aWait);
 	FResult ToggleCheck(StrArg aItemName);
 	FResult ToggleEnable(StrArg aItemName);
 	FResult Uncheck(StrArg aItemName);
@@ -2095,7 +2104,7 @@ public:
 	void ApplyColor(bool aApplyToSubmenus);
 	ResultType AppendStandardItems();
 	ResultType EnableStandardOpenItem(bool aEnable);
-	ResultType Display(bool aForceToForeground = true, int aX = COORD_UNSPECIFIED, int aY = COORD_UNSPECIFIED);
+	ResultType Display(int aX = COORD_UNSPECIFIED, int aY = COORD_UNSPECIFIED, optl<BOOL> aWait = false);
 	FResult GetItem(LPCTSTR aNameOrPos, UserMenuItem *&aItem);
 	FResult ItemNotFoundError(LPCTSTR aItem);
 	UserMenuItem *FindItem(LPCTSTR aNameOrPos, UserMenuItem *&aPrevItem, bool &aByPos);
@@ -2832,9 +2841,22 @@ public:
 #ifdef CONFIG_DEBUGGER
 	friend class Debugger;
 #endif
+#ifdef CONFIG_DLL
+	friend class AutoHotkeyLib;
+	friend class FuncCollection;
+	friend class VarCollection;
+	friend class LabelCollection;
+	friend class EnumFuncs;
+	friend class EnumVars;
+	friend class EnumLabels;
+	friend bool LibNotifyProblem(LPCTSTR, LPCTSTR, Line *, bool);
+#endif
 
 	Line *mFirstLine, *mLastLine;     // The first and last lines in the linked list.
 	Label *mFirstLabel, *mLastLabel;  // The first and last labels in the linked list.
+#ifdef CONFIG_DLL
+	int mLabelCount;
+#endif
 	FuncList mFuncs;
 	
 	UserFunc *mLastHotFunc;		// For hotkey/hotstring functions
@@ -2870,7 +2892,7 @@ public:
 	// only mCurrLine is kept up-to-date:
 	int mCurrFileIndex;
 	LineNumberType mCombinedLineNumber; // In the case of a continuation section/line(s), this is always the top line.
-
+	USHORT mIndex;
 	bool mClassPropertyStatic;
 
 	#define UPDATE_TIP_FIELD tcslcpy(mNIC.szTip, mTrayIconTip ? mTrayIconTip \
@@ -2957,7 +2979,6 @@ public:
 	bool mIsReadyToExecute;
 	bool mAutoExecSectionIsRunning;
 	bool mIsRestart; // The app is restarting rather than starting from scratch.
-	bool mExiting;
 	bool mErrorStdOut; // true if load-time syntax errors should be sent to stdout vs. a MsgBox.
 	UINT mErrorStdOutCP;
 	void SetErrorStdOut(LPTSTR aParam);
@@ -2984,8 +3005,8 @@ public:
 	UserMenu *mTrayMenu; // Our tray menu, which should be destroyed upon exiting the program.
 	DWORD mEncrypt;
 	Line *mExecLineBeforeAutoExec;	// run before AutoExecSection
-    
-	ResultType Init(global_struct &g, LPTSTR aScriptFilename, bool aIsRestart, HINSTANCE hInstance, LPTSTR aTitle);
+
+	ResultType Init(LPTSTR aScriptFilename);
 	ResultType CreateWindows();
 	void EnableClipboardListener(bool aEnable);
 	void AllowMainWindow(bool aAllow);
@@ -3002,12 +3023,10 @@ public:
 	ResultType Reload(bool aDisplayErrors);
 	ResultType ExitApp(ExitReasons aExitReason);
 	void TerminateApp(ExitReasons aExitReason, int aExitCode); // L31: Added aExitReason. See script.cpp.
-	LineNumberType LoadFromFile(LPCTSTR aFileSpec);
-	LineNumberType LoadFromText(LPTSTR aScript, LPCTSTR aPathToShow = _T("")); // HotKeyIt H1 load text instead file ahktextdll
-	ResultType LoadIncludedText(LPTSTR aScript, LPCTSTR aPathToShow = _T("")); //New read text
-	ResultType LoadIncludedFile(LPCTSTR aFileSpec, bool aAllowDuplicateInclude, bool aIgnoreLoadFailure);
+	LineNumberType LoadFromFile(LPCTSTR aFileSpec, LPCTSTR aScriptText = NULL);
+	ResultType LoadIncludedFile(LPCTSTR aFileSpec, bool aAllowDuplicateInclude, bool aIgnoreLoadFailure, LPCTSTR aScriptText = NULL);
 	ResultType LoadIncludedFile(TextStream *fp, int aFileIndex);
-	ResultType OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAllowDuplicateInclude, bool aIgnoreLoadFailure, LPCTSTR aPathToShow = NULL);
+	ResultType OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAllowDuplicateInclude, bool aIgnoreLoadFailure, LPCTSTR aScriptText);
 	LineNumberType CurrentLine();
 	LPTSTR CurrentFile();
 	static ActionTypeType ConvertActionType(LPCTSTR aActionTypeString);
@@ -3303,6 +3322,7 @@ BIF_DECL(BIF_Cos);
 BIF_DECL(BIF_Tan);
 BIF_DECL(BIF_ASinACos);
 BIF_DECL(BIF_ATan);
+BIF_DECL(BIF_ATan2);
 BIF_DECL(BIF_Exp);
 BIF_DECL(BIF_SqrtLogLn);
 BIF_DECL(BIF_MinMax);
@@ -3505,21 +3525,12 @@ typedef BOOL(WINAPI* MyCryptReleaseContext)(HCRYPTPROV, DWORD);
 
 // maximal simultaneously running autohotkey threads started via NewThread, tests shown that max is around 900 at /STACK:"4194304" but 2048 should not harm a lot
 #define MAX_AHK_THREADS 1024
-unsigned __stdcall ThreadMain(LPTSTR *data);
 // Pixels to scroll when scroll bar button is pressed and WheelUp/Down
 #define SCROLL_STEP 10;
 #define ERR_INVALID_STRUCT _T("Invalid structure definition.")
 #define ERR_INVALID_STRUCT_IN_FUNC _T("Variable was not found in function.")
 #define ERR_INVALID_STRUCT_BIT_POINTER _T("Bit field must not be a pointer")
 #define ERR_MUST_INIT_STRUCT _T("Empty pointer, dynamic Structure fields must be initialized manually first.")
-Var* LoadDllFunction(LPTSTR parameter);
-
-struct IObjPtr
-{
-	IObject* obj = nullptr;
-	inline operator bool() const { return obj != nullptr; }
-	~IObjPtr() { if (obj) obj->Release(); }
-};
 
 struct FuncLibrary
 {
@@ -3530,14 +3541,30 @@ struct FuncLibrary
 void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam, int* aShortNameLen = NULL);
 void free_compiled_regex();
 
-VOID CALLBACK ThreadExitApp(ULONG_PTR dwParam);
-BOOL CALLBACK ThreadWindowsCloseCallback(HWND ahWnd, LPARAM aThreadID);
+#ifdef CONFIG_DLL
+bool LibNotifyProblem(ExprTokenType &aProblem);
+bool LibNotifyProblem(LPCTSTR aMessage, LPCTSTR aExtra, Line *aLine, bool aWarn = false);
+#endif
+
+
+
+Var* LoadDllFunction(LPTSTR aDef, BOOL aAllowBase64 = FALSE);
+void TerminateSubThread(DWORD aThreadID, HWND aHwnd);
+void TerminateSubThreads();
+
+struct IObjPtr
+{
+	IObject* obj = nullptr;
+	inline operator bool() const { return obj != nullptr; }
+	~IObjPtr() { if (obj) obj->Release(); }
+};
 
 struct AhkThreadInfo
 {
 	HWND Hwnd;
-	Script* Script;
+	Script *Script;
 	PVOID TLS;
+	IObject *AnyPrototype;
 	DWORD ThreadID;
 };
 

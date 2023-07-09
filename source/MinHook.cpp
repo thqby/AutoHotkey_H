@@ -1022,8 +1022,9 @@ BOOL IsExecutableAddress(LPVOID pAddress)
 	return (mi.State == MEM_COMMIT && (mi.Protect & PAGE_EXECUTE_FLAGS));
 }
 
-PHOOK_ENTRY MinHookEnable(LPVOID pTarget, LPVOID pDetour, LPVOID *ppOriginal)
+PHOOK_ENTRY __stdcall MinHookEnable(LPVOID pTarget, LPVOID pDetour, LPVOID *ppOriginal)
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	LPVOID      pBuffer;
 	TRAMPOLINE  ct;
 	PHOOK_ENTRY pHook;
@@ -1113,8 +1114,9 @@ PHOOK_ENTRY MinHookEnable(LPVOID pTarget, LPVOID pDetour, LPVOID *ppOriginal)
 	return pHook;
 }
 
-BOOL MinHookDisable(PHOOK_ENTRY pHook)
+BOOL __stdcall MinHookDisable(PHOOK_ENTRY pHook)
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	DWORD  oldProtect;
 	SIZE_T patchSize = sizeof(JMP_REL);
 	LPBYTE pPatchTarget = (LPBYTE)pHook->pTarget;

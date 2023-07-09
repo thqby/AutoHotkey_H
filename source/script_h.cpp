@@ -1377,7 +1377,7 @@ __int64 ObjRawSize(IObject* aObject, IObject* aObjects)
 		&& (_tcscmp(aObject->Type(), _T("Buffer")))
 		&& (_tcscmp(aObject->Type(), _T("Struct")))
 		&& (_tcscmp(aObject->Type(), _T("ComValue"))))
-		g_script->ScriptError(ERR_TYPE_MISMATCH, aObject->Type());
+		g_script->RuntimeError(ERR_TYPE_MISMATCH, aObject->Type());
 
 	__int64 aSize = 1 + sizeof(__int64);
 	result_token.InitResult(L"");
@@ -1392,7 +1392,7 @@ __int64 ObjRawSize(IObject* aObject, IObject* aObjects)
 	{
 		ComObject* obj = dynamic_cast<ComObject*>(aObject);
 		if (!obj || !(obj->mVarType < 9 || obj->mVarType - 16 < 8))
-			g_script->ScriptError(ERR_TYPE_MISMATCH, _T("Only following values are supported VT_EMPTY/NULL/BOOL/I2/I4/R4/R8/CY/DATE/BSTR/I1/UI1/UI2/UI4/I8/UI8/INT/UINT"));
+			g_script->RuntimeError(ERR_TYPE_MISMATCH, _T("Only following values are supported VT_EMPTY/NULL/BOOL/I2/I4/R4/R8/CY/DATE/BSTR/I1/UI1/UI2/UI4/I8/UI8/INT/UINT"));
 		aSize += 1 + (obj->mVarType == VT_BSTR ? SysStringByteLen((BSTR)obj->mValPtr) + sizeof(TCHAR) : sizeof(__int64));
 	}
 
@@ -1596,7 +1596,7 @@ __int64 ObjRawDump(IObject* aObject, char* aBuffer, Map* aObjects, UINT& aObjCou
 	{
 		ComObject* obj = dynamic_cast<ComObject*>(aObject);
 		if (!obj || !(obj->mVarType < 9 || obj->mVarType - 16 < 8))
-			g_script->ScriptError(ERR_TYPE_MISMATCH, _T("Only following values are supported VT_EMPTY/NULL/BOOL/I2/I4/R4/R8/CY/DATE/BSTR/I1/UI1/UI2/UI4/I8/UI8/INT/UINT"));
+			g_script->RuntimeError(ERR_TYPE_MISMATCH, _T("Only following values are supported VT_EMPTY/NULL/BOOL/I2/I4/R4/R8/CY/DATE/BSTR/I1/UI1/UI2/UI4/I8/UI8/INT/UINT"));
 		*aThisBuffer = (char)-20;
 		*(aThisBuffer + 1 + sizeof(__int64)) = (char)obj->mVarType;
 		if (obj->mVarType == VT_BSTR)
@@ -1614,7 +1614,7 @@ __int64 ObjRawDump(IObject* aObject, char* aBuffer, Map* aObjects, UINT& aObjCou
 		}
 	}
 	else
-		g_script->ScriptError(ERR_TYPE_MISMATCH, aObject->Type());
+		g_script->RuntimeError(ERR_TYPE_MISMATCH, aObject->Type());
 
 	aThisBuffer += 1 + sizeof(__int64);
 
@@ -2111,9 +2111,9 @@ IObject* ObjRawLoad(char* aBuffer, IObject**& aObjects, UINT& aObjCount, UINT& a
 		else aObject = new ComObject(*(long long*)(aThisBuffer + 2 + sizeof(__int64)), (VARTYPE) * (char*)(aThisBuffer + 1 + sizeof(__int64)), 0);
 	}
 	else
-		g_script->ScriptError(ERR_TYPE_MISMATCH);
+		g_script->RuntimeError(ERR_TYPE_MISMATCH);
 	if (!aObject)
-		g_script->ScriptError(ERR_OUTOFMEM);
+		g_script->RuntimeError(ERR_OUTOFMEM);
 	aObjects[aObjCount++] = aObject;
 
 
@@ -2216,7 +2216,7 @@ IObject* ObjRawLoad(char* aBuffer, IObject**& aObjects, UINT& aObjCount, UINT& a
 			}
 			else
 			{
-				g_script->ScriptError(ERR_INVALID_VALUE);
+				g_script->RuntimeError(ERR_INVALID_VALUE);
 				return NULL;
 			}
 		}
@@ -2303,7 +2303,7 @@ IObject* ObjRawLoad(char* aBuffer, IObject**& aObjects, UINT& aObjCount, UINT& a
 			}
 			else
 			{
-				g_script->ScriptError(ERR_INVALID_VALUE);
+				g_script->RuntimeError(ERR_INVALID_VALUE);
 				return NULL;
 			}
 		}
@@ -3657,23 +3657,11 @@ void Promise::FreeResult() {
 void Promise::UnMarshal() {
 	if (!mMarshal)
 		return;
-	IUnknown* obj;
-	IObject* pobj;
-	LPSTREAM stream;
-	IEnumVARIANT* penum;
 	for (int i = 0; i < mParamCount; i++)
 		if (mParam[i]->symbol == SYM_STREAM)
-			if (SUCCEEDED(CoGetInterfaceAndReleaseStream(stream = (LPSTREAM)mParam[i]->value_int64, IID_IUnknown, (LPVOID*)&obj))) {
-				if (SUCCEEDED(obj->QueryInterface(IID_IObjectComCompatible, (LPVOID*)&pobj)))
-					obj->Release();
-				else if (SUCCEEDED(obj->QueryInterface(IID_IDispatch, (LPVOID*)&pobj)) || SUCCEEDED(obj->QueryInterface(IID__Object, (LPVOID*)&pobj)))
-					pobj = new ComObject(pobj), obj->Release();
-				else if (SUCCEEDED(obj->QueryInterface(IID_IEnumVARIANT, (void**)&penum)))
-					pobj = new ComEnum(penum), obj->Release();
-				else pobj = new ComObject((__int64)obj, VT_UNKNOWN);
+			if (auto pobj = UnMarshalObjectFromStream((LPSTREAM)mParam[i]->value_int64))
 				mParam[i]->SetValue(pobj);
-			}
-			else mParam[i]->symbol = SYM_MISSING, CoReleaseMarshalData(stream), stream->Release();
+			else mParam[i]->SetValue(_T(""));
 }
 
 Func* Promise::ToBoundFunc() {
@@ -3738,8 +3726,8 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 	}
 	if (!mThread || !mHwnd || g_ahkThreads[mIndex].Hwnd != mHwnd) {
 		mHwnd = NULL;
-		if (mThread && WaitForSingleObject(mThread, 5) == WAIT_TIMEOUT) {
-			for (int i = 1; i < MAX_AHK_THREADS; i++) {
+		if (mThread && WaitForSingleObject(mThread, 500) == WAIT_TIMEOUT) {
+			for (int i = 0; i < MAX_AHK_THREADS; i++) {
 				if (g_ahkThreads[i].ThreadID == mThreadID) {
 					mIndex = i, mHwnd = g_ahkThreads[i].Hwnd;
 					break;
@@ -3828,23 +3816,10 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 					}
 					if (obj) {
 						atls.~AutoTLS();
-						if ((stream = (LPSTREAM)SendMessage(mHwnd, AHK_THREADVAR, (WPARAM)obj, !iunk)) && SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, iunk ? IID_IUnknown : IID_IDispatch, (LPVOID *)&obj))) {
-							IObject *pobj;
-							if (!iunk && SUCCEEDED(obj->QueryInterface(IID_IObjectComCompatible, (LPVOID *)&pobj)))
-								obj->Release();
-							else pobj = new ComObject((__int64)obj, iunk ? VT_UNKNOWN : VT_DISPATCH);
-							aResultToken.Free();
+						IObject *pobj;
+						if ((stream = (LPSTREAM)SendMessage(mHwnd, AHK_THREADVAR, (WPARAM)obj, !iunk)) && (pobj = UnMarshalObjectFromStream(stream)))
 							_f_return(pobj);
-						}
-						else {
-							auto err = GetLastError();
-							aResultToken.Free();
-							if (stream && !iunk && SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, IID_IUnknown, (LPVOID *)&obj)))
-								_f_return(new ComObject((__int64)obj, VT_UNKNOWN));
-							aResultToken.SetExitResult(FAIL);
-							CoReleaseMarshalData(stream), stream->Release();
-							_f_throw_win32(err);
-						}
+						_f_throw_win32();
 					}
 				}
 			}
@@ -3895,21 +3870,15 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 	case M_Exec:
 		_f_return(ahkExec(ParamIndexToString(0), atls.tls ? mThreadID : ParamIndexToOptionalBOOL(1, TRUE) ? 0 : mThreadID));
 	case M_ExitApp:
-		if (script) {
-			script->mExiting = true;
-			EnumThreadWindows(mThreadID, &ThreadWindowsCloseCallback, NULL);
-			QueueUserAPC(&ThreadExitApp, mThread, 0);
-			PostThreadMessage(mThreadID, WM_NULL, 0, 0);
-		}
+		if (script)
+			TerminateSubThread(mThreadID, mHwnd);
 		CloseHandle(mThread), mThread = NULL;
-		SleepEx(5, true);
 		_f_return_retval;
 	case M_Pause:
 		_f_return(ahkPause(ParamIndexToString(0), mThreadID));
 	case M_Reload:
 		if (!PostMessage(mHwnd, WM_COMMAND, ID_FILE_RELOADSCRIPT, 0))
 			_f_return(0);
-		SleepEx(5, true);
 		_f_return(1);
 	case M_GetObject:
 		if (auto obj = ParamIndexToObject(0)) {
@@ -3954,43 +3923,23 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 			else obj->AddRef();
 			if (punk) {
 				int index;
-				MYTEB* curr_teb = (MYTEB*)NtCurrentTeb();
-				PVOID tls = curr_teb->ThreadLocalStoragePointer;
-				EnterCriticalSection(&g_CriticalTLSCallback);
-				for (index = 0; index < MAX_AHK_THREADS; index++) {
-					if (!g_ahkThreads[index].TLS || tls == g_ahkThreads[index].TLS)
-						continue;
-					curr_teb->ThreadLocalStoragePointer = g_ahkThreads[index].TLS;
-					if (base == Object::sAnyPrototype)
+				for (index = 0; index < MAX_AHK_THREADS; index++)
+					if (base == g_ahkThreads[index].AnyPrototype)
 						break;
-				}
-				curr_teb->ThreadLocalStoragePointer = tls;
-				LeaveCriticalSection(&g_CriticalTLSCallback);
 				if (index < MAX_AHK_THREADS) {
 					auto stream = (LPSTREAM)SendMessage(g_ahkThreads[index].Hwnd, AHK_THREADVAR, (WPARAM)punk, isdisp ? 1 : 0);
-					if (!stream || !SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, isdisp ? IID_IDispatch : IID_IUnknown, (LPVOID*)&punk))) {
-						auto err = GetLastError();
-						if (stream) {
-							if (isdisp && SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, IID_IUnknown, (LPVOID*)&punk)))
-								_f_return(new ComObject((__int64)punk, VT_UNKNOWN));
-							CoReleaseMarshalData(stream), stream->Release();
-						}
-						_f_throw_win32(err);
-					}
-					else if (isdisp && SUCCEEDED(punk->QueryInterface(IID_IObjectComCompatible, (PVOID*)&obj)))
-						punk->Release();
-					else obj = new ComObject((__int64)punk, isdisp ? VT_DISPATCH : VT_UNKNOWN);
+					if (!stream || !(obj = UnMarshalObjectFromStream(stream)))
+						_f_throw_win32();
 				}
 				else
 					_f_throw_value(ERR_INVALID_VALUE);
 			}
 			_f_return(obj);
-
 		}
 		else
 			_f_throw_param(0, _T("Object"));
 	case P_Ready:
-		_f_return(script ? script->mIsReadyToExecute == true : 0);
+		_f_return(script ? script->mIsReadyToExecute : 0);
 	case P_ThreadID:
 		_f_return(mThreadID);
 	case M_Wait:

@@ -27,9 +27,6 @@
     <Filter Include="Built-in library\Gui">
       <UniqueIdentifier>{d89b1451-308b-4d71-b654-bd52e7e74493}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Generated Files">
-      <UniqueIdentifier>{db7511a5-c72a-44ef-b579-8ce51449f6f4}</UniqueIdentifier>
-    </Filter>
     <Filter Include="H">
       <UniqueIdentifier>{bf30415b-9b32-49f2-b900-42445e0ac5c0}</UniqueIdentifier>
     </Filter>
@@ -191,14 +188,8 @@
     <ClCompile Include="source\MdFunc.cpp">
       <Filter>Core</Filter>
     </ClCompile>
-    <ClCompile Include="source\COMServer_i.c">
-      <Filter>Generated Files</Filter>
-    </ClCompile>
-    <ClCompile Include="source\COMServer.cpp">
-      <Filter>H</Filter>
-    </ClCompile>
-    <ClCompile Include="source\dllmain.cpp">
-      <Filter>H</Filter>
+    <ClCompile Include="source\ahklib.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="source\exports.cpp">
       <Filter>H</Filter>
@@ -222,6 +213,9 @@
       <Filter>H</Filter>
     </ClCompile>
     <ClCompile Include="source\decimal.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\COMServer.cpp">
       <Filter>H</Filter>
     </ClCompile>
   </ItemGroup>
@@ -260,6 +254,9 @@
       <Filter>Utility</Filter>
     </ClInclude>
     <ClInclude Include="source\debug.h">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="source\DispObject.h">
       <Filter>Utility</Filter>
     </ClInclude>
     <ClInclude Include="source\config.h">
@@ -331,12 +328,6 @@
     <ClInclude Include="source\abi.h">
       <Filter>Core</Filter>
     </ClInclude>
-    <ClInclude Include="source\COMServer_h.h">
-      <Filter>Generated Files</Filter>
-    </ClInclude>
-    <ClInclude Include="source\COMServer.h">
-      <Filter>H</Filter>
-    </ClInclude>
     <ClInclude Include="source\exports.h">
       <Filter>H</Filter>
     </ClInclude>
@@ -369,9 +360,6 @@
     <None Include="source\resources\icon_suspend.ico">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="source\resources\AutoHotkey.rgs">
-      <Filter>Resource Files</Filter>
-    </None>
     <None Include="source\resources\WINAPI.zip">
       <Filter>Resource Files</Filter>
     </None>
@@ -396,13 +384,13 @@
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
-    <Midl Include="source\resources\COMServer.idl">
-      <Filter>Resource Files</Filter>
-    </Midl>
-  </ItemGroup>
-  <ItemGroup>
     <Natvis Include="debug.natvis">
       <Filter>Build &amp; debug</Filter>
     </Natvis>
+  </ItemGroup>
+  <ItemGroup>
+    <Midl Include="source\ahklib.idl">
+      <Filter>Source Files</Filter>
+    </Midl>
   </ItemGroup>
 </Project>

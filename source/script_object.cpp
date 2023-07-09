@@ -2218,7 +2218,8 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 		}
 		
 		index_t count = 1;
-		if (!ParamIndexIsOmitted(1))
+		bool return_it = ParamIndexIsOmitted(1);
+		if (!return_it)
 		{
 			Throw_if_Param_NaN(1);
 			count = (index_t)ParamIndexToInt64(1);
@@ -2226,7 +2227,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 		if (index + count > mLength)
 			_o_throw_param(1);
 
-		if (aParamCount < 2) // Remove-and-return mode.
+		if (return_it) // Remove-and-return mode.
 		{
 			mItem[index].ReturnMove(aResultToken);
 			if (aResultToken.Exited())

@@ -98,7 +98,15 @@ VOID CALLBACK MsgBoxTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime
 VOID CALLBACK InputTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK RefreshInterruptibility(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 
-#ifndef _USRDLL
+void InitMenuPopup(HMENU aMenu);
+void UninitMenuPopup(HMENU aMenu);
+bool MenuIsModeless(HMENU aMenu);
+
+void InitMenuPopup(HMENU aMenu);
+void UninitMenuPopup(HMENU aMenu);
+bool MenuIsModeless(HMENU aMenu);
+
+#ifndef CONFIG_DLL
 bool AHKModule();
 #endif
 #endif

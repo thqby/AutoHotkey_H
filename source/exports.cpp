@@ -33,14 +33,12 @@
 // AutoHotkey needs to be running at this point
 #define BACKUP_G_SCRIPT \
 	int aCurrFileIndex = g_script->mCurrFileIndex, aCombinedLineNumber = g_script->mCombinedLineNumber;\
-	bool aNextLineIsFunctionBody = g_script->mNextLineIsFunctionBody;\
 	Line *aFirstLine = g_script->mFirstLine,*aLastLine = g_script->mLastLine,*aCurrLine = g_script->mCurrLine;\
 	UserFunc *aCurrFunc  = g->CurrentFunc, *aCurrMacro  = g->CurrentMacro;\
 	int aClassObjectCount = g_script->mClassObjectCount;\
-	g_script->mClassObjectCount = NULL;g_script->mFirstLine = NULL;g_script->mLastLine = NULL;g->CurrentFunc = NULL, g->CurrentMacro = NULL;\
-	g_script->mNextLineIsFunctionBody = false;*(char *)&g_script->mIsReadyToExecute = -1;\
-	WarnMode aWarnMode = g_Warn_VarUnset;\
-	g_Warn_VarUnset = WARNMODE_OFF;
+	auto aHotkeyCount = Hotkey::sHotkeyCount;\
+	auto aHotstringCount = Hotstring::sHotstringCount;\
+	g_script->mClassObjectCount = 0;g_script->mFirstLine = g_script->mLastLine = NULL;g->CurrentFunc = g->CurrentMacro = NULL;
 
 #define RESTORE_G_SCRIPT \
 	g_script->mFirstLine = aFirstLine;\
@@ -49,9 +47,7 @@
 	g_script->mCurrLine = aCurrLine;\
 	g_script->mClassObjectCount = aClassObjectCount + g_script->mClassObjectCount;\
 	g_script->mCurrFileIndex = aCurrFileIndex;\
-	g_script->mNextLineIsFunctionBody = aNextLineIsFunctionBody;\
-	g_script->mCombinedLineNumber = aCombinedLineNumber;\
-	g_Warn_VarUnset = aWarnMode;
+	g_script->mCombinedLineNumber = aCombinedLineNumber;
 
 
 void callFuncDll(FuncAndToken * aToken, bool throwerr)
@@ -87,21 +83,8 @@ void callFuncDll(FuncAndToken * aToken, bool throwerr)
 void callPromise(Promise * promise, HWND replyHwnd) {
 	if (replyHwnd == (HWND)-1) {
 		if (promise->mResult.symbol == SYM_STREAM) {
-			IUnknown* obj;
-			IObject* pobj;
-			LPSTREAM stream;
-			if (stream = (LPSTREAM)promise->mResult.value_int64) {
-				if (SUCCEEDED(CoGetInterfaceAndReleaseStream(stream, IID_IUnknown, (LPVOID*)&obj))) {
-					if (SUCCEEDED(obj->QueryInterface(IID_IObjectComCompatible, (LPVOID*)&pobj)))
-						obj->Release();
-					else if (SUCCEEDED(obj->QueryInterface(IID_IDispatch, (LPVOID*)&pobj)) || SUCCEEDED(obj->QueryInterface(IID__Object, (LPVOID*)&pobj)))
-						pobj = new ComObject(pobj), obj->Release();
-					else pobj = new ComObject((__int64)obj, VT_UNKNOWN);
-					promise->mResult.SetValue(pobj);
-					SleepEx(5, true);
-				}
-				else promise->mResult.SetValue(_T("")), CoReleaseMarshalData(stream), stream->Release();
-			}
+			if (auto pobj = UnMarshalObjectFromStream((LPSTREAM)promise->mResult.value_int64))
+				promise->mResult.SetValue(pobj);
 			else promise->mResult.SetValue(_T(""));
 		}
 		if (IObject* callback = (promise->mState & 2) ? promise->mError : promise->mComplete) {
@@ -142,14 +125,16 @@ void callPromise(Promise * promise, HWND replyHwnd) {
 	promise->Release();
 }
 
-EXPORT int ahkReady(DWORD aThreadID) // HotKeyIt check if dll is ready to execute
+EXPORT(int) ahkReady(DWORD aThreadID) // HotKeyIt check if dll is ready to execute
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
-	return (int)(atls.Enter(aThreadID) && g_script && !g_Reloading && g_script->mIsReadyToExecute == true);
+	return (int)(atls.Enter(aThreadID) && g_script && !g_Reloading && g_script->mIsReadyToExecute);
 }
 
-EXPORT int ahkPause(LPTSTR aChangeTo, DWORD aThreadID) //Change pause state of a running script
+EXPORT(int) ahkPause(LPTSTR aChangeTo, DWORD aThreadID) //Change pause state of a running script
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
 		if (!g->IsPaused && ((size_t)aChangeTo == 1 || *aChangeTo == '1' || ((*aChangeTo == 'O' || *aChangeTo == 'o') && (*(aChangeTo + 1) == 'N' || *(aChangeTo + 1) == 'n'))))
@@ -170,12 +155,14 @@ EXPORT int ahkPause(LPTSTR aChangeTo, DWORD aThreadID) //Change pause state of a
 	return 0;
 }
 
-EXPORT UINT_PTR ahkFindFunc(LPTSTR aFuncName, DWORD aThreadID) {
+EXPORT(UINT_PTR) ahkFindFunc(LPTSTR aFuncName, DWORD aThreadID) {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	return atls.Enter(aThreadID) ? (UINT_PTR)g_script->FindGlobalFunc(aFuncName) : 0;
 }
 
-EXPORT UINT_PTR ahkFindLabel(LPTSTR aLabelName, DWORD aThreadID) {
+EXPORT(UINT_PTR) ahkFindLabel(LPTSTR aLabelName, DWORD aThreadID) {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID))
 		return (UINT_PTR)g_script->FindLabel(aLabelName);
@@ -183,8 +170,9 @@ EXPORT UINT_PTR ahkFindLabel(LPTSTR aLabelName, DWORD aThreadID) {
 }
 
 // Naveen: v1. ahkGetVar()
-EXPORT LPTSTR ahkGetVar(LPTSTR name, int getVar, DWORD aThreadID)
+EXPORT(LPTSTR) ahkGetVar(LPTSTR name, int getVar, DWORD aThreadID)
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
 		if (auto ahkvar = g_script->FindGlobalVar(name)) {
@@ -205,8 +193,9 @@ EXPORT LPTSTR ahkGetVar(LPTSTR name, int getVar, DWORD aThreadID)
 	return NULL;
 }
 
-EXPORT int ahkAssign(LPTSTR name, LPTSTR value, DWORD aThreadID)
+EXPORT(int) ahkAssign(LPTSTR name, LPTSTR value, DWORD aThreadID)
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
 		HWND hwnd = g_hWnd;
@@ -226,8 +215,9 @@ EXPORT int ahkAssign(LPTSTR name, LPTSTR value, DWORD aThreadID)
 }
 
 //HotKeyIt ahkExecuteLine()
-EXPORT UINT_PTR ahkExecuteLine(UINT_PTR line, int aMode, int wait, DWORD aThreadID)
+EXPORT(UINT_PTR) ahkExecuteLine(UINT_PTR line, int aMode, int wait, DWORD aThreadID)
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
 		HWND hwnd = g_hWnd;
@@ -256,8 +246,9 @@ EXPORT UINT_PTR ahkExecuteLine(UINT_PTR line, int aMode, int wait, DWORD aThread
 	return 0;
 }
 
-EXPORT int ahkLabel(LPTSTR aLabelName, int nowait, DWORD aThreadID) // 0 = wait = default
+EXPORT(int) ahkLabel(LPTSTR aLabelName, int nowait, DWORD aThreadID) // 0 = wait = default
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
 		HWND hwnd = g_hWnd;
@@ -340,14 +331,15 @@ UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 	// Backup SimpleHeap to restore later
 	auto heapbkp = SimpleHeap::HeapBackUp();
 	int excp = g->ExcptMode;
-	g->ExcptMode |= EXCPTMODE_CATCH;
 	TCHAR tmp[MAX_PATH];
 	void* p = nullptr;
+	if (_catch < 0)
+		g->ExcptMode |= EXCPTMODE_CATCH, g->ExcptMode &= ~EXCPTMODE_CAUGHT;
 	if (!g_script->mEncrypt)
 		p = SimpleHeap::Alloc(script);
 	_stprintf(tmp, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, p, _tcslen(script) * sizeof(TCHAR));
 	BACKUP_G_SCRIPT
-	if (g_script->LoadFromText(script,tmp) != TRUE)
+	if (g_script->LoadFromFile(tmp, script) != TRUE)
 	{
 		RESTORE_IF_EXPR
 		g->ExcptMode = excp;
@@ -355,24 +347,25 @@ UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 		g->CurrentMacro = (UserFunc*)aCurrMacro;
 		Line* aTempLine = g_script->mLastLine;
 		Line* aExecLine = g_script->mFirstLine;
-		Line *cur_line = g_script->mCurrLine;
 		g_script->mIsReadyToExecute = true;
 		RESTORE_G_SCRIPT;
-		if (g->ThrownToken) {
-			if (!_catch)
-				g_script->UnhandledException(cur_line, FAIL);
-			if (_catch < 1)
-				Script::FreeExceptionToken(g->ThrownToken);
-		}
+		if (g->ThrownToken && _catch < 0)
+			Script::FreeExceptionToken(g->ThrownToken);
 		Line::sSourceFileCount = aSourceFileIdx;
 		aVarBkp.~VarListBackup();
 		int len = g_script->mHotFuncs.mCount;
 		if (len > aHotFuncCount) {
 			auto& funcs = g_script->mHotFuncs.mItem;
+			if (g_script->mUnusedHotFunc)
+				len++, g_script->mUnusedHotFunc = nullptr;
 			for (int i = aHotFuncCount; i < len; i++)
 				funcs[i]->Release(), funcs[i] = NULL;
 			g_script->mHotFuncs.mCount = aHotFuncCount;
 		}
+		for (auto &i = Hotkey::sHotkeyCount; i > aHotkeyCount;)
+			delete Hotkey::shk[--i];
+		for (auto &i = Hotstring::sHotstringCount; i > aHotstringCount;)
+			delete Hotstring::shs[--i];
 		len = g_script->mFuncs.mCount;
 		if (len > aFuncCount) {
 			auto& funcs = g_script->mFuncs.mItem;
@@ -408,14 +401,10 @@ UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 	aLastLine = g_script->mLastLine;
 	RESTORE_G_SCRIPT;
 	if (waitexecute) {
-		if (waitexecute == 1 || !g_hWnd) {
+		if (waitexecute == 1) {
 			aTempLine->ExecUntil(UNTIL_RETURN);
-			if (g->ThrownToken) {
-				if (!_catch)
-					g_script->UnhandledException(g_script->mCurrLine, FAIL);
-				if (_catch < 1)
-					Script::FreeExceptionToken(g->ThrownToken);
-			}
+			if (g->ThrownToken && _catch < 0)
+				Script::FreeExceptionToken(g->ThrownToken);
 		}
 		else
 			PostMessage(g_hWnd, AHK_EXECUTE, (WPARAM)aTempLine, 1);
@@ -425,7 +414,8 @@ UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 	return (UINT_PTR)aTempLine;
 }
 
-EXPORT UINT_PTR addScript(LPTSTR script, int waitexecute, DWORD aThreadID) {
+EXPORT(UINT_PTR) addScript(LPTSTR script, int waitexecute, DWORD aThreadID) {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	return _addScript(script, waitexecute, aThreadID, int(g && (g->ExcptMode & EXCPTMODE_CATCH)));
 }
 
@@ -484,21 +474,21 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 	// Backup SimpleHeap to restore later
 	auto heapbkp = SimpleHeap::HeapBackUp();
 	int excp = g->ExcptMode;
-	g->ExcptMode |= EXCPTMODE_CATCH;
+	if (_catch < 0)
+		g->ExcptMode |= EXCPTMODE_CATCH, g->ExcptMode &= ~EXCPTMODE_CAUGHT;
 
 	if (!aThreadID)
 		g->CurrentMacro = g->CurrentFunc = aCurrMacro ? aCurrMacro : aCurrFunc;
 
 	TCHAR tmp[MAX_PATH];
 	_stprintf(tmp, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, g_script->mEncrypt ? nullptr : script, _tcslen(script) * sizeof(TCHAR));
-	auto result = g_script->LoadFromText(script, tmp);
+	auto result = g_script->LoadFromFile(tmp, script);
 	FINALIZE_HOTKEYS
 	RESTORE_IF_EXPR
 	g->CurrentFunc = (UserFunc*)aCurrFunc;
 	g->CurrentMacro = (UserFunc*)aCurrMacro;
 	Line *aTempLine = g_script->mLastLine;
 	Line *aExecLine = g_script->mFirstLine;
-	Line *cur_line = g_script->mCurrLine;
 	g_script->mIsReadyToExecute = true;
 	RESTORE_G_SCRIPT;
 	
@@ -506,16 +496,11 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 		g_script->mLastLine->mNextLine = aExecLine;
 		aExecLine->ExecUntil(UNTIL_RETURN);
 		g_script->mLastLine->mNextLine = NULL;
-		cur_line = g_script->mCurrLine;
 		g_script->mCurrLine = aCurrLine;
 	}
+	if (g->ThrownToken && _catch < 0)
+		Script::FreeExceptionToken(g->ThrownToken);
 	g->ExcptMode = excp;
-	if (g->ThrownToken) {
-		if (!_catch)
-			g_script->UnhandledException(cur_line, FAIL);
-		if (_catch < 1)
-			Script::FreeExceptionToken(g->ThrownToken);
-	}
 	Line::sSourceFileCount = aSourceFileIdx;
 	if (fvbkp) {
 		delete fvbkp;
@@ -525,10 +510,16 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 	int len = g_script->mHotFuncs.mCount;
 	if (len > aHotFuncCount) {
 		auto& funcs = g_script->mHotFuncs.mItem;
+		if (g_script->mUnusedHotFunc)
+			len++, g_script->mUnusedHotFunc = nullptr;
 		for (int i = aHotFuncCount; i < len; i++)
 			funcs[i]->Release(), funcs[i] = NULL;
 		g_script->mHotFuncs.mCount = aHotFuncCount;
 	}
+	for (auto &i = Hotkey::sHotkeyCount; i > aHotkeyCount;)
+		delete Hotkey::shk[--i];
+	for (auto &i = Hotstring::sHotstringCount; i > aHotstringCount;)
+		delete Hotstring::shs[--i];
 	len = g_script->mFuncs.mCount;
 	if (len > aFuncCount) {
 		auto &funcs = g_script->mFuncs.mItem;
@@ -553,7 +544,8 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 	return result == TRUE;
 }
 
-EXPORT int ahkExec(LPTSTR script, DWORD aThreadID) {
+EXPORT(int) ahkExec(LPTSTR script, DWORD aThreadID) {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	return _ahkExec(script, aThreadID, int(g && (g->ExcptMode & EXCPTMODE_CATCH)));
 }
 
@@ -573,7 +565,7 @@ LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPT
 				break;
 		if (aParamsCount < aFunc->mMinParams)
 		{
-			g_script->ScriptError(ERR_TOO_FEW_PARAMS);
+			g_script->RuntimeError(ERR_TOO_FEW_PARAMS);
 			return NULL;
 		}
 		Promise* promise = nullptr;
@@ -626,28 +618,33 @@ LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPT
 	return NULL;
 }
 
-EXPORT LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPTSTR param4, LPTSTR param5, LPTSTR param6, LPTSTR param7, LPTSTR param8, LPTSTR param9, LPTSTR param10, DWORD aThreadID)
+EXPORT(LPTSTR) ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPTSTR param4, LPTSTR param5, LPTSTR param6, LPTSTR param7, LPTSTR param8, LPTSTR param9, LPTSTR param10, DWORD aThreadID)
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	return ahkFunction(func, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, aThreadID, 1);
 }
 
-EXPORT int ahkPostFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPTSTR param4, LPTSTR param5, LPTSTR param6, LPTSTR param7, LPTSTR param8, LPTSTR param9, LPTSTR param10, DWORD aThreadID)
+EXPORT(int) ahkPostFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPTSTR param4, LPTSTR param5, LPTSTR param6, LPTSTR param7, LPTSTR param8, LPTSTR param9, LPTSTR param10, DWORD aThreadID)
 {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	return (int)(UINT_PTR)ahkFunction(func, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, aThreadID, 0);
 }
 
-EXPORT DWORD NewThread(LPTSTR aScript, LPTSTR aCmdLine, LPTSTR aTitle) // HotKeyIt check if dll is ready to execute
+unsigned __stdcall ThreadMain(void *data);
+DWORD NewThread(LPTSTR aScript, LPTSTR aCmdLine, LPTSTR aTitle, void(*callback)(void *param), void* param)
 {
-	UINT_PTR data[5] = { 0 };
+	void* data[6] = { 0,0,0,0,callback,param };
+	size_t len = 0;
 	if (aScript && *aScript)
-		data[1] = (UINT_PTR)aScript, data[0] += _tcsclen(aScript) + 1;
+		data[1] = aScript, len += _tcsclen(aScript) + 1;
 	if (aCmdLine && *aCmdLine)
-		data[2] = (UINT_PTR)aCmdLine;
+		data[2] = aCmdLine;
 	if (aTitle && *aTitle)
-		data[3] = (UINT_PTR)aTitle, data[0] += _tcsclen(aTitle) + 1;
+		data[3] = aTitle, len += _tcsclen(aTitle) + 1;
+	data[0] = (void *)len;
 	unsigned int ThreadID;
 	TCHAR buf[MAX_INTEGER_LENGTH];
-	HANDLE hThread = (HANDLE)_beginthreadex(NULL, 0, (unsigned(__stdcall*)(void*)) & ThreadMain, data, 0, &ThreadID);
+	HANDLE hThread = (HANDLE)_beginthreadex(NULL, 0, ThreadMain, data, 0, &ThreadID);
 	if (hThread)
 	{
 		CloseHandle(hThread);
@@ -655,11 +652,19 @@ EXPORT DWORD NewThread(LPTSTR aScript, LPTSTR aCmdLine, LPTSTR aTitle) // HotKey
 		if (HANDLE hEvent = CreateEvent(NULL, false, false, buf))
 		{
 			// we need to give the thread also little time to allocate memory to avoid std::bad_alloc that might happen when you run newthread in a loop
-			WaitForSingleObject(hEvent, 1000);
+			WaitForSingleObject(hEvent, 2000);
 			CloseHandle(hEvent);
 		}
+		else
+			return ThreadID;
 	}
 	return data[4] ? ThreadID : 0;
+}
+
+EXPORT(DWORD) NewThread(LPTSTR aScript, LPTSTR aCmdLine, LPTSTR aTitle) // HotKeyIt check if dll is ready to execute
+{
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
+	return NewThread(aScript, aCmdLine, aTitle, nullptr, nullptr);
 }
 
 IAhkApi IAhkApi::instance;
@@ -679,43 +684,23 @@ Object* IAhkApi::Prototype::New(ExprTokenType* aParam[], int aParamCount) {
 	return obj->Construct(result, aParam, aParamCount) == OK ? obj : nullptr;
 }
 
+void EarlyAppInit();
+ResultType InitForExecution();
+ResultType ParseCmdLineArgs(LPTSTR &script_filespec, int argc, LPTSTR *argv);
 IAhkApi* IAhkApi::Initialize() {
 	int fg = 0, i = 0;
-#ifdef _USRDLL
+#ifdef CONFIG_DLL
 	if (!g_script) {
-		InitializeCriticalSection(&g_CriticalRegExCache);
-		InitializeCriticalSection(&g_CriticalTLSCallback);
-		g_Debugger = new Debugger();
-		g_clip = new Clipboard();
-		g_script = new Script();
-		g_MsgMonitor = new MsgMonitorList();
-		Object::CreateRootPrototypes();
-		SetErrorMode(SEM_FAILCRITICALERRORS);
-		UpdateWorkingDir();
-		g_WorkingDirOrig = SimpleHeap::Malloc(const_cast<LPTSTR>(g_WorkingDir.GetString()));
-		global_init(*g);
-		g_persistent = true;
-		g_NoTrayIcon = true;
-		g_script->Init(*g, _T("* "), 0, g_hInstance, g_WindowClassMain);
+		LPTSTR script_file = _T("* ");
+		EarlyAppInit();
+		ParseCmdLineArgs(script_file, 0, nullptr);
 		g_script->mFileName = g_WindowClassMain;
-		g_script->LoadFromText(_T(" "));
-		g_script->CreateWindows();
-		setvbuf(stdout, NULL, _IONBF, 0);
-		Hotkey::ManifestAllHotkeysHotstringsHooks();
-		g_HSSameLineAction = false;
-		g_SuspendExempt = false;
-		g_script->mIsReadyToExecute = true;
+		g_script->LoadFromFile(script_file, _T(""));
+		InitForExecution();
 		fg = 2;
-		EnterCriticalSection(&g_Critical);
-		for (i = 1; i < MAX_AHK_THREADS; i++)
-			if (!IsWindow(g_ahkThreads[i].Hwnd))
-				break;
-		if (i < MAX_AHK_THREADS)
-			g_ahkThreads[i] = { g_hWnd,g_script,((PMYTEB)NtCurrentTeb())->ThreadLocalStoragePointer,g_MainThreadID };
-		LeaveCriticalSection(&g_Critical);
 		g_script->AutoExecSection();
 	}
-#endif // _USRDLL
+#endif // CONFIG_DLL
 	if (!g_script)
 		return nullptr;
 	if (!instance.sInit) {
@@ -1168,9 +1153,9 @@ LPTSTR STDMETHODCALLTYPE IAhkApi::JSON_Stringify(IObject* aObject, LPTSTR aInden
 
 void STDMETHODCALLTYPE IAhkApi::PumpMessages() {
 	if (g_script && (sInit & 2)) {
-		if (!g_script->mExiting)
+		if (!g_Reloading)
 			MsgSleep(SLEEP_INTERVAL, WAIT_FOR_MESSAGES);
-		g_script->TerminateApp(EXIT_EXIT, g_ExitCode = 0);
+		g_script->TerminateApp(EXIT_EXIT, 0);
 	}
 }
 
@@ -1203,10 +1188,9 @@ Func *STDMETHODCALLTYPE IAhkApi::MdFunc_New(LPCTSTR aName, void *aFuncPtr, MdTyp
 }
 
 
-EXPORT IAhkApi* ahkGetApi(void* options) {
+EXPORT(IAhkApi*) ahkGetApi(void* options) {
+#pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	if (options) {
-		// {3066041C-D884-412A-A304-D2A452DD6B3A}
-		IID_IObjectComCompatible = { 0x3066041c, 0xd884, 0x412a, { 0xa3, 0x4, 0xd2, 0xa4, 0x52, 0xdd, 0x6b, 0x3a } };
 	}
 	return IAhkApi::Initialize(); 
 }

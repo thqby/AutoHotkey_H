@@ -3342,11 +3342,13 @@ DWORD CryptAES(LPVOID lp, DWORD sz, LPTSTR pwd, bool aEncrypt, DWORD aSID) {
 	}
 
 	if (pwd == g_default_pwd) {
-		if (g_crypt_code[0] != *(PULONGLONG)CryptHashData || g_crypt_code[1] != *(PULONGLONG)CryptDeriveKey ||
-			g_crypt_code[2] != *(PULONGLONG)CryptDestroyHash || g_crypt_code[3] != *(PULONGLONG)CryptEncrypt ||
-			g_crypt_code[4] != *(PULONGLONG)CryptDecrypt || g_crypt_code[5] != *(PULONGLONG)CryptDestroyKey)
+#ifdef ENABLE_TLS_CALLBACK
+		ULONGLONG code[] = { *(PULONGLONG)CryptHashData, *(PULONGLONG)CryptDeriveKey, *(PULONGLONG)CryptDestroyHash, *(PULONGLONG)CryptEncrypt, *(PULONGLONG)CryptDecrypt, *(PULONGLONG)CryptDestroyKey };
+		if (memcmp(g_crypt_code, code, sizeof(code)))
 			pwd = NULL;
-		else pwd = (LPTSTR)_c(g_DEFAULT_PWD);
+		else
+#endif // ENABLE_TLS_CALLBACK
+			pwd = (LPTSTR)_c(g_DEFAULT_PWD);
 	}
 	else if (!pwd)
 		pwd = _T("");

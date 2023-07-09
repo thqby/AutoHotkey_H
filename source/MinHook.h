@@ -477,8 +477,8 @@ VOID   UninitializeBuffer(VOID);
 LPVOID AllocateBuffer(LPVOID pOrigin);
 VOID   FreeBuffer(LPVOID pBuffer);
 BOOL   IsExecutableAddress(LPVOID pAddress);
-__declspec(dllexport) PHOOK_ENTRY   MinHookEnable(LPVOID pTarget, LPVOID pDetour, LPVOID* ppOriginal = NULL);
-__declspec(dllexport) BOOL   MinHookDisable(PHOOK_ENTRY pHook);
+PHOOK_ENTRY __stdcall MinHookEnable(LPVOID pTarget, LPVOID pDetour, LPVOID* ppOriginal = NULL);
+BOOL __stdcall MinHookDisable(PHOOK_ENTRY pHook);
 #ifdef __cplusplus
 }
 #endif

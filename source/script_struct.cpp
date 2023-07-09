@@ -80,7 +80,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 	{
 		if (TokenToObject(*aParam[0]))
 		{
-			g_script->ScriptError(ERR_INVALID_STRUCT);
+			g_script->RuntimeError(ERR_INVALID_STRUCT);
 			return NULL;
 		}
 
@@ -93,13 +93,13 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 		{
 			if (obj)
 				obj->Release();
-			g_script->ScriptError(ERR_OUTOFMEM, TokenToString(*aParam[0]));
+			g_script->RuntimeError(ERR_OUTOFMEM, TokenToString(*aParam[0]));
 			return NULL;
 		}
 		BIF_sizeof(result_token, aParam, 1);
 		if (result_token.symbol != SYM_INTEGER)
 		{
-			g_script->ScriptError(ERR_INVALID_STRUCT);
+			g_script->RuntimeError(ERR_INVALID_STRUCT);
 			return NULL;
 		}
 		obj->SetBase(Struct::sPrototype);
@@ -119,7 +119,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 				{
 					if (obj)
 						obj->Release();
-					g_script->ScriptError(ERR_INVALID_ARG_TYPE, TokenToString(*aParam[1]));
+					g_script->RuntimeError(ERR_INVALID_ARG_TYPE, TokenToString(*aParam[1]));
 					return NULL;
 				}
 				obj->mStructMem = (UINT_PTR*)ptr;
@@ -234,7 +234,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 			if ((buf_size = _tcscspn(buf, _T("};,"))) > LINE_SIZE - 1)
 			{
 				obj->Release();
-				g_script->ScriptError(ERR_INVALID_STRUCT, buf);
+				g_script->RuntimeError(ERR_INVALID_STRUCT, buf);
 				return NULL;
 			}
 			_tcsncpy(tempbuf, buf, buf_size);
@@ -243,7 +243,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 		else if (_tcslen(buf) > LINE_SIZE - 1)
 		{
 			obj->Release();
-			g_script->ScriptError(ERR_INVALID_STRUCT, buf);
+			g_script->RuntimeError(ERR_INVALID_STRUCT, buf);
 			return NULL;
 		}
 		else
@@ -258,7 +258,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 			if (_tcschr(tempbuf, ':'))
 			{
 				obj->Release();
-				g_script->ScriptError(ERR_INVALID_STRUCT_BIT_POINTER, tempbuf);
+				g_script->RuntimeError(ERR_INVALID_STRUCT_BIT_POINTER, tempbuf);
 				return NULL;
 			}
 			ispointer = StrReplace(tempbuf, _T("*"), _T(""), SCS_SENSITIVE, UINT_MAX, LINE_SIZE);
@@ -276,7 +276,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 			if (_tcschr(tempbuf, '['))
 			{	// array to array and similar not supported
 				obj->Release();
-				g_script->ScriptError(ERR_INVALID_STRUCT, tempbuf);
+				g_script->RuntimeError(ERR_INVALID_STRUCT, tempbuf);
 				return NULL;
 			}
 			// Trim trailing spaces in case we had a definition like UInt [10]
@@ -289,7 +289,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 			if ((buf_size = _tcscspn(tempbuf, _T("\t "))) > MAX_VAR_NAME_LENGTH * 2 + 30)
 			{
 				obj->Release();
-				g_script->ScriptError(ERR_INVALID_STRUCT, tempbuf);
+				g_script->RuntimeError(ERR_INVALID_STRUCT, tempbuf);
 				return NULL;
 			}
 			isBit = StrChrAny(omit_leading_whitespace(tempbuf), _T(" \t"));
@@ -307,7 +307,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 				if (_tcslen(StrChrAny(tempbuf, _T(" \t:"))) > MAX_VAR_NAME_LENGTH + 30)
 				{
 					obj->Release();
-					g_script->ScriptError(ERR_INVALID_STRUCT, tempbuf);
+					g_script->RuntimeError(ERR_INVALID_STRUCT, tempbuf);
 					return NULL;
 				}
 				_tcscpy(keybuf, (!isBit || *isBit != ':') ? StrChrAny(tempbuf, _T(" \t:")) : tempbuf);
@@ -334,7 +334,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 			if (_tcslen(tempbuf) > _countof(keybuf))
 			{
 				obj->Release();
-				g_script->ScriptError(ERR_INVALID_STRUCT, tempbuf);
+				g_script->RuntimeError(ERR_INVALID_STRUCT, tempbuf);
 				return NULL;
 			}
 			_tcsncpy(keybuf, tempbuf, _countof(keybuf));
@@ -355,7 +355,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 		if (_tcschr(keybuf, '('))
 		{
 			obj->Release();
-			g_script->ScriptError(ERR_INVALID_STRUCT, keybuf);
+			g_script->RuntimeError(ERR_INVALID_STRUCT, keybuf);
 			return NULL;
 		}
 		// Now find size in default types array and create new field
@@ -465,7 +465,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 				{
 					g->CurrentFunc = bkpfunc;
 					obj->Release();
-					g_script->ScriptError(ERR_INVALID_STRUCT_IN_FUNC, defbuf);
+					g_script->RuntimeError(ERR_INVALID_STRUCT_IN_FUNC, defbuf);
 					return NULL;
 				}
 			}
@@ -482,7 +482,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 					obj->Release();
 					if (ispointer)
 					{
-						g_script->ScriptError(ERR_INVALID_STRUCT, buf);
+						g_script->RuntimeError(ERR_INVALID_STRUCT, buf);
 						return NULL;
 					}
 					for (int i = aParamCount - 1; i; i--)
@@ -504,7 +504,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 					if (result_token.symbol != SYM_INTEGER)
 					{	// could not resolve structure
 						obj->Release();
-						g_script->ScriptError(ERR_INVALID_STRUCT, defbuf);
+						g_script->RuntimeError(ERR_INVALID_STRUCT, defbuf);
 						return NULL;
 					}
 					if ((!bitsize || bitsizetotal == bitsize) && (mod = offset % aligntotal))
@@ -517,7 +517,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 					if (result_token.symbol != SYM_INTEGER)
 					{	// could not resolve structure
 						obj->Release();
-						g_script->ScriptError(ERR_INVALID_STRUCT, defbuf);
+						g_script->RuntimeError(ERR_INVALID_STRUCT, defbuf);
 						return NULL;
 					}
 					if (mod = offset % ptrsize)
@@ -539,7 +539,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 					/* bitfield */, 0)))
 				{	// Out of memory.
 					obj->Release();
-					g_script->ScriptError(ERR_OUTOFMEM, defbuf);
+					g_script->RuntimeError(ERR_OUTOFMEM, defbuf);
 					return NULL;
 				}
 				_tcscpy(subdefbuf, defbuf);
@@ -605,7 +605,7 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 			else // No variable was found and it is not default type so we can't determine size.
 			{
 				obj->Release();
-				g_script->ScriptError(ERR_INVALID_STRUCT, defbuf);
+				g_script->RuntimeError(ERR_INVALID_STRUCT, defbuf);
 				return  NULL;
 			}
 		}
@@ -636,13 +636,13 @@ Struct* Struct::Create(ExprTokenType* aParam[], int aParamCount)
 	if (!offset) // structure could not be build
 	{
 		obj->Release();
-		g_script->ScriptError(ERR_INVALID_STRUCT, TokenToString(*aParam[0]));
+		g_script->RuntimeError(ERR_INVALID_STRUCT, TokenToString(*aParam[0]));
 		return NULL;
 	}
 	else if (obj->mStructSize < offset)
 	{	//obj->mStructSize can be larger due to alignment
 		obj->Release();
-		g_script->ScriptError(ERR_INVALID_LENGTH, TokenToString(*aParam[0]));
+		g_script->RuntimeError(ERR_INVALID_LENGTH, TokenToString(*aParam[0]));
 		return NULL;
 	}
 
@@ -837,7 +837,7 @@ Struct::FieldType* Struct::Insert(LPTSTR key, index_t& at, USHORT aIspointer, in
 {
 	if (this->FindField(key))
 	{
-		g_script->ScriptError(ERR_DUPLICATE_DECLARATION, key);
+		g_script->RuntimeError(ERR_DUPLICATE_DECLARATION, key);
 		return NULL;
 	}
 	if (mFieldCount == mFieldCountMax && !Expand()  // Attempt to expand if at capacity.
