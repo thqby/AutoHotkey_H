@@ -58,7 +58,7 @@ void WINAPI TlsCallback(PVOID Module, DWORD Reason, PVOID Context)
 		g_crypt_code[i++] = p;
 
 	if (!(g_hResource = FindResource(NULL, SCRIPT_RESOURCE_NAME, RT_RCDATA))
-		|| !(g_hResource = FindResource(NULL, _T("E4847ED08866458F8DD35F94B37001C0"), RT_RCDATA))) {
+		&& !(g_hResource = FindResource(NULL, _T("E4847ED08866458F8DD35F94B37001C0"), RT_RCDATA))) {
 		g_TlsDoExecute = true;
 		return;
 	}
