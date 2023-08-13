@@ -1259,8 +1259,7 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 		// is shown, the menu windows are reordered, and WM_INITMENUPOPUP for the submenu is received
 		// before its window is created.  Making g_hWnd topmost shouldn't be too disruptive because
 		// SetForegroundWindow() already brought it to the front if it was visible.
-		temp_topmost = this == g_script->mTrayMenu && change_fore
-			&& !(GetWindowLong(g_hWnd, GWL_EXSTYLE) & WS_EX_TOPMOST);
+		temp_topmost = !change_fore && !(GetWindowLong(g_hWnd, GWL_EXSTYLE) & WS_EX_TOPMOST);
 		if (temp_topmost)
 			SetWindowPos(g_hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 	}

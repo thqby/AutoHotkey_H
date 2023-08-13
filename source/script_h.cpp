@@ -3804,13 +3804,13 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 				if (aResultToken.symbol == SYM_STRING)
 					!aResultToken.mem_to_free &&aResultToken.Malloc(aResultToken.marker, aResultToken.marker_length ? aResultToken.marker_length : -1);
 				else if (obj = TokenToObject(aResultToken)) {
+					IObjPtr to_free{ (IObject *)obj };
 					if (comobj = dynamic_cast<ComObject *>(obj)) {
 						if (comobj->mVarType == VT_DISPATCH || comobj->mVarType == VT_UNKNOWN)
 							obj = comobj->mUnknown, iunk = comobj->mVarType == VT_UNKNOWN;
 						else if (!(comobj->mVarType & ~VT_TYPEMASK)) {
 							comobj->ToVariant(vv);
 							VariantToToken(vv, aResultToken);
-							obj->Release();
 							obj = nullptr;
 						}
 					}

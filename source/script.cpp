@@ -421,9 +421,9 @@ Script::Script()
 #endif
 	InitializeCriticalSection(&g_CriticalRegExCache); // v1.0.45.04: Must be done early so that it's unconditional, so that DeleteCriticalSection() in the script destructor can also be unconditional (deleting when never initialized can crash, at least on Win 9x).
 	InitializeCriticalSection(&g_CriticalTLSCallback);
-	//if (g_FirstThreadID == g_MainThreadID)
-	//	OleInitialize(NULL);
-	//else
+	if (g_FirstThreadID == g_MainThreadID)
+		OleInitialize(NULL);
+	else
 		CoInitialize(NULL);
 }
 
@@ -502,6 +502,13 @@ Script::~Script() // Destructor.
 		}
 	}
 
+	// PeekMessage is required to make sure that Ole/CoUninitialize does not hang
+	PeekMessage(&MSG(), NULL, 0, 0, PM_REMOVE);
+	if (g_FirstThreadID == g_MainThreadID)
+		OleUninitialize();
+	else
+		CoUninitialize();
+
 	// Release funcs
 	if (mHotFuncs.mItem) {
 		if (mUnusedHotFunc)
@@ -522,11 +529,6 @@ Script::~Script() // Destructor.
 		fn->Release();
 	}
 	free(mFuncs.mItem);
-
-	// Now all objects are freed and variables can be deleted
-	for (i = 0; i < mVars.mCount; i++)
-		delete mVars.mItem[i];
-
 	free(mVars.mItem);
 
 	mVars = {};
@@ -699,8 +701,7 @@ Script::~Script() // Destructor.
 	Object::sIntegerPrototype = nullptr;
 	Object::sFloatPrototype = nullptr;
 
-	if (mScriptName)
-		free(mScriptName);
+	free(mScriptName);
 	mScriptName = NULL;
 	mFirstLabel = NULL;
 	mLastLabel = NULL;
@@ -806,16 +807,8 @@ Script::~Script() // Destructor.
 	free(g_KeyHistory), g_KeyHistory = NULL;
 	global_clear_state(*g);
 	SimpleHeap::DeleteAll();
-
-	// PeekMessage is required to make sure that Ole/CoUninitialize does not hang
-	PeekMessage(&MSG(), NULL, 0, 0, PM_REMOVE);
-
 	DeleteCriticalSection(&g_CriticalRegExCache); // g_CriticalRegExCache is used elsewhere for thread-safety.
 	DeleteCriticalSection(&g_CriticalTLSCallback);
-	//if (g_FirstThreadID == g_MainThreadID)
-	//	OleUninitialize();
-	//else
-		CoUninitialize();
 }
 
 
@@ -853,8 +846,6 @@ ResultType Script::Init(LPTSTR aScriptFilename)
 	// It also provides more consistency.
 	aScriptFilename = buf;
 #else
-	if (g_hResource)
-		mKind = Script::ScriptKindResource, g_AllowMainWindow = false;
 	if (!aScriptFilename)
 	{
 		// Since no script-file was specified on the command line, use the default path,
@@ -908,23 +899,31 @@ ResultType Script::Init(LPTSTR aScriptFilename)
 		// lowercase/uppercase letters:
 		ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // This might change the length, e.g. due to expansion of 8.3 filename.
 	}
-	mFileSpec = SimpleHeap::Alloc(buf);  // The full spec is stored for convenience.
-	LPTSTR filename_marker;
-	if (filename_marker = _tcsrchr(buf, '\\'))
+	if (g_FirstThreadID && g_ahkThreads[0].ThreadID == g_FirstThreadID && g_MainThreadID != g_FirstThreadID)
 	{
-		mFileDir = SimpleHeap::Alloc(buf, filename_marker - buf);
-		++filename_marker;
+		mFileDir = g_ahkThreads[0].Script->mFileDir;
+		mFileName = SimpleHeap::Alloc(aScriptFilename);
 	}
 	else
 	{
-		// There is no slash in "*" (i.e. g_RunStdIn).  The only other known cause of this
-		// condition is a path being too long for GetFullPathName to expand it into buf,
-		// in which case buf and mFileSpec are now empty, and this will cause LoadFromFile()
-		// to fail and the program to exit.
-		mFileDir = g_WorkingDirOrig;
-		filename_marker = buf;
+		mFileSpec = SimpleHeap::Alloc(buf);  // The full spec is stored for convenience.
+		LPTSTR filename_marker;
+		if (filename_marker = _tcsrchr(buf, '\\'))
+		{
+			mFileDir = SimpleHeap::Alloc(buf, filename_marker - buf);
+			++filename_marker;
+		}
+		else
+		{
+			// There is no slash in "*" (i.e. g_RunStdIn).  The only other known cause of this
+			// condition is a path being too long for GetFullPathName to expand it into buf,
+			// in which case buf and mFileSpec are now empty, and this will cause LoadFromFile()
+			// to fail and the program to exit.
+			mFileDir = g_WorkingDirOrig;
+			filename_marker = buf;
+		}
+		mFileName = SimpleHeap::Alloc(filename_marker);
 	}
-	mFileName = SimpleHeap::Alloc(filename_marker);
 #ifdef AUTOHOTKEYSC
 	// Omit AutoHotkey from the window title, like AutoIt3 does for its compiled scripts.
 	// One reason for this is to reduce backlash if evil-doers create viruses and such
@@ -2095,6 +2094,7 @@ ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAl
 						if (hRes == g_hResource) {
 							VirtualProtect(data, size, PAGE_EXECUTE_READWRITE, &aSizeDeCompressed);
 							g_memset(data, 0, size);
+							g_hResource = NULL;
 						}
 					}
 					else

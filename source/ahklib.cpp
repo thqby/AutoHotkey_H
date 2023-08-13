@@ -554,6 +554,8 @@ public:
 		// Built-in/virtual variable
 		aResultToken.symbol = SYM_INTEGER; // For _f_return_i() and consistency with BIFs.
 		var->Get(aResultToken);
+		if (aResultToken.symbol == SYM_OBJECT)
+			aResultToken.object->AddRef();
 		return aResultToken.Result();
 	}
 

@@ -242,8 +242,8 @@ ResultType ParseCmdLineArgs(LPTSTR &script_filespec, int argc, LPTSTR *argv)
 				g_hResource = NULL;
 			}
 		}
-		else if (!g_script->mEncrypt && !_tcsnicmp(param, _T("/NoDebug"), 8))
-			g_script->mEncrypt = 1;
+		else if (!_tcsnicmp(param, _T("/NoDebug"), 8))
+			g_script->mEncrypt |= 1;
 		else if (script_filespec) // Compiled script mode.
 			break;
 		else if (!_tcsnicmp(param, _T("/ErrorStdOut"), 12) && (param[12] == '\0' || param[12] == '='))
@@ -520,6 +520,9 @@ unsigned __stdcall ThreadMain(void *data)
 		if (!ParseCmdLineArgs(script_filespec, argc, argv))
 			return CRITICAL_ERROR;
 
+		if (script_filespec != filepath)
+			lpScript = nullptr;
+		g_NoTrayIcon = true;
 		UINT load_result = g_script->LoadFromFile(filepath, lpScript);
 		if (load_result == LOADING_FAILED) // Error during load (was already displayed by the function call).
 			return CRITICAL_ERROR;  // Should return this value because PostQuitMessage() also uses it.

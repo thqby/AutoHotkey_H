@@ -2950,6 +2950,7 @@ public:
 
 public:
 	Line *mCurrLine;     // Seems better to make this public than make Line our friend.
+	Object *mNewRuntimeException = nullptr; // Lets Error__New detect that it's being called by CreateRuntimeException.
 	LPTSTR mThisHotkeyName, mPriorHotkeyName;
 	MsgMonitorList mOnExit, mOnClipboardChange, mOnError; // Event handlers for OnExit(), OnClipboardChange() and OnError().
 	bool mOnClipboardChangeIsRunning;
