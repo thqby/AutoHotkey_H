@@ -502,13 +502,6 @@ Script::~Script() // Destructor.
 		}
 	}
 
-	// PeekMessage is required to make sure that Ole/CoUninitialize does not hang
-	PeekMessage(&MSG(), NULL, 0, 0, PM_REMOVE);
-	if (g_FirstThreadID == g_MainThreadID)
-		OleUninitialize();
-	else
-		CoUninitialize();
-
 	// Release funcs
 	if (mHotFuncs.mItem) {
 		if (mUnusedHotFunc)
@@ -634,6 +627,13 @@ Script::~Script() // Destructor.
 	for (Line *line = mLastLine; line; line = line->mPrevLine)
 		line->Free();
 	Line::FreeDerefBufIfLarge();
+
+	// PeekMessage is required to make sure that Ole/CoUninitialize does not hang
+	PeekMessage(&MSG(), NULL, 0, 0, PM_REMOVE);
+	if (g_FirstThreadID == g_MainThreadID)
+		OleUninitialize();
+	else
+		CoUninitialize();
 
 #define Free_Prototype(proto) proto->Release(), proto = nullptr
 

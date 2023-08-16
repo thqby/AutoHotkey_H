@@ -472,7 +472,7 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 	BACKUP_G_SCRIPT
 
 	// Backup SimpleHeap to restore later
-	auto heapbkp = SimpleHeap::HeapBackUp();
+	auto heapbkp = SimpleHeap::HeapBackUp(true);
 	int excp = g->ExcptMode;
 	if (_catch < 0)
 		g->ExcptMode |= EXCPTMODE_CATCH, g->ExcptMode &= ~EXCPTMODE_CAUGHT;
@@ -491,6 +491,8 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 	Line *aExecLine = g_script->mFirstLine;
 	g_script->mIsReadyToExecute = true;
 	RESTORE_G_SCRIPT;
+	// restore SimpleHeap
+	heapbkp.Restore();
 	
 	if (result == TRUE) {
 		g_script->mLastLine->mNextLine = aExecLine;
@@ -538,8 +540,7 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 	for (Line *line = aTempLine; line; line = line->mPrevLine)
 		line->Free();
 	Line::FreeDerefBufIfLarge();
-	// restore SimpleHeap
-	heapbkp.Restore();
+	heapbkp.DeleteAfter(heapbkp.mFirst2);
 	LeaveCriticalSection(&g_CriticalTLSCallback);
 	return result == TRUE;
 }

@@ -79,27 +79,36 @@ public:
 	}
 
 	struct HeapBackUp {
-		SimpleHeap *mLast;
+		SimpleHeap *mLast, *mFirst2;
 		char *mMostRecentlyAllocated, *mFreeMarker;
 		size_t mSpaceAvailable;
 		
-		HeapBackUp() :mLast(sLast), mMostRecentlyAllocated(sMostRecentlyAllocated)
+		HeapBackUp(bool detach = false) :mLast(sLast), mMostRecentlyAllocated(sMostRecentlyAllocated)
 		{
 			if (sLast)
 				mFreeMarker = sLast->mFreeMarker, mSpaceAvailable = sLast->mSpaceAvailable;
+			else mFreeMarker = NULL, mSpaceAvailable = 0;
+			if (detach)
+				mFirst2 = sLast = CreateBlock(), sMostRecentlyAllocated = NULL;
+			else mFirst2 = nullptr;
+		}
+
+		void DeleteAfter(SimpleHeap *curr)
+		{
+			SimpleHeap* next;
+			while (curr)
+			{
+				next = curr->mNextBlock;
+				delete curr;
+				curr = next;
+			}
 		}
 
 		void Restore()
 		{
 			if (sLast = mLast)
 			{
-				SimpleHeap *next, *curr = mLast->mNextBlock;
-				while (curr)
-				{
-					next = curr->mNextBlock;
-					delete curr;
-					curr = next;
-				}
+				DeleteAfter(mLast->mNextBlock);
 				sLast->mNextBlock = NULL, sLast->mFreeMarker = mFreeMarker, sLast->mSpaceAvailable = mSpaceAvailable;
 			}
 			sMostRecentlyAllocated = mMostRecentlyAllocated;
