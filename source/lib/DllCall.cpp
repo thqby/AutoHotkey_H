@@ -221,16 +221,16 @@ DYNARESULT DynaCall(void *aFunction, DYNAPARM aParam[], int aParamCount, DWORD &
 #endif // WIN32_PLATFORM
 #ifdef _WIN64
 
-	int params_left = aParamCount, i = 0;
+	int params_left = aParamCount, i = 0, r = 0;
 	DWORD_PTR regArgs[4];
 	DWORD_PTR* stackArgs = NULL;
 	size_t stackArgsSize = 0;
 
 	// The first four parameters are passed in x64 through registers... like ARM :D
 	if (aRet)
-		regArgs[i++] = (DWORD_PTR)aRet;
-	for(; (i < 4) && params_left; i++, params_left--)
-		regArgs[i] = DynaParamToElement(aParam[i]);
+		regArgs[r++] = (DWORD_PTR)aRet;
+	for(; i < 4 && params_left; --params_left)
+		regArgs[r++] = DynaParamToElement(aParam[i++]);
 
 	// Copy the remaining parameters
 	if(params_left)

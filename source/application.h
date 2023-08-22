@@ -94,13 +94,11 @@ void InitNewThread(int aPriority, bool aSkipUninterruptible, bool aIncrementThre
 void ResumeUnderlyingThread();
 BOOL IsInterruptible();
 
+bool MsgWaitUnpause();
+
 VOID CALLBACK MsgBoxTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK InputTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK RefreshInterruptibility(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
-
-void InitMenuPopup(HMENU aMenu);
-void UninitMenuPopup(HMENU aMenu);
-bool MenuIsModeless(HMENU aMenu);
 
 void InitMenuPopup(HMENU aMenu);
 void UninitMenuPopup(HMENU aMenu);

@@ -54,6 +54,11 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 
 - After 2.0.4
   - The com component has changed for the dll version, some methods are incorporated into [IAutoHotkeyLib](README-LIB.md#lib-api).
+  - The calling convention of export functions is changed from `cdecl` to `stdcall`.
+  - Merge alpha.1
+
+- After 2.0.5
+  - Merge alpha.2
 
 ## Classes List
 ```typescript

@@ -345,8 +345,10 @@ fast_end:
 	// zeroes if this doesn't need to be done):
 	if (found)
 	{
-		aFoundX->SetValue((left + i%screen_width) - origin.x);
-		aFoundY->SetValue((top + i/screen_width) - origin.y);
+		if (aFoundX)
+			aFoundX->SetValue((left + i%screen_width) - origin.x);
+		if (aFoundY)
+			aFoundY->SetValue((top + i/screen_width) - origin.y);
 	}
 	*aFound = found;
 	return OK;
@@ -354,16 +356,16 @@ fast_end:
 
 
 
-bif_impl FResult PixelSearch(BOOL &aFound, ResultToken &aFoundX, ResultToken &aFoundY
+bif_impl FResult PixelSearch(BOOL &aFound, ResultToken *aFoundX, ResultToken *aFoundY
 	, int aLeft, int aTop, int aRight, int aBottom, UINT aColor, optl<int> aVariation)
 {
-	return PixelSearch(&aFound, &aFoundX, &aFoundY, aLeft, aTop, aRight, aBottom, aColor
+	return PixelSearch(&aFound, aFoundX, aFoundY, aLeft, aTop, aRight, aBottom, aColor
 		, aVariation.value_or(0), nullptr);
 }
 
 
 
-bif_impl FResult ImageSearch(ResultToken &aFoundX, ResultToken &aFoundY
+bif_impl FResult ImageSearch(ResultToken *aFoundX, ResultToken *aFoundY
 	, int aLeft, int aTop, int aRight, int aBottom, StrArg aImageFile
 	, BOOL &aRetVal)
 // Author: ImageSearch was created by Aurelian Maga.
@@ -738,10 +740,12 @@ end:
 	if (found)
 	{
 		// Calculate xpos and ypos of where the match was found and adjust coords to
-		// make them relative to the position of the target window (rect will contain
-		// zeroes if this doesn't need to be done):
-		aFoundX.SetValue((aLeft + i%screen_width) - origin.x);
-		aFoundY.SetValue((aTop + i/screen_width) - origin.y);
+		// make them relative to the origin point (which will contain zeroes if this
+		// doesn't need to be done):
+		if (aFoundX)
+			aFoundX->SetValue((aLeft + i%screen_width) - origin.x);
+		if (aFoundY)
+			aFoundY->SetValue((aTop + i/screen_width) - origin.y);
 	}
 	aRetVal = found;
 	return OK;
