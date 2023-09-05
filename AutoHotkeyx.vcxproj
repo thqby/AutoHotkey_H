@@ -120,7 +120,7 @@
     <IntDir>$(ProjectDir)temp\$(Platform)\$(Configuration)\</IntDir>
     <BinDir>bin</BinDir>
     <OutDir>$(BinDir)\</OutDir>
-    <OutDir Condition="$(ConfigDebug)">$(BinDir)_debug\</OutDir>
+    <OutDir Condition="$(ConfigDebug)">$(BinDir)_debug\$(Platform)\</OutDir>
     <OutDir Condition="$(ConfigMinSize)">$(BinDir)_minimal\</OutDir>
     <BinSuffixChar Condition="'$(CharacterSet)'=='MultiByte'">A</BinSuffixChar>
     <BinTypeWord>$(CharacterSet)</BinTypeWord>
