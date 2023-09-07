@@ -288,12 +288,12 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 							this_token.symbol = SYM_MISSING;
 							goto push_this_token;
 						}
-					}
-					else if (this_token.var_usage == VARREF_LVALUE_MAYBE)
-					{
-						// Skip the short-circuit operator and push the variable onto the stack for assignment.
-						++this_postfix;
-						ASSERT(this_postfix->symbol == SYM_OR_MAYBE);
+						else if (this_token.var_usage == VARREF_LVALUE_MAYBE)
+						{
+							// Skip the short-circuit operator and push the variable onto the stack for assignment.
+							++this_postfix;
+							ASSERT(this_postfix->symbol == SYM_OR_MAYBE);
+						}
 					}
 				}
 			}
@@ -1237,7 +1237,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 						}
 					}
 					// Since "break" was not used, "right" is not a valid type object.
-					error_info = _T("Object");
+					error_info = _T("Class");
 					error_value = &right;
 					goto type_mismatch;
 				}

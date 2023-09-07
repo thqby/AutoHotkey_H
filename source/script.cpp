@@ -831,6 +831,7 @@ ResultType Script::Init(LPTSTR aScriptFilename)
 		// path awareness enabled.
 		if (buf_length == _countof(buf)) // It was truncated.
 			return FAIL; // Seems the safest option for this unlikely case.
+		ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // Normalize the case for A_AhkPath.  This might change the length, e.g. due to expansion of 8.3 filename.
 		mOurEXE = SimpleHeap::Alloc(buf, buf_length);
 		LPTSTR last_backslash = _tcsrchr(buf, '\\');
 		if (last_backslash) // Probably always true due to the nature of GetModuleFileName().
@@ -888,17 +889,14 @@ ResultType Script::Init(LPTSTR aScriptFilename)
 			buf_length = GetFullPathName(aScriptFilename, _countof(buf), buf, NULL); // Succeeds even on nonexistent files.
 			if (!buf_length || buf_length >= _countof(buf))
 				return FAIL; // Due to rarity, no error msg, just abort.
+			// Using the correct case not only makes it look better in title bar & tray tool tip,
+			// it also helps with the detection of "this script already running" since otherwise
+			// it might not find the dupe if the same script name is launched with different
+			// lowercase/uppercase letters:
+			ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // This might change the length, e.g. due to expansion of 8.3 filename.
 		}
 	}
 #endif
-	if (mKind != ScriptKindStdIn)
-	{
-		// Using the correct case not only makes it look better in title bar & tray tool tip,
-		// it also helps with the detection of "this script already running" since otherwise
-		// it might not find the dupe if the same script name is launched with different
-		// lowercase/uppercase letters:
-		ConvertFilespecToCorrectCase(buf, _countof(buf), buf_length); // This might change the length, e.g. due to expansion of 8.3 filename.
-	}
 	if (g_FirstThreadID && g_ahkThreads[0].ThreadID == g_FirstThreadID && g_MainThreadID != g_FirstThreadID)
 	{
 		mFileDir = g_ahkThreads[0].Script->mFileDir;
@@ -3268,9 +3266,12 @@ ResultType Script::GetLineContExpr(TextStream *fp, LineBuffer &buf, LineBuffer &
 		{
 			if (buf[buf_length - 1] == ':')
 			{
-				if (action_type == ACT_CASE && FindExprDelim(buf, ':') == buf_length - 1)
+				// Rather than checking for ACT_CASE and "Default:" or "Default :" (even though Default is recognized
+				// as such only within a Switch), just treat all statement types the same: do line continuation only
+				// if this ":" has a matching "?".
+				if (FindExprDelim(buf, ':') == buf_length - 1)
 				{
-					// This is the colon terminating a case statement.
+					// This is either an error or the colon terminating a case/default statement.
 					return OK;
 				}
 				//else this colon qualifies for line continuation.
@@ -4851,8 +4852,12 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 			else // It's the word "global", "local", "static" by itself.
 			{
 				// Any combination of declarations is allowed here for simplicity, but only declarations can
-				// appear above this line:
-				if (mNextLineIsFunctionBody && declare_type != VAR_DECLARE_LOCAL)
+				// appear above this line.  This reserves the use of "global"/"static" inside a nested block
+				// for potential future use, rather than letting it affect the entire function .
+				// mLastParamInitializer is checked to allow for lines which are added for optional parameters
+				// when the parameter's default expression is not a simple literal string or number, since they
+				// actually come from the parameter list and not the body of the function.
+				if (declare_type != VAR_DECLARE_LOCAL && (mNextLineIsFunctionBody || mLastParamInitializer == mLastLine))
 				{
 					g->CurrentFunc->mDefaultVarType = declare_type;
 					// No further action is required.
@@ -6618,6 +6623,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 						if (!ParseAndAddLine(buf, ACT_EXPRESSION))
 							return FAIL;
 						this_param.default_type = PARAM_DEFAULT_UNSET;
+						mLastParamInitializer = mLastLine; // Allow other checks to identify this as not an actual script line.
 					}
 				}
 				param_end = param_start + value_length;
