@@ -42,6 +42,7 @@ GNU General Public License for more details.
 #include "script_object.h"
 #include "globaldata.h" // for a lot of things
 #include "qmath.h" // For ExpandExpression()
+
 #ifdef ENABLE_DECIMAL
 #include "decimal.h"
 #endif // ENABLE_DECIMAL
@@ -78,15 +79,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 	LPTSTR result_to_return = _T(""); // By contrast, NULL is used to tell the caller to abort the current thread.
 	LPCTSTR error_msg = ERR_EXPR_EVAL, error_info = _T("");
 	ExprTokenType *error_value;
-	Var *output_var = NULL; // Resolve early because it's similar in usage/scope to the above.
-	Var *aMacroVar = NULL;
-
-	if (mActionType == ACT_ASSIGNEXPR)
-	{
-		output_var = VAR(mArg[0]);
-		if (g->CurrentMacro && !(output_var->mScope & VAR_MACRO) && (aMacroVar = g_script->FindVar(output_var->mName, 0, VAR_LOCAL | VAR_GLOBAL)))
-			output_var = aMacroVar;
-	}
+	Var *output_var = (mActionType == ACT_ASSIGNEXPR) ? VAR(mArg[0]) : NULL; // Resolve early because it's similar in usage/scope to the above.
 
 	ExprTokenType **stack = (ExprTokenType **)_alloca(mArg[aArgIndex].max_stack * sizeof(ExprTokenType *));
 	int stack_count = 0;
@@ -202,98 +195,93 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			}
 			if (this_token.symbol == SYM_VAR && (!VARREF_IS_WRITE(this_token.var_usage) || this_token.var_usage == VARREF_LVALUE_MAYBE))
 			{
-				if (g->CurrentMacro && !(this_token.var->mScope & VAR_MACRO) && (aMacroVar = g_script->FindVar(this_token.var->mName, 0, FINDVAR_FOR_READ)))
-					this_token.var = aMacroVar;
-				if (!VARREF_IS_WRITE(this_token.var_usage))
+				if (this_token.var->Type() == VAR_VIRTUAL && VARREF_IS_READ(this_token.var_usage))
 				{
-					if (this_token.var->Type() == VAR_VIRTUAL && VARREF_IS_READ(this_token.var_usage))
+					// FUTURE: This should be merged with the SYM_FUNC handling at some point to improve
+					// maintainability, reduce code size, and take advantage of SYM_FUNC's optimizations.
+					ResultToken result_token;
+					result_token.InitResult(left_buf);
+					result_token.symbol = SYM_INTEGER; // For _f_return_i() and consistency with BIFs.
+
+					// Call this virtual variable's getter.
+					this_token.var->Get(result_token);
+
+					if (result_token.Exited())
 					{
-						// FUTURE: This should be merged with the SYM_FUNC handling at some point to improve
-						// maintainability, reduce code size, and take advantage of SYM_FUNC's optimizations.
-						ResultToken result_token;
-						result_token.InitResult(left_buf);
-						result_token.symbol = SYM_INTEGER; // For _f_return_i() and consistency with BIFs.
+						aResult = result_token.Result(); // See similar section under SYM_FUNC for comments.
+						result_to_return = NULL;
+						goto normal_end_skip_output_var;
+					}
 
-						// Call this virtual variable's getter.
-						this_token.var->Get(result_token);
+					if (result_token.symbol != SYM_STRING || result_token.marker_length == 0)
+					{
+						// Currently SYM_OBJECT is not added to to_free[] as there aren't any built-in
+						// vars that create an object or call AddRef().  If that's changed, must update
+						// BIV_TrayMenu and Debugger::GetPropertyValue.
+						this_token.CopyValueFrom(result_token);
+						goto push_this_token;
+					}
 
-						if (result_token.Exited())
+					result_length = result_token.marker_length;
+					if (result_length == -1)
+						result_length = _tcslen(result_token.marker);
+
+					if (result_token.marker != left_buf)
+					{
+						if (result_token.mem_to_free) // Persistent memory was already allocated for the result.
+							to_free[to_free_count++] = &this_token; // A slot was reserved for this SYM_DYNAMIC.
+							// Also push the value, below.
+						//else: Currently marker is assumed to point to persistent memory, such as a literal
+						// string, which should be safe to use at least until expression evaluation completes.
+						this_token.SetValue(result_token.marker, result_length);
+						goto push_this_token;
+					}
+
+					result_size = 1 + result_length;
+					if (result_size <= (int)(aDerefBufSize - (target - aDerefBuf))) // There is room at the end of our deref buf, so use it.
+					{
+						result = target; // Point result to its new, more persistent location.
+						target += result_size; // Point it to the location where the next string would be written.
+					}
+					else // if (result_size < EXPR_SMALL_MEM_LIMIT && alloca_usage < EXPR_ALLOCA_LIMIT) // See comments at EXPR_SMALL_MEM_LIMIT.
+					{	// Above: Anything longer than MAX_NUMBER_SIZE can't be in left_buf and therefore
+						// was already handled above.  alloca_usage is a safeguard but not an absolute limit.
+						result = (LPTSTR)talloca(result_size);
+						alloca_usage += result_size; // This might put alloca_usage over the limit by as much as EXPR_SMALL_MEM_LIMIT, but that is fine because it's more of a guideline than a limit.
+					}
+					tmemcpy(result, result_token.marker, result_length + 1);
+					this_token.SetValue(result, result_length);
+					goto push_this_token;
+				} // end if (reading a var of type VAR_VIRTUAL)
+				if (this_token.var->IsUninitialized())
+				{
+					if (this_token.var->Type() == VAR_CONSTANT)
+					{
+						auto result = this_token.var->InitializeConstant();
+						if (result != OK)
 						{
-							aResult = result_token.Result(); // See similar section under SYM_FUNC for comments.
+							aResult = result;
 							result_to_return = NULL;
 							goto normal_end_skip_output_var;
 						}
-
-						if (result_token.symbol != SYM_STRING || result_token.marker_length == 0)
-						{
-							// Currently SYM_OBJECT is not added to to_free[] as there aren't any built-in
-							// vars that create an object or call AddRef().  If that's changed, must update
-							// BIV_TrayMenu and Debugger::GetPropertyValue.
-							this_token.CopyValueFrom(result_token);
-							goto push_this_token;
-						}
-
-						result_length = result_token.marker_length;
-						if (result_length == -1)
-							result_length = _tcslen(result_token.marker);
-
-						if (result_token.marker != left_buf)
-						{
-							if (result_token.mem_to_free) // Persistent memory was already allocated for the result.
-								to_free[to_free_count++] = &this_token; // A slot was reserved for this SYM_DYNAMIC.
-								// Also push the value, below.
-							//else: Currently marker is assumed to point to persistent memory, such as a literal
-							// string, which should be safe to use at least until expression evaluation completes.
-							this_token.SetValue(result_token.marker, result_length);
-							goto push_this_token;
-						}
-
-						result_size = 1 + result_length;
-						if (result_size <= (int)(aDerefBufSize - (target - aDerefBuf))) // There is room at the end of our deref buf, so use it.
-						{
-							result = target; // Point result to its new, more persistent location.
-							target += result_size; // Point it to the location where the next string would be written.
-						}
-						else // if (result_size < EXPR_SMALL_MEM_LIMIT && alloca_usage < EXPR_ALLOCA_LIMIT) // See comments at EXPR_SMALL_MEM_LIMIT.
-						{	// Above: Anything longer than MAX_NUMBER_SIZE can't be in left_buf and therefore
-							// was already handled above.  alloca_usage is a safeguard but not an absolute limit.
-							result = (LPTSTR)talloca(result_size);
-							alloca_usage += result_size; // This might put alloca_usage over the limit by as much as EXPR_SMALL_MEM_LIMIT, but that is fine because it's more of a guideline than a limit.
-						}
-						tmemcpy(result, result_token.marker, result_length + 1);
-						this_token.SetValue(result, result_length);
-						goto push_this_token;
-					} // end if (reading a var of type VAR_VIRTUAL)
-					if (this_token.var->IsUninitialized())
+					}
+					else if (this_token.var_usage == VARREF_READ)
 					{
-						if (this_token.var->Type() == VAR_CONSTANT)
-						{
-							auto result = this_token.var->InitializeConstant();
-							if (result != OK)
-							{
-								aResult = result;
-								result_to_return = NULL;
-								goto normal_end_skip_output_var;
-							}
-						}
-						else if (this_token.var_usage == VARREF_READ)
-						{
-							// The expression is always aborted in this case, even if the user chooses to continue the thread.
-							// If this is changed, check all other callers of unset_var and VarUnsetError() for consistency.
-							error_value = &this_token;
-							goto unset_var;
-						}
-						else if (this_token.var_usage == VARREF_READ_MAYBE)
-						{
-							this_token.symbol = SYM_MISSING;
-							goto push_this_token;
-						}
-						else if (this_token.var_usage == VARREF_LVALUE_MAYBE)
-						{
-							// Skip the short-circuit operator and push the variable onto the stack for assignment.
-							++this_postfix;
-							ASSERT(this_postfix->symbol == SYM_OR_MAYBE);
-						}
+						// The expression is always aborted in this case, even if the user chooses to continue the thread.
+						// If this is changed, check all other callers of unset_var and VarUnsetError() for consistency.
+						error_value = &this_token;
+						goto unset_var;
+					}
+					else if (this_token.var_usage == VARREF_READ_MAYBE)
+					{
+						this_token.symbol = SYM_MISSING;
+						goto push_this_token;
+					}
+					else if (this_token.var_usage == VARREF_LVALUE_MAYBE)
+					{
+						// Skip the short-circuit operator and push the variable onto the stack for assignment.
+						++this_postfix;
+						ASSERT(this_postfix->symbol == SYM_OR_MAYBE);
 					}
 				}
 			}
@@ -1850,7 +1838,8 @@ bool NativeFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aP
 
 	for (int i = 0; i < mMinParams; ++i)
 	{
-		if (aParam[i]->symbol == SYM_MISSING)
+		if (aParam[i]->symbol == SYM_MISSING
+			&& !ArgIsOptional(i)) // BuiltInMethod requires this exception for some setters.
 		{
 			aResultToken.Error(ERR_PARAM_REQUIRED);
 			return false; // Abort expression.
@@ -1862,10 +1851,11 @@ bool NativeFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aP
 		// Verify that each output parameter is either a valid var or completely omitted.
 		for (int i = 0; i < MAX_FUNC_OUTPUT_VAR && mOutputVars[i]; ++i)
 		{
-			if (aParam[i]->symbol == SYM_MISSING
-				&& !ArgIsOptional(i)) // BuiltInMethod requires this exception for some setters.
+			if (mOutputVars[i] <= aParamCount
+				&& aParam[mOutputVars[i] - 1]->symbol != SYM_MISSING
+				&& !TokenToOutputVar(*aParam[mOutputVars[i] - 1]))
 			{
-				aResultToken.ParamError(mOutputVars[i]-1, aParam[mOutputVars[i]-1], _T("variable reference"), mName);
+				aResultToken.ParamError(mOutputVars[i] - 1, aParam[mOutputVars[i] - 1], _T("variable reference"), mName);
 				return false; // Abort expression.
 			}
 		}
@@ -1967,7 +1957,7 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 		// possible for this function to be passing one or more of its own params or locals to itself.
 		for (j = 0; j < aParamCount; ++j) // For each actual parameter.
 		{
-		ExprTokenType &this_param_token = *aParam[j];
+			ExprTokenType &this_param_token = *aParam[j];
 			if (this_param_token.symbol != SYM_VAR
 				|| VARREF_IS_WRITE(this_param_token.var_usage)) // VARREF_REF indicates SYM_VAR is being passed ByRef.
 				continue;
@@ -2002,7 +1992,7 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 	if (sFreeVars && mOuterFunc && !aUpVars)
 		aUpVars = sFreeVars->ForFunc(mOuterFunc);
 
-	if (!mIsMacro && mDownVarCount)
+	if (mDownVarCount)
 	{
 		// These local vars need to persist after the function returns (and be independent of
 		// any other instances of this function).  Since we really only have one set of local
@@ -2014,7 +2004,7 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 	else
 		sFreeVars = NULL;
 	
-	if (!mIsMacro && mUpVarCount)
+	if (mUpVarCount)
 	{
 		if (!aUpVars)
 		{
@@ -2049,6 +2039,19 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 			Var *var = mClosure[i].var->ResolveAlias();
 			var->AssignSkipAddRef(closure);
 			var->MakeReadOnly();
+		}
+	}
+
+	if (mIsMacro)
+	{
+		for (int i = 0; i < mVars.mCount; i++)
+		{
+			auto var = mVars.mItem[i];
+			if (var->Scope() != VAR_LOCAL)
+				continue;
+			auto outer_var = g_script->FindVar(var->mName, 0, FINDVAR_FOR_READ);
+			if (outer_var)
+				var->SetAliasDirect(outer_var);
 		}
 	}
 
@@ -2480,7 +2483,7 @@ end:
 		// (potentially thousands or millions of times per second).  There's no need for the timer
 		// to be precise, so don't reset it more often than twice every second.  (Even checking
 		// now != sLastTimerReset is sufficient.)
-		static DWORD sLastTimerReset = 0;
+		thread_local static DWORD sLastTimerReset = 0;
 		DWORD now = GetTickCount();
 		if (now - sLastTimerReset > 500 || !g_DerefTimerExists)
 		{

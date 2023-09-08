@@ -23,7 +23,6 @@ GNU General Public License for more details.
 #include "os_version.h" // For the global OS_Version object
 
 #include "Debugger.h"
-#include "MemoryModule.h"
 
 extern HINSTANCE g_hInstance;
 thread_local extern DWORD g_MainThreadID;
@@ -332,16 +331,19 @@ static inline void RemoveGuiFromList(GuiType* gui)
 	nextPrev = prev;
 }
 
+#define g_DEFAULT_PWD _T("AutoHotkey")
 extern ULONGLONG g_crypt_code[6];
 extern TCHAR g_default_pwd[1];
-#define g_DEFAULT_PWD _T("AutoHotkey")
+thread_local extern DISPID g_DispNameCount;
+thread_local extern DISPID g_DispNameMax;
 thread_local extern LPTSTR* g_DispNameByIdMinus1;
 thread_local extern DISPID* g_DispIdSortByName;
-thread_local extern BuiltInFunc* g_sIsSetFunc;		// free it when thread terminates.
-extern LPSTR g_hWinAPI, g_hWinAPIlowercase; // loads WinAPI functions definitions from resource
-extern HRSRC g_hResource;		// for compiled AutoHotkey.exe
+thread_local extern BuiltInFunc* g_sIsSetFunc;	// free it when thread terminates.
+extern LPSTR g_hWinAPI, g_hWinAPIlowercase;		// loads WinAPI functions definitions from resource
+extern HRSRC g_hResource;						// for compiled AutoHotkey.exe
 extern CRITICAL_SECTION g_Critical;
 extern AhkThreadInfo g_ahkThreads[MAX_AHK_THREADS];
+thread_local extern PVOID g_enter_tls;			// for hook thread
 thread_local extern PVOID g_original_tls;
 thread_local extern CRITICAL_SECTION g_CriticalTLSCallback;
 thread_local extern HMODULE g_hMemoryModule;
@@ -358,16 +360,21 @@ thread_local extern bool g_TargetControlError;
 thread_local extern char g_Reloading;
 thread_local extern bool g_UseStdLib;
 
-
-#pragma optimize( "", off )
 struct AutoTLS {
-	PMYTEB curr_teb = NULL;
+	PMYTEB teb = (PMYTEB)NtCurrentTeb();
 	PVOID tls = NULL;
-	inline void Lock(DWORD aIndex) {
-		curr_teb = (PMYTEB)NtCurrentTeb();
-		tls = curr_teb->ThreadLocalStoragePointer;
-		curr_teb->ThreadLocalStoragePointer = g_ahkThreads[aIndex].TLS;
+	BOOL lock = FALSE;
+	void Lock(DWORD aIndex) {
+		tls = teb->ThreadLocalStoragePointer;
+		teb->ThreadLocalStoragePointer = g_ahkThreads[aIndex].TLS;
 		EnterCriticalSection(&g_CriticalTLSCallback);
+		g_original_tls = tls;
+		lock = TRUE;
+	}
+	void Enter(LPVOID aTls) {
+		if (!aTls) return;
+		tls = teb->ThreadLocalStoragePointer;
+		teb->ThreadLocalStoragePointer = aTls;
 	}
 	int Enter(DWORD aThreadID) {
 		DWORD ThreadID = CURRENT_THREADID;
@@ -381,7 +388,6 @@ struct AutoTLS {
 					if (g_ahkThreads[i].ThreadID == aThreadID)
 					{
 						Lock(i);
-						g_original_tls = tls;
 						script = g_ahkThreads[i].Script;
 						break;
 					}
@@ -391,7 +397,7 @@ struct AutoTLS {
 			}
 #ifndef CONFIG_DLL
 			else
-				Lock(0), g_original_tls = tls, script = g_ahkThreads[0].Script;
+				Lock(0), script = g_ahkThreads[0].Script;
 #endif
 			if (!script || !script->mIsReadyToExecute)
 				return 0;
@@ -403,13 +409,14 @@ struct AutoTLS {
 	}
 	~AutoTLS() {
 		if (tls) {
-			g_original_tls = NULL;
-			LeaveCriticalSection(&g_CriticalTLSCallback);
-			curr_teb->ThreadLocalStoragePointer = tls;
+			if (lock) {
+				g_original_tls = NULL;
+				LeaveCriticalSection(&g_CriticalTLSCallback);
+			}
+			teb->ThreadLocalStoragePointer = tls;
 			tls = NULL;
 		}
 	}
 };
-#pragma optimize( "", on )
 
 #endif

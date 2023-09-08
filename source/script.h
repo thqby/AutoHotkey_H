@@ -2927,7 +2927,7 @@ public:
 		, LineNumberType &aPhysLineNumber, bool &aHasContinuationSection);
 	bool IsSOLContExpr(LineBuffer &aBuf);
 	ResultType BalanceExprError(int aBalance, TCHAR aExpect[], LPTSTR aLineText);
-	static bool IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf, bool aIsFunc = true);
+	static bool IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf);
 	ResultType IsDirective(LPTSTR aBuf);
 	ResultType ConvertDirectiveBool(LPTSTR aBuf, bool &aResult, bool aDefault);
 	ResultType RequirementError(LPCTSTR aRequirement);

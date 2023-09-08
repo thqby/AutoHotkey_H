@@ -170,6 +170,8 @@ LRESULT CALLBACK LowLevelKeybdProc(int aCode, WPARAM wParam, LPARAM lParam)
 	else if (event.dwExtraInfo == KEY_BLOCK_THIS)
 		return TRUE;
 
+	AutoTLS atls;
+	atls.Enter(g_enter_tls);
 	// Make all keybd events physical to try to fool the system into accepting CTRL-ALT-DELETE.
 	// This didn't work, which implies that Ctrl-Alt-Delete is trapped at a lower level than
 	// this hook (folks have said that it's trapped in the keyboard driver itself):
@@ -234,6 +236,8 @@ LRESULT CALLBACK LowLevelMouseProc(int aCode, WPARAM wParam, LPARAM lParam)
 		return CallNextHookEx(g_MouseHook, aCode, wParam, lParam);
 
 	MSLLHOOKSTRUCT &event = *(PMSLLHOOKSTRUCT)lParam;  // For convenience, maintainability, and possibly performance.
+	AutoTLS atls;
+	atls.Enter(g_enter_tls);
 
 	// Make all mouse events physical to try to simulate mouse clicks in games that normally ignore
 	// artificial input.
@@ -3944,7 +3948,7 @@ void AddRemoveHooks(HookType aHooksToBeActive, bool aChangeIsTemporary)
 		// memory used by the hook thread.  The XP Task Manager's "VM Size" column (which seems much
 		// more accurate than "Mem Usage") indicates that a new thread consumes 28 KB + its stack size.
 		if (!aChangeIsTemporary) // Caller has ensured that thread already exists when aChangeIsTemporary==true.
-			if (sThreadHandle = CreateThread(NULL, 8*1024, HookThreadProc, (LPVOID)((PMYTEB)NtCurrentTeb())->ThreadLocalStoragePointer, 0, &g_HookThreadID))
+			if (sThreadHandle = CreateThread(NULL, 8*1024, HookThreadProc, ((PMYTEB)NtCurrentTeb())->ThreadLocalStoragePointer, 0, &g_HookThreadID))
 				SetThreadPriority(sThreadHandle, THREAD_PRIORITY_TIME_CRITICAL); // See below for explanation.
 			// The above priority level seems optimal because if some other process has high priority,
 			// the keyboard and mouse hooks will still take precedence, which avoids the mouse cursor
@@ -4158,7 +4162,7 @@ bool SystemHasAnotherMouseHook()
 
 
 
-DWORD WINAPI HookThreadProc(LPVOID aTLS)
+DWORD WINAPI HookThreadProc(LPVOID aTls)
 // The creator of this thread relies on the fact that this function always exits its thread
 // when both hooks are deactivated.
 {
@@ -4166,11 +4170,15 @@ DWORD WINAPI HookThreadProc(LPVOID aTLS)
 	bool problem_activating_hooks;
 
 	// Inherid thread local storage from main thread
-	PMYTEB hookteb = NULL;
-	PVOID tls = NULL;
-	hookteb = (PMYTEB)NtCurrentTeb();
-	tls = hookteb->ThreadLocalStoragePointer;
-	hookteb->ThreadLocalStoragePointer = aTLS;
+	auto myteb = (PMYTEB)NtCurrentTeb();
+	auto mytls = myteb->ThreadLocalStoragePointer;
+	myteb->ThreadLocalStoragePointer = g_enter_tls = aTls;
+	// Gets variables for the main thread
+	auto &mainThreadID = g_MainThreadID;
+	auto &KeybdHook = g_KeybdHook, &MouseHook = g_MouseHook;
+	auto &HookSyncd = sHookSyncd;
+	// teb must be restored, otherwise it may crash.
+	myteb->ThreadLocalStoragePointer = mytls;
 
 	for (;;) // Infinite loop for pumping messages in this thread. This thread will exit via any use of "return" below.
 	{
@@ -4221,6 +4229,8 @@ DWORD WINAPI HookThreadProc(LPVOID aTLS)
 					if (UnhookWindowsHookEx(g_MouseHook) || GetLastError() == ERROR_INVALID_HOOK_HANDLE) // Check last error in case the OS has already removed the hook.
 						g_MouseHook = NULL;
 
+			// Also sets the value of the main thread
+			KeybdHook = g_KeybdHook, MouseHook = g_MouseHook;
 			// Upon failure, don't display MsgBox here because although MsgBox's own message pump would
 			// service the hook that didn't fail (if it's active), it's best to avoid any blocking calls
 			// here so that this event loop will continue to run.  For example, the script or OS might
@@ -4231,29 +4241,27 @@ DWORD WINAPI HookThreadProc(LPVOID aTLS)
 			// will discard the message unless the caller has timed out, which seems impossible
 			// in this case).
 			if (msg.wParam) // The caller wants a reply only when it didn't ask us to terminate via deactivating both hooks.
-				PostThreadMessage(g_MainThreadID, AHK_CHANGE_HOOK_STATE, problem_activating_hooks, 0);
+				PostThreadMessage(mainThreadID, AHK_CHANGE_HOOK_STATE, problem_activating_hooks, 0);
 			//else this is WM_QUIT or the caller wanted this thread to terminate.  Send no reply.
 
 			// If caller passes true for msg.lParam, it wants a permanent change to hook state; so in that case, terminate this
 			// thread whenever neither hook is no longer present.
 			if (msg.lParam && !(g_KeybdHook || g_MouseHook)) // Both hooks are inactive (for whatever reason).
-			{
-				// restore teb to avod problems
-				hookteb->ThreadLocalStoragePointer = tls;
 				return 0; // Thread is no longer needed. The "return" automatically calls ExitThread().
 				// 1) Due to this thread's non-GUI nature, there doesn't seem to be any need to call
 				// the somewhat mysterious PostQuitMessage() here.
 				// 2) For thread safety and maintainability, it seems best to have the caller take
 				// full responsibility for freeing the hook's memory.
-			}
 			break;
 
 		case AHK_HOOK_SYNC:
-			sHookSyncd = true;
+			HookSyncd = true;
 			break;
 
 		case AHK_HOOK_SET_KEYHISTORY:
+			myteb->ThreadLocalStoragePointer = aTls;
 			SetKeyHistoryMax((int)msg.wParam);
+			myteb->ThreadLocalStoragePointer = mytls;
 			break;
 
 		} // switch (msg.message)
@@ -4265,6 +4273,8 @@ DWORD WINAPI HookThreadProc(LPVOID aTLS)
 void ResetHook(bool aAllModifiersUp, HookType aWhichHook, bool aResetKVKandKSC)
 // Caller should ensure that aWhichHook indicates at least one of the hooks (not none).
 {
+	AutoTLS atls;
+	atls.Enter(g_enter_tls);
 	if (pPrefixKey)
 	{
 		// Reset pPrefixKey only if the corresponding hook is being reset.  This fixes

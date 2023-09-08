@@ -585,7 +585,7 @@ LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPT
 			ResultToken result;
 			FuncAndToken aFuncAndToken = { aFunc, &result, param, aParamsCount };
 			atls.~AutoTLS();
-			if (!hwnd || !atls.curr_teb) {
+			if (!hwnd || !atls.teb) {
 				callFuncDll(&aFuncAndToken, true);
 				if (result.symbol == SYM_OBJECT)
 					result.object->Release();

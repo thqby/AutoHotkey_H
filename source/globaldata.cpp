@@ -22,7 +22,6 @@ GNU General Public License for more details.
 #include "os_version.h" // For the global OS_Version object
 
 #include "Debugger.h"
-#include "MemoryModule.h"
 
 // Since at least some of some of these (e.g. g_modifiersLR_logical) should not
 // be kept in the struct since it's not correct to save and restore their
@@ -169,7 +168,7 @@ thread_local bool g_HSDetectWhenInsideWord = false;
 thread_local bool g_HSDoReset = false;
 thread_local bool g_HSResetUponMouseClick = true;
 thread_local bool g_HSSameLineAction = false;
-thread_local TCHAR g_EndChars[HS_MAX_END_CHARS + 1] = _T("-()[]{}:;'\"/\\,.?!\n \t");  // Hotstring default end chars, including a space.
+TCHAR g_EndChars[HS_MAX_END_CHARS + 1] = _T("-()[]{}:;'\"/\\,.?!\n \t");  // Hotstring default end chars, including a space.
 // The following were considered but seemed too rare and/or too likely to result in undesirable replacements
 // (such as while programming or scripting, or in usernames or passwords): <>*+=_%^&|@#$|
 // Although dash/hyphen is used for multiple purposes, it seems to me that it is best (on average) to include it.
@@ -473,7 +472,8 @@ thread_local DWORD g_TimeLastInputPhysical = GetTickCount();
 thread_local DWORD g_TimeLastInputKeyboard = g_TimeLastInputPhysical;
 thread_local DWORD g_TimeLastInputMouse = g_TimeLastInputPhysical;
 
-
+thread_local DISPID g_DispNameCount = 0;
+thread_local DISPID g_DispNameMax = 0;
 thread_local LPTSTR* g_DispNameByIdMinus1 = NULL;
 thread_local DISPID* g_DispIdSortByName = NULL;
 thread_local BuiltInFunc* g_sIsSetFunc = NULL;		// stored IsSet, free it when thread terminates.
@@ -481,6 +481,7 @@ LPSTR g_hWinAPI = NULL, g_hWinAPIlowercase = NULL;  // loads WinAPI functions de
 HRSRC g_hResource = NULL;							// Set by WinMain()	// for compiled AutoHotkey.exe
 CRITICAL_SECTION g_Critical;
 AhkThreadInfo g_ahkThreads[MAX_AHK_THREADS] = {};
+thread_local PVOID g_enter_tls = NULL;
 thread_local PVOID g_original_tls = NULL;
 thread_local CRITICAL_SECTION g_CriticalTLSCallback;
 thread_local HMODULE g_hMemoryModule = NULL; // Set by DllMain() used for COM 

@@ -3856,7 +3856,7 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 		}
 		aParam++, aParamCount--;
 		atls.~AutoTLS();
-		auto promise = new Promise(func, !!atls.curr_teb);
+		auto promise = new Promise(func, !!atls.teb);
 		promise->Init(aParam, aParamCount);
 		promise->mPriority = g->Priority;
 		if (!SendMessage(mHwnd, AHK_EXECUTE_FUNCTION, (WPARAM)g_hWnd, (LPARAM)promise)) {

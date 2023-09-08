@@ -328,7 +328,7 @@ void AddRemoveHooks(HookType aHooksToBeActive, bool aChangeIsTemporary = false);
 bool HookAdjustMaxHotkeys(Hotkey **&aHK, int &aCurrentMax, int aNewMax);
 bool SystemHasAnotherKeybdHook();
 bool SystemHasAnotherMouseHook();
-DWORD WINAPI HookThreadProc(LPVOID aTLS);
+DWORD WINAPI HookThreadProc(LPVOID aTls);
 
 void LinkKeysForCustomCombo(vk_type aNeutral, vk_type aLeft, vk_type aRight);
 

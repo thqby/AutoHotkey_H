@@ -21,11 +21,13 @@ GNU General Public License for more details.
 #include "window.h" // for a lot of things
 #include "application.h" // for MsgSleep()
 #include "TextIO.h"
+
 #include "LiteZip.h"
 #include "MemoryModule.h"
 #include "process.h"
 #include "TlHelp32.h"
 #include "exports.h" // Naveen v8
+#include <wincrypt.h>
 
 #define NA MAX_FUNCTION_PARAMS
 #define BIFn(name, minp, maxp, bif, ...) {_T(#name), bif, minp, maxp, FID_##name, __VA_ARGS__}
@@ -372,7 +374,6 @@ Script::Script()
 	, mScriptName(NULL)
 	, mIsReadyToExecute(false), mAutoExecSectionIsRunning(false)
 	, mIsRestart(false), mErrorStdOut(false), mErrorStdOutCP(0)
-	, mFirstGroup(NULL), mIgnoreNextBlockBegin(false), mPendingParentLine(NULL), mPendingRelatedLine(NULL)
 #ifndef AUTOHOTKEYSC
 	, mValidateThenExit(false)
 	, mCmdLineInclude(NULL)
@@ -381,6 +382,7 @@ Script::Script()
 	, mCustomIcon(NULL), mCustomIconSmall(NULL) // Normally NULL unless there's a custom tray icon loaded dynamically.
 	, mCustomIconFile(NULL), mIconFrozen(false), mTrayIconTip(NULL) // Allocated on first use.
 	, mCustomIconNumber(0)
+	, mFirstGroup(NULL), mIgnoreNextBlockBegin(false), mPendingParentLine(NULL), mPendingRelatedLine(NULL)
 	, mTrayMenu(NULL), mKind(ScriptKindFile), mEncrypt(0), mExecLineBeforeAutoExec(NULL), mIndex(-1)
 {
 	// v1.0.25: mLastScriptRest (removed in v2) and mLastPeekTime are now initialized
@@ -428,11 +430,14 @@ Script::Script()
 }
 
 
+
 Script::~Script() // Destructor.
 {
 	Hotkey::AllDestruct(); // Unregister hooks and hotkeys.
 	Hotstring::AllDestruct();
-	Hotkey::ManifestAllHotkeysHotstringsHooks();
+
+	if (mIndex < MAX_AHK_THREADS)
+		g_ahkThreads[mIndex] = { 0 };
 
 	if (mNIC.hWnd) // Tray icon is installed.
 		Shell_NotifyIcon(NIM_DELETE, &mNIC); // Remove it.
@@ -637,6 +642,8 @@ Script::~Script() // Destructor.
 
 #define Free_Prototype(proto) proto->Release(), proto = nullptr
 
+	g_DispNameCount = 0;
+	g_DispNameMax = 0;
 	free(g_DispNameByIdMinus1);
 	free(g_DispIdSortByName);
 
@@ -794,12 +801,15 @@ Script::~Script() // Destructor.
 	_tcscpy(g_EndChars, _T("-()[]{}:;'\"/\\,.?!\n \t"));  // Hotstring default end chars, including a space.
 	free(Line::sSourceFile);
 	Line::sSourceFile = NULL;
+#ifndef AUTOHOTKEYSC
 	Line::sSourceFileCount = 0;
+#endif
 	Line::sMaxSourceFiles = 0;
 	Line::FreeDerefBufIfLarge();
 	Line::sDerefBuf = NULL;
 	Line::sDerefBufSize = 0;
 	Line::sLargeDerefBufs = 0;
+	Line::sLogNext = 0;
 
 	g_WorkingDir.~CKuStringT();
 	g_WorkingDirOrig = NULL;
@@ -1034,7 +1044,6 @@ ResultType Script::CreateWindows()
 		MsgBox(_T("CreateWindow")); // Short msg since so rare.
 		return FAIL;
 	}
-
 	// FONTS: The font used by default, at least on XP, is GetStockObject(SYSTEM_FONT).
 	// Use something more appealing (monospaced seems preferable):
 	HDC hdc = GetDC(g_hWndEdit);
@@ -1498,15 +1507,6 @@ bif_impl FResult Reload()
 
 ResultType Script::Reload(bool aDisplayErrors)
 {
-	for (auto g = &g_array[g_nThreads]; g >= g_array; g--)
-		*((char*)(&g->IsPaused)) = -1;
-	// The new instance we're about to start will tell our process to stop, or it will display
-	// a syntax error or some other error, in which case our process will still be running:
-#ifdef AUTOHOTKEYSC
-	// This is here in case a compiled script ever uses the Reload function.  Since the "Reload Script"
-	// tray menu item is not available for compiled scripts, it can't be called from there.
-	return g_script->ActionExec(mOurEXE, _T("/restart"), g_WorkingDirOrig, aDisplayErrors);
-#else
 	if (g_FirstThreadID != g_MainThreadID)
 	{
 		if (!g_Reloading)
@@ -1516,6 +1516,13 @@ ResultType Script::Reload(bool aDisplayErrors)
 		}
 		return EARLY_EXIT;
 	}
+	// The new instance we're about to start will tell our process to stop, or it will display
+	// a syntax error or some other error, in which case our process will still be running:
+#ifdef AUTOHOTKEYSC
+	// This is here in case a compiled script ever uses the Reload function.  Since the "Reload Script"
+	// tray menu item is not available for compiled scripts, it can't be called from there.
+	return g_script->ActionExec(mOurEXE, _T("/restart"), g_WorkingDirOrig, aDisplayErrors);
+#else
 	if (mKind == ScriptKindStdIn)
 		return OK;
 	TCHAR arg_string[UorA(MAX_WIDE_PATH, MAX_PATH * 2 + 16)]; // MAX_WIDEPATH coincides with the CreateProcess command line length limit (+1).
@@ -1528,7 +1535,6 @@ ResultType Script::Reload(bool aDisplayErrors)
 	else sntprintfcat(arg_string, _countof(arg_string), _T("/restart /script \"%s\""), Line::sSourceFile[0]);
 	return g_script->ActionExec(mOurEXE, arg_string, g_WorkingDirOrig, aDisplayErrors);
 #endif
-//#endif //CONFIG_DLL
 }
 
 
@@ -1582,12 +1588,8 @@ ResultType Script::ExitApp(ExitReasons aExitReason)
 		// MUST NOT create a new thread when g_OnExitIsRunning because g_array allows only one
 		// extra thread for ExitApp() (which allows it to run even when MAX_THREADS_EMERGENCY has
 		// been reached).  See TOTAL_ADDITIONAL_THREADS.
-
 		if (g_FirstThreadID != g_MainThreadID)
 		{
-			if (g_array && EXITREASON_MUST_EXIT(aExitReason))
-				for (auto g = &g_array[g_nThreads]; g >= g_array; g--)
-					*((char*)(&g->IsPaused)) = -1;
 			g_persistent = false;
 			PostThreadMessage(g_MainThreadID, WM_QUIT, aExitCode, MAXLONG_PTR);
 			return EARLY_EXIT;
@@ -1643,9 +1645,6 @@ ResultType Script::ExitApp(ExitReasons aExitReason)
 		|| EXITREASON_MUST_EXIT(aExitReason)) // Caller requested we exit unconditionally.
 	{
 		if (g_FirstThreadID != g_MainThreadID) {
-			if (g_array)
-				for (auto g = &g_array[g_nThreads]; g >= g_array; g--)
-					*((char *)(&g->IsPaused)) = -1;
 			g_persistent = false;
 			PostThreadMessage(g_MainThreadID, WM_QUIT, aExitCode, MAXLONG_PTR);
 			return EARLY_EXIT;
@@ -1726,21 +1725,21 @@ void Script::TerminateApp(ExitReasons aExitReason, int aExitCode)
 // Note that g_script's destructor takes care of most other cleanup work, such as destroying
 // tray icons, menus, and unowned windows such as ToolTip.
 {
-#ifdef CONFIG_DEBUGGER // L34: Exit debugger *after* the above to allow debugging of any invoked __Delete handlers.
-	g_Debugger->Exit(aExitReason);
-	g_DebuggerHost.Empty();
-#endif
-
+	if (aExitReason == EXIT_CRITICAL)
+		g_Reloading = 0;
+	// Ensure the current thread is not paused and can't be interrupted
+	// in case one or more objects need to call a __delete meta-function.
 	g_AllowInterruption = FALSE;
 	if (g->IsPaused == true)
 		g->IsPaused = false;
-	if (mIndex < MAX_AHK_THREADS)
-		g_ahkThreads[mIndex] = { 0 };
 	delete g_script;
+	g_script = NULL;
 	delete g_clip;
 	delete g_MsgMonitor;
-	g_script = NULL, g_clip = NULL, g_MsgMonitor = NULL;
-#ifdef CONFIG_DEBUGGER
+	g_clip = NULL, g_MsgMonitor = NULL;
+#ifdef CONFIG_DEBUGGER // L34: Exit debugger *after* the above to allow debugging of any invoked __Delete handlers.
+	g_Debugger->Exit(aExitReason);
+	g_DebuggerHost.Empty();
 	delete g_Debugger;
 	g_Debugger = NULL;
 #endif
@@ -1879,7 +1878,7 @@ UINT Script::LoadFromFile(LPCTSTR aFileSpec, LPCTSTR aScriptText)
 
 
 
-bool Script::IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf, bool aIsFunc)
+bool Script::IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf)
 // Helper function for LoadIncludedFile().
 // Caller passes in an aBuf containing a candidate line such as "function(x, y)"
 // Caller has ensured that aBuf is rtrim'd.
@@ -1906,7 +1905,7 @@ bool Script::IsFunctionDefinition(LPTSTR aBuf, LPTSTR aNextBuf, bool aIsFunc)
 		return false;
 	// Is it a control flow statement, such as "if(condition)"?
 	*action_end = '\0';
-	bool is_control_flow = aIsFunc && ConvertActionType(aBuf);
+	bool is_control_flow = ConvertActionType(aBuf);
 	*action_end = '(';
 	if (is_control_flow && (g->CurrentFunc || !g_script->mClassObjectCount))
 		return false;
@@ -2016,148 +2015,146 @@ ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAl
 #endif
 		);
 		++Line::sSourceFileCount;
+		return CONDITION_TRUE;
 	}
+	if (!source_file_index && *aFileSpec != '*')
+		// Since this is the first source file, it must be the main script file.  Just point it to the
+		// location of the filespec already dynamically allocated:
+		Line::sSourceFile[source_file_index] = mFileSpec;
 	else
 	{
-		if (!source_file_index && *aFileSpec != '*')
-			// Since this is the first source file, it must be the main script file.  Just point it to the
-			// location of the filespec already dynamically allocated:
-			Line::sSourceFile[source_file_index] = mFileSpec;
+		// Get the full path in case aFileSpec has a relative path.  This is done so that duplicates
+		// can be reliably detected (we only want to avoid including a given file more than once):
+		LPTSTR filename_marker;
+		if (*aFileSpec == '*')
+		{
+			tcslcpy(full_path, aFileSpec, _countof(full_path));
+			CharUpper(full_path); // Resource names must be upper-case.
+			while (filename_marker = _tcschr(full_path, '/'))
+				*filename_marker = '\\';
+		}
 		else
-		{
-			// Get the full path in case aFileSpec has a relative path.  This is done so that duplicates
-			// can be reliably detected (we only want to avoid including a given file more than once):
-			LPTSTR filename_marker;
-			if (*aFileSpec == '*')
-			{
-				tcslcpy(full_path, aFileSpec, _countof(full_path));
-				CharUpper(full_path); // Resource names must be upper-case.
-				while (filename_marker = _tcschr(full_path, '/'))
-					*filename_marker = '\\';
-			}
-			else
-				GetFullPathName(aFileSpec, _countof(full_path), full_path, &filename_marker);
-			// Check if this file was already included.  If so, it's not an error because we want
-			// to support automatic "include once" behavior.  So just ignore repeats:
-			if (!aAllowDuplicateInclude)
-				for (int f = 0; f < source_file_index; ++f) // Here, source_file_index==Line::sSourceFileCount
-					if (!lstrcmpi(Line::sSourceFile[f], full_path)) // Case insensitive like the file system (testing shows that "Ä" == "ä" in the NTFS, which is hopefully how lstrcmpi works regardless of locale).
-						return OK;
-			// The path is copied into persistent memory further below, after the file has been opened,
-			// in case the opening fails and aIgnoreLoadFailure==true.  Initialize for the check below.
-			Line::sSourceFile[source_file_index] = NULL;
-		}
+			GetFullPathName(aFileSpec, _countof(full_path), full_path, &filename_marker);
+		// Check if this file was already included.  If so, it's not an error because we want
+		// to support automatic "include once" behavior.  So just ignore repeats:
+		if (!aAllowDuplicateInclude)
+			for (int f = 0; f < source_file_index; ++f) // Here, source_file_index==Line::sSourceFileCount
+				if (!lstrcmpi(Line::sSourceFile[f], full_path)) // Case insensitive like the file system (testing shows that "Ä" == "ä" in the NTFS, which is hopefully how lstrcmpi works regardless of locale).
+					return OK;
+		// The path is copied into persistent memory further below, after the file has been opened,
+		// in case the opening fails and aIgnoreLoadFailure==true.  Initialize for the check below.
+		Line::sSourceFile[source_file_index] = NULL;
+	}
 
-		LPCTSTR filespec_to_open = aFileSpec;
-		UINT codepage = g_DefaultScriptCodepage;
+	LPCTSTR filespec_to_open = aFileSpec;
+	UINT codepage = g_DefaultScriptCodepage;
 
-		TextMem::Buffer textbuf(nullptr, 0, false);
-		HINSTANCE hInstance = g_hInstance;
-		HRSRC hRes = source_file_index ? NULL : g_hResource;
-		if (!hRes && *full_path == '*' && full_path[1]) {
-			LPTSTR terminate_here = _tcsrchr(full_path, '\\'), lpName, lpType;
-			if (terminate_here)
-				*terminate_here = '\0', lpName = terminate_here + 1, lpType = full_path + 1;
-			else lpName = full_path + 1, lpType = RT_RCDATA;
-			if (!(hRes = FindResource(hInstance, lpName, lpType)) && hInstance)
-				hRes = FindResource(hInstance = NULL, lpName, lpType);
-			if (terminate_here)
-				*terminate_here = '\\';
-		}
-		if (hRes)
+	TextMem::Buffer textbuf(nullptr, 0, false);
+	HINSTANCE hInstance = g_hInstance;
+	HRSRC hRes = source_file_index ? NULL : g_hResource;
+	if (!hRes && *full_path == '*' && full_path[1]) {
+		LPTSTR terminate_here = _tcsrchr(full_path, '\\'), lpName, lpType;
+		if (terminate_here)
+			*terminate_here = '\0', lpName = terminate_here + 1, lpType = full_path + 1;
+		else lpName = full_path + 1, lpType = RT_RCDATA;
+		if (!(hRes = FindResource(hInstance, lpName, lpType)) && hInstance)
+			hRes = FindResource(hInstance = NULL, lpName, lpType);
+		if (terminate_here)
+			*terminate_here = '\\';
+	}
+	if (hRes)
+	{
+		HGLOBAL hResData = LoadResource(hInstance, hRes);
+		LPVOID data, aDataBuf;
+		DWORD size, aSizeDeCompressed;
+		if (hResData && (textbuf.mBuffer = data = LockResource(hResData)))
 		{
-			HGLOBAL hResData = LoadResource(hInstance, hRes);
-			LPVOID data, aDataBuf;
-			DWORD size, aSizeDeCompressed;
-			if (hResData && (textbuf.mBuffer = data = LockResource(hResData)))
+			textbuf.mLength = size = SizeofResource(hInstance, hRes);
+			if (*(unsigned int*)textbuf.mBuffer == 0x04034b50)
 			{
-				textbuf.mLength = size = SizeofResource(hInstance, hRes);
-				if (*(unsigned int*)textbuf.mBuffer == 0x04034b50)
+#ifndef CONFIG_DLL
+				if (g_hResource && !AHKModule())
+					return FAIL;
+#endif
+				aSizeDeCompressed = DecompressBuffer(textbuf.mBuffer, aDataBuf, textbuf.mLength, g_default_pwd);
+				if (aSizeDeCompressed)
 				{
+					textbuf.mBuffer = aDataBuf;
+					textbuf.mLength = aSizeDeCompressed;
+					textbuf.mOwned = true;
+					mEncrypt = 3;
 #ifndef CONFIG_DLL
 					if (g_hResource && !AHKModule())
 						return FAIL;
 #endif
-					aSizeDeCompressed = DecompressBuffer(textbuf.mBuffer, aDataBuf, textbuf.mLength, g_default_pwd);
-					if (aSizeDeCompressed)
-					{
-						textbuf.mBuffer = aDataBuf;
-						textbuf.mLength = aSizeDeCompressed;
-						textbuf.mOwned = true;
-						mEncrypt = 3;
-#ifndef CONFIG_DLL
-						if (g_hResource && !AHKModule())
-							return FAIL;
-#endif
-						if (hRes == g_hResource) {
-							VirtualProtect(data, size, PAGE_EXECUTE_READWRITE, &aSizeDeCompressed);
-							g_memset(data, 0, size);
-							g_hResource = NULL;
-						}
+					if (hRes == g_hResource) {
+						VirtualProtect(data, size, PAGE_EXECUTE_READWRITE, &aSizeDeCompressed);
+						memset(data, 0, size);
+						g_hResource = NULL;
 					}
-					else
-						textbuf.mBuffer = NULL;
 				}
 				else
-					_stprintf(full_path + _tcslen(full_path), _T("?%p#%u.AHK"), data, size);
-			}
-			if (textbuf.mBuffer) {
-				filespec_to_open = textbuf;
-				codepage = CP_UTF8;
-				ts = new TextMem();
+					textbuf.mBuffer = NULL;
 			}
 			else
-				return ScriptError(_T("Could not extract script from EXE."), aFileSpec);
+				_stprintf(full_path + _tcslen(full_path), _T("?%p#%u.AHK"), data, size);
+		}
+		if (textbuf.mBuffer) {
+			filespec_to_open = textbuf;
+			codepage = CP_UTF8;
+			ts = new TextMem();
 		}
 		else
-			ts = new TextFile();
-
-		if (!ts || !ts->Open(filespec_to_open, DEFAULT_READ_FLAGS, codepage))
-		{
-			if (aIgnoreLoadFailure)
-				return OK;
-			TCHAR msg_text[T_MAX_PATH + 64]; // T_MAX_PATH vs. MAX_PATH because the full length could be utilized with ErrorStdOut.
-			sntprintf(msg_text, _countof(msg_text), _T("%s file \"%s\" cannot be opened.")
-				, source_file_index ? _T("#Include") : _T("Script"), aFileSpec);
-			return ScriptError(msg_text);
-		}
-
-		// This is done only after the file has been successfully opened in case aIgnoreLoadFailure==true:
-		if (!Line::sSourceFile[source_file_index])
-			Line::sSourceFile[source_file_index] = SimpleHeap::Alloc(full_path);
-		//else the first file was already taken care of by another means.
-		++Line::sSourceFileCount;
-
-		if (!source_file_index)
-		{
-			// Load any pre-script resource.
-			if (FindResource(g_hInstance, SCRIPT_PRESOURCE_NAME, RT_RCDATA)
-				&& !LoadIncludedFile(SCRIPT_PRESOURCE_SPEC, false, false))
-				return FAIL;
-
-			// Load any file specified with the /include switch.
-			if (mCmdLineInclude
-				&& !LoadIncludedFile(mCmdLineInclude, false, false))
-				return FAIL;
-		}
-
-		// Set the working directory so that any #Include directives are relative to the directory
-		// containing this file by default.  Call SetWorkingDir() vs. SetCurrentDirectory() so that it
-		// succeeds even for a root drive like C: that lacks a backslash (see SetWorkingDir() for details).
-		if (source_file_index && mKind != ScriptKindResource)
-		{
-			LPTSTR terminate_here = _tcsrchr(full_path, '\\');
-			if (terminate_here > full_path)
-			{
-				*terminate_here = '\0'; // Temporarily terminate it for use with SetWorkingDir().
-				SetWorkingDir(full_path);
-				*terminate_here = '\\'; // Undo the termination.
-			}
-			//else: probably impossible? Just leave the working dir as-is, for simplicity.
-		}
-		else
-			SetWorkingDir(mFileDir);
+			return ScriptError(_T("Could not extract script from EXE."), aFileSpec);
 	}
+	else
+		ts = new TextFile();
+
+	if (!ts || !ts->Open(filespec_to_open, DEFAULT_READ_FLAGS, codepage))
+	{
+		if (aIgnoreLoadFailure)
+			return OK;
+		TCHAR msg_text[T_MAX_PATH + 64]; // T_MAX_PATH vs. MAX_PATH because the full length could be utilized with ErrorStdOut.
+		sntprintf(msg_text, _countof(msg_text), _T("%s file \"%s\" cannot be opened.")
+			, source_file_index ? _T("#Include") : _T("Script"), aFileSpec);
+		return ScriptError(msg_text);
+	}
+
+	// This is done only after the file has been successfully opened in case aIgnoreLoadFailure==true:
+	if (!Line::sSourceFile[source_file_index])
+		Line::sSourceFile[source_file_index] = SimpleHeap::Alloc(full_path);
+	//else the first file was already taken care of by another means.
+	++Line::sSourceFileCount;
+
+	if (!source_file_index)
+	{
+		// Load any pre-script resource.
+		if (FindResource(g_hInstance, SCRIPT_PRESOURCE_NAME, RT_RCDATA)
+			&& !LoadIncludedFile(SCRIPT_PRESOURCE_SPEC, false, false))
+			return FAIL;
+
+		// Load any file specified with the /include switch.
+		if (mCmdLineInclude
+			&& !LoadIncludedFile(mCmdLineInclude, false, false))
+			return FAIL;
+	}
+
+	// Set the working directory so that any #Include directives are relative to the directory
+	// containing this file by default.  Call SetWorkingDir() vs. SetCurrentDirectory() so that it
+	// succeeds even for a root drive like C: that lacks a backslash (see SetWorkingDir() for details).
+	if (source_file_index && mKind != ScriptKindResource)
+	{
+		LPTSTR terminate_here = _tcsrchr(full_path, '\\');
+		if (terminate_here > full_path)
+		{
+			*terminate_here = '\0'; // Temporarily terminate it for use with SetWorkingDir().
+			SetWorkingDir(full_path);
+			*terminate_here = '\\'; // Undo the termination.
+		}
+		//else: probably impossible? Just leave the working dir as-is, for simplicity.
+	}
+	else
+		SetWorkingDir(mFileDir);
 
 	// Since above did not continue, proceed with loading the file.
 	return CONDITION_TRUE;
@@ -2850,7 +2847,8 @@ process_completed_line:
 		// Since above didn't "goto", it's not a label.
 		if (*buf == '#')
 		{
-			if (!_tcsnicmp(buf, _T("#HotIf"), 6) && IS_SPACE_OR_TAB(buf[6]) || !_tcsnicmp(buf, _T("#InitExec"), 9) && IS_SPACE_OR_TAB(buf[9]))
+			if (!_tcsnicmp(buf, _T("#HotIf"), 6) && IS_SPACE_OR_TAB(buf[6]) ||
+				!_tcsnicmp(buf, _T("#InitExec"), 9) && IS_SPACE_OR_TAB(buf[9]))
 			{
 				// Allow an expression enclosed in ()/[]/{} to span multiple lines:
 				if (!GetLineContExpr(fp, buf, next_buf, phys_line_number, has_continuation_section))
@@ -2970,7 +2968,7 @@ process_completed_line:
 				else
 					id = buf;
 			}
-			if (IsFunctionDefinition(id, next_buf, false))
+			if (IsFunctionDefinition(id, next_buf))
 			{
 				if (!DefineFunc(id, is_static))
 					return FAIL;
@@ -3844,8 +3842,7 @@ size_t Script::GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aInBlo
 					free(aDataBuf);
 				}
 				else {
-					if (aDataBuf)
-						free(aDataBuf);
+					free(aDataBuf);
 					free(data);
 					return -1;
 				}
@@ -4032,24 +4029,59 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 			{
 				++parameter; // Remove '<'.
 				*parameter_end = '\0'; // Remove '>'.
-				bool error_was_shown, file_was_found;
-				// Save the working directory; see the similar line below for details.
-				LPTSTR prev_dir = GetWorkingDir();
-				// Attempt to include a script file from a Lib folder:
-				IncludeLibrary(parameter, parameter_end - parameter, error_was_shown, file_was_found);
-				// Restore the working directory.
-				if (prev_dir)
-				{
-					SetCurrentDirectory(prev_dir);
-					free(prev_dir);
-				}
-				// If any file was included, consider it a success; i.e. allow #include <lib> and #include <lib_func>.
-				if (!error_was_shown && (file_was_found || ignore_load_failure))
-					return CONDITION_TRUE;
-				*parameter_end = '>'; // Restore '>' for display to the user.
-				return error_was_shown ? FAIL : ScriptError(_T("Script library not found."), aBuf);
+				name_len = parameter_end - parameter;
 			}
-			//else invalid syntax; treat it as a regular #include which will almost certainly fail.
+		}
+
+		// h: #include <urldownloadtovar|'url'>
+		if (*parameter != '<' && _tcschr(parameter + 1, '|')) {
+			LineBuffer lbuf;
+			LPTSTR sep, beg, end, buf;
+			if (!DerefInclude(lbuf.p, parameter) || !(sep = _tcschr(lbuf.p + 1, '|')))
+				return FAIL;
+			buf = (LPTSTR)_alloca((90 + 2 * (sep - lbuf.p) + _tcsclen(sep + 1)) * sizeof(TCHAR));
+			for (beg = sep - 1, end = sep; beg >= lbuf.p; beg--)
+				if (*beg == '/' || *beg == '\\')
+					break;
+				else if (*beg == '.')
+					end = beg;
+			IObjPtr obj{ Object::Create() };
+			*sep = '\0';
+			auto l = _stprintf(buf, _T("#include %c%s%c\nObjFromPtrAddRef(0x%p)._:="), name_len ? '<' : ' ', lbuf.p, name_len ? '>' : ' ', obj.obj);
+			*end = '\0';
+			_stprintf(buf + l, _T("String(%s(%s))\nExitApp"), beg + 1, sep + 1);
+			LPTSTR script = NULL;
+			if (auto hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, NewThread(buf))) {
+				ExprTokenType token{};
+				if (WaitForSingleObject(hThread, 5000) != WAIT_TIMEOUT && ((Object*)obj.obj)->GetOwnProp(token, _T("_")))
+					script = token.marker;
+			}
+			else return ScriptError(_T("Create thread fail."), aBuf);
+			if (script) {
+				_stprintf(buf, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, mEncrypt ? nullptr : SimpleHeap::Alloc(script), _tcslen(script) * sizeof(TCHAR));
+				return LoadIncludedFile(buf, true, ignore_load_failure, script) == OK ? CONDITION_TRUE : FAIL;
+			}
+			return ignore_load_failure ? CONDITION_TRUE : FAIL;
+		}
+
+		if (name_len)
+		{
+			bool error_was_shown, file_was_found;
+			// Save the working directory; see the similar line below for details.
+			LPTSTR prev_dir = GetWorkingDir();
+			// Attempt to include a script file from a Lib folder:
+			IncludeLibrary(parameter, name_len, error_was_shown, file_was_found);
+			// Restore the working directory.
+			if (prev_dir)
+			{
+				SetCurrentDirectory(prev_dir);
+				free(prev_dir);
+			}
+			// If any file was included, consider it a success; i.e. allow #include <lib> and #include <lib_func>.
+			if (!error_was_shown && (file_was_found || ignore_load_failure))
+				return CONDITION_TRUE;
+			*(parameter + name_len) = '>'; // Restore '>' for display to the user.
+			return error_was_shown ? FAIL : ScriptError(_T("Script library not found."), aBuf);
 		}
 
 		LPTSTR include_path;
@@ -4135,65 +4167,6 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		free(library_path);
 		return result;
 	} // end #DllLoad
-
-	if (IS_DIRECTIVE_MATCH(_T("#UseStdLib")))
-	{
-		switch (Line::ConvertOnOff(parameter))
-		{
-		case TOGGLED_OFF:
-			g_UseStdLib = false;
-			break;
-		case TOGGLED_ON:
-			g_UseStdLib = true;
-			break;
-		default:
-			g_UseStdLib = true;
-			break;
-		}
-		return CONDITION_TRUE;
-	}
-
-	if (IS_DIRECTIVE_MATCH(_T("#MapCaseSense")))
-	{
-		g_MapCaseSense = Line::ConvertStringCaseSense(parameter);
-		if (SCS_INVALID == g_MapCaseSense)
-		{
-			g_MapCaseSense = 1;
-			return ScriptError(ERR_PARAM1_INVALID, aBuf);
-		}
-		return CONDITION_TRUE;
-	}
-
-	if (IS_DIRECTIVE_MATCH(_T("#TargetWindowError")))
-	{
-		switch(Line::ConvertOnOff(parameter))
-		{
-			case TOGGLED_ON:
-				g_TargetWindowError = true;
-				break;
-			default:
-				g_TargetWindowError = false;
-				break;
-		}
-		return CONDITION_TRUE;
-	}
-
-	if (IS_DIRECTIVE_MATCH(_T("#TargetControlError")))
-	{
-		switch (Line::ConvertOnOff(parameter))
-		{
-		case TOGGLED_OFF:
-			g_TargetControlError = false;
-			break;
-		case TOGGLED_ON:
-			g_TargetControlError = true;
-			break;
-		default:
-			g_TargetControlError = false;
-			break;
-		}
-		return CONDITION_TRUE;
-	}
 
 	if (IS_DIRECTIVE_MATCH(_T("#NoTrayIcon")))
 	{
@@ -4392,23 +4365,6 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		return CONDITION_TRUE;
 	}
 
-	if (IS_DIRECTIVE_MATCH(_T("#DllImport")))
-		return LoadDllFunction(parameter, TRUE) ? CONDITION_TRUE : CONDITION_FALSE;
-
-	if (IS_DIRECTIVE_MATCH(_T("#WindowClassMain")))
-	{
-		if (parameter && !g_MainWinClass)
-			g_WindowClassMain = SimpleHeap::Malloc(parameter);
-		return CONDITION_TRUE;
-	}
-
-	if (IS_DIRECTIVE_MATCH(_T("#WindowClassGui")))
-	{
-		if (parameter && !g_GuiWinClass)
-			g_WindowClassGUI = SimpleHeap::Malloc(parameter);
-		return CONDITION_TRUE;
-	}
-
 	if (IS_DIRECTIVE_MATCH(_T("#Warn")))
 	{
 		if (!parameter)
@@ -4534,6 +4490,82 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 			return FAIL;
 		mCurrLine->mActionType = ACT_INITEXEC;
 		mCurrLine->mAttribute = g->CurrentFunc;
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#DllImport")))
+		return LoadDllFunction(parameter, TRUE) ? CONDITION_TRUE : CONDITION_FALSE;
+
+	if (IS_DIRECTIVE_MATCH(_T("#WindowClassMain")))
+	{
+		if (parameter && !g_MainWinClass)
+			g_WindowClassMain = SimpleHeap::Malloc(parameter);
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#WindowClassGui")))
+	{
+		if (parameter && !g_GuiWinClass)
+			g_WindowClassGUI = SimpleHeap::Malloc(parameter);
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#UseStdLib")))
+	{
+		switch (Line::ConvertOnOff(parameter))
+		{
+		case TOGGLED_OFF:
+			g_UseStdLib = false;
+			break;
+		case TOGGLED_ON:
+			g_UseStdLib = true;
+			break;
+		default:
+			g_UseStdLib = true;
+			break;
+		}
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#MapCaseSense")))
+	{
+		g_MapCaseSense = Line::ConvertStringCaseSense(parameter);
+		if (SCS_INVALID == g_MapCaseSense)
+		{
+			g_MapCaseSense = 1;
+			return ScriptError(ERR_PARAM1_INVALID, aBuf);
+		}
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#TargetWindowError")))
+	{
+		switch(Line::ConvertOnOff(parameter))
+		{
+			case TOGGLED_ON:
+				g_TargetWindowError = true;
+				break;
+			default:
+				g_TargetWindowError = false;
+				break;
+		}
+		return CONDITION_TRUE;
+	}
+
+	if (IS_DIRECTIVE_MATCH(_T("#TargetControlError")))
+	{
+		switch (Line::ConvertOnOff(parameter))
+		{
+		case TOGGLED_OFF:
+			g_TargetControlError = false;
+			break;
+		case TOGGLED_ON:
+			g_TargetControlError = true;
+			break;
+		default:
+			g_TargetControlError = false;
+			break;
+		}
 		return CONDITION_TRUE;
 	}
 
@@ -5444,7 +5476,7 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 			literal_map_buf.EnsureCapacity(sizeof(TCHAR) * line_length);
 			literal_map = literal_map_buf;
 		}
-		ZeroMemory(literal_map, sizeof(TCHAR)* line_length);  // Must be fully zeroed for this purpose.
+		ZeroMemory(literal_map, sizeof(TCHAR) * line_length);  // Must be fully zeroed for this purpose.
 		// Resolve escaped sequences and make a map of which characters in the string should
 		// be interpreted literally rather than as their native function.  In other words,
 		// convert any escape sequences in order from left to right.  This part must be
@@ -6783,7 +6815,8 @@ ResultType Script::DefineClass(LPTSTR aBuf)
 			if (!base_class)
 			{
 				if (   !(base_prototype = Object::CreatePrototype(base_class_name))
-					|| !(base_class = Object::CreateClass(base_prototype)) || !base_prototype->Release()
+					|| !(base_class = Object::CreateClass(base_prototype))
+					|| !base_prototype->Release()
 					// This property will be removed when the class definition is encountered:
 					|| !base_class->SetOwnProp(_T("Line"), ((__int64)mCurrFileIndex << 32) | mCombinedLineNumber)
 					|| !mUnresolvedClasses->SetOwnProp(base_class_name, base_class)  )
@@ -7638,18 +7671,10 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 {
 	size_t n = 6;
 	bool is_macro = false;
-	bool is_static = !_tcsnicmp(aFuncName, _T("Static"), n) && IS_SPACE_OR_TAB(aFuncName[n]);
-	if (is_static || (is_macro = !_tcsnicmp(aFuncName, _T("macro"), n = 5) && IS_SPACE_OR_TAB(aFuncName[n])))
+	bool is_static = IS_SPACE_OR_TAB(aFuncName[6]) && !_tcsnicmp(aFuncName, _T("Static"), n);
+	if (is_static || (is_macro = IS_SPACE_OR_TAB(aFuncName[5]) && !_tcsnicmp(aFuncName, _T("macro"), n = 5)))
 	{
-		if (is_macro)
-		{
-			if (aClassObject)
-			{
-				ScriptError(_T("Macro is not supported for Methods."), aFuncName);
-				return nullptr;
-			}
-		}
-		else if (aClassObject || !g->CurrentFunc)
+		if (aClassObject || !g->CurrentFunc)
 		{
 			ScriptError(ERR_INVALID_FUNCDECL, aFuncName); // Uses a generic message to minimize code size.
 			return nullptr;
@@ -7661,6 +7686,12 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 			aFuncName += n;
 		}
 		//else (shouldn't happen): it will fail to validate below.
+	}
+
+	if (g->CurrentFunc && g->CurrentFunc->mIsMacro)
+	{
+		ScriptError(_T("Macro functions cannot contain functions."));
+		return nullptr;
 	}
 
 	if (aFuncNameLength == -1) // Caller didn't specify, so use the entire string.
@@ -7681,6 +7712,7 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 		return nullptr; // Above already displayed the error for us.
 
 	auto the_new_func = new UserFunc(new_name);
+	IObjPtr _free{ the_new_func };
 
 	if (aClassObject)
 	{
@@ -7773,6 +7805,7 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 		return nullptr;
 	}
 
+	_free.obj = nullptr;
 	return the_new_func;
 }
 
@@ -7919,11 +7952,6 @@ Var *Script::FindVar(LPCTSTR aVarName, size_t aVarNameLength, int aScope
 		return NULL;
 	if (!aVarNameLength) // Caller didn't specify, so use the entire string.
 		aVarNameLength = _tcslen(aVarName);
-	if (!_tcsnicmp(aVarName, _T("macro "), 6))
-	{
-		aVarName += 6;
-		aVarNameLength -= 6;
-	}
 
 	// For the below, no error is reported because callers don't want that.  Instead, simply return
 	// NULL to indicate that names that are illegal or too long are not found.  When the caller later
@@ -7951,6 +7979,7 @@ Var *Script::FindVar(LPCTSTR aVarName, size_t aVarNameLength, int aScope
 			|| !(aScope & VAR_DECLARED) && (func.mDefaultVarType & VAR_LOCAL_STATIC);
 		if (apList) *apList = add_static ? &func.mStaticVars : &func.mVars;
 		if (apInsertPos) *apInsertPos = add_static ? static_pos : nonstatic_pos;
+		if (func.mIsMacro) return nullptr;
 	}
 	else
 	{
@@ -8130,6 +8159,9 @@ Var *Script::AddVar(LPCTSTR aVarName, size_t aVarNameLength, VarList *aList, int
 		// Above already displayed error for us.  This can happen at loadtime or runtime (e.g. StringSplit).
 		return NULL;
 
+	if ((aScope & ~FINDVAR_GLOBAL_FALLBACK) == VAR_LOCAL && g->CurrentFunc->mIsMacro)
+		aScope = VAR_LOCAL;
+
 	if ((aScope & (VAR_LOCAL | VAR_DECLARED)) == VAR_LOCAL // This is an implicit local.
 		&& g_Warn_LocalSameAsGlobal && !mIsReadyToExecute // Not enabled at runtime because of overlap with #Warn UseUnset, and dynamic assignments in assume-local mode are less likely to be intended global.
 		&& FindGlobalVar(var_name, aVarNameLength))
@@ -8148,8 +8180,6 @@ Var *Script::AddVar(LPCTSTR aVarName, size_t aVarNameLength, VarList *aList, int
 	if (aScope == VAR_LOCAL && (g->CurrentFunc->mDefaultVarType & VAR_LOCAL_STATIC))
 		// v1.0.48: Lexikos: Current function is assume-static, so set static attribute.
 		aScope |= VAR_LOCAL_STATIC;
-	if ((aScope & VAR_DECLARE_LOCAL) == VAR_DECLARE_LOCAL && g->CurrentFunc && g->CurrentFunc->mIsMacro)
-		aScope |= VAR_MACRO;
 
 	Var *the_new_var = new Var(new_name, aScope);
 	if (!the_new_var || !aList->Insert(the_new_var, aInsertPos))
@@ -9787,7 +9817,7 @@ unquoted_literal:
 					case SYM_STRING:
 						// Is this a quoted string (invalid here) or unquoted property name?
 						for (cp = this_infix->error_reporting_marker - 1; IS_SPACE_OR_TAB(*cp); --cp);
-						if (IS_IDENTIFIER_CHAR(*cp))
+						if (IS_IDENTIFIER_CHAR(*cp) || *cp == '"' || *cp == '\'')	// support quoted property name
 							break;
 					default:
 						return LineError(_T("Invalid property name in object literal."));
@@ -10630,8 +10660,13 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 							g->CurrentFunc->mVars.mItem = NULL;
 						}
 						delete this_postfix->var;
-						this_postfix->SetValue(var->mObject);
-						var->mObject->AddRef();
+						if (!aArg.is_expression)
+							this_postfix->var = var;
+						else
+						{
+							this_postfix->SetValue(var->mObject);
+							var->mObject->AddRef();
+						}
 						continue;
 					}
 				}
@@ -10651,13 +10686,13 @@ thread_local Line *Line::sLog[] = {NULL};  // Initialize all the array elements.
 thread_local DWORD Line::sLogTick[]; // No initialization needed.
 thread_local int Line::sLogNext = 0;  // Start at the first element.
 
-#ifdef AUTOHOTKEYSC  // Reduces code size to omit things that are unused, and helps catch bugs at compile-time.
-	thread_local LPTSTR Line::sSourceFile[1]; // No init needed.
-#else
-	thread_local LPTSTR *Line::sSourceFile = NULL; // Init to NULL for use with realloc() and for maintainability.
-	thread_local int Line::sMaxSourceFiles = 0;
-#endif
-	thread_local int Line::sSourceFileCount = 0; // Zero source files initially.  The main script will be the first.
+//#ifdef AUTOHOTKEYSC  // Reduces code size to omit things that are unused, and helps catch bugs at compile-time.
+//thread_local LPTSTR Line::sSourceFile[1]; // No init needed.
+//#else
+thread_local LPTSTR *Line::sSourceFile = NULL; // Init to NULL for use with realloc() and for maintainability.
+thread_local int Line::sMaxSourceFiles = 0;
+//#endif
+thread_local int Line::sSourceFileCount = 0; // Zero source files initially.  The main script will be the first.
 
 thread_local LPTSTR Line::sDerefBuf = NULL;  // Buffer to hold the values of any args that need to be dereferenced.
 thread_local LPTSTR Line::sDerefBufBackup = NULL;  // Buffer backup to cleanup on exit if needed.
@@ -12811,27 +12846,16 @@ ResultType Line::PerformAssign()
 	
 	if (!mArg[1].is_expression)
 	{
-		Var* output_var = VAR(mArg[0]), * aMacroVar;
-		if (g->CurrentMacro && !(output_var->mScope & VAR_MACRO) && (aMacroVar = g_script->FindVar(output_var->mName, mArg[0].length, FINDVAR_FOR_READ)))
-			output_var = aMacroVar;
 		ASSERT(mArg[1].postfix);
 		// Examples of assignments this covers:
 		//		x := 123
 		//		x := 1.0
 		//		x := "quoted literal string"
 		//		x := normal_var  ; but not VAR_VIRTUAL or VAR_CONSTANT
-		if (mArg[1].postfix->symbol == SYM_VAR)
-		{
-			Var* aSourceVar = mArg[1].postfix->var;
-			if (g->CurrentMacro && !(aSourceVar->mScope & VAR_MACRO) && (aMacroVar = g_script->FindVar(aSourceVar->mName, 0, FINDVAR_FOR_READ)))
-				aSourceVar = aMacroVar;
-			if (aSourceVar->IsUninitialized()
-				&& mArg[1].postfix->var_usage == VARREF_READ)
-				return g_script->VarUnsetError(mArg[1].postfix->var); // !is_expression implies VAR_NORMAL, so InitializeConstant() isn't needed here.
-			return output_var->Assign(*aSourceVar);
-		}
-		// HotKeyIt override routine for manually added BuildIn variables
-		// if (!(mArg[1].postfix->symbol == SYM_VAR && (mArg[1].postfix->var->mType == VAR_BUILTIN)))
+		if (mArg[1].postfix->symbol == SYM_VAR && mArg[1].postfix->var->IsUninitialized()
+			&& mArg[1].postfix->var_usage == VARREF_READ)
+			return g_script->VarUnsetError(mArg[1].postfix->var); // !is_expression implies VAR_NORMAL, so InitializeConstant() isn't needed here.
+		Var *output_var = VAR(mArg[0]);
 		return output_var->Assign(*mArg[1].postfix);
 	}
 
@@ -12985,23 +13009,7 @@ LPTSTR Line::LogToText(LPTSTR aBuf, int aBufSize) // aBufSize should be an int t
 			if (last_file_index != sLog[line_index]->mFileIndex)
 			{
 				last_file_index = sLog[line_index]->mFileIndex;
-#ifdef CONFIG_DLL
-				// terminate source file if it contains new lines
-				LPTSTR new_line_pos = _tcschr(sSourceFile[last_file_index], '\r');
-				if (!new_line_pos)
-					new_line_pos = _tcschr(sSourceFile[last_file_index], '\n');
-				TCHAR new_line_char = NULL;
-				if (new_line_pos)
-				{
-					new_line_char = *new_line_pos;
-					*new_line_pos = '\0';
-				}
-#endif
 				aBuf += sntprintf(aBuf, BUF_SPACE_REMAINING, _T("---- %s\r\n"), sSourceFile[last_file_index]);
-#ifdef CONFIG_DLL
-				if (new_line_pos)
-					*new_line_pos = new_line_char;
-#endif
 			}
 #endif
 			space_remaining = BUF_SPACE_REMAINING;  // Resolve macro only once for performance.

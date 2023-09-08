@@ -6,6 +6,8 @@
 #include "script_func_impl.h"
 #include <DispEx.h>
 
+#include "MemoryModule.h"	// ComObjDll
+
 
 // IID__IObject -- .NET's System.Object:
 const IID IID__Object = {0x65074F7F, 0x63C0, 0x304E, 0xAF, 0x0A, 0xD5, 0x17, 0x41, 0xCB, 0x4A, 0x8D};
@@ -1221,7 +1223,7 @@ ResultType ComObject::Invoke(IObject_Invoke_PARAMS_DECL)
 			aParamCount = 0; // Skip parameter conversion and cleanup.
 	}
 	
-	thread_local static DISPID dispidParam = DISPID_PROPERTYPUT;
+	static DISPID dispidParam = DISPID_PROPERTYPUT;
 	DISPPARAMS dispparams = {NULL, NULL, 0, 0};
 	VARIANTARG *rgvarg;
 	TTVArgType *argtype;
@@ -1780,7 +1782,6 @@ STDMETHODIMP IObjectComCompatible::GetTypeInfo(UINT itinfo, LCID lcid, ITypeInfo
 	return E_NOTIMPL;
 }
 
-thread_local static DISPID sDispNameCount = 0, sDispNameMax = 0;
 
 STDMETHODIMP IObjectComCompatible::GetIDsOfNames(REFIID riid, LPOLESTR *rgszNames, UINT cNames, LCID lcid, DISPID *rgDispId)
 {
@@ -1793,7 +1794,7 @@ STDMETHODIMP IObjectComCompatible::GetIDsOfNames(REFIID riid, LPOLESTR *rgszName
 #endif
 
 	int left, right, mid, result;
-	for (left = 0, right = sDispNameCount - 1; left <= right;)
+	for (left = 0, right = g_DispNameCount - 1; left <= right;)
 	{
 		mid = (left + right) / 2;
 		// Comparison is case-sensitive so that the proper case of the name comes through for
@@ -1830,9 +1831,9 @@ STDMETHODIMP IObjectComCompatible::GetIDsOfNames(REFIID riid, LPOLESTR *rgszName
 			result_on_success = DISP_E_UNKNOWNNAME;
 	}
 
-	if (sDispNameMax == sDispNameCount)
+	if (g_DispNameMax == g_DispNameCount)
 	{
-		int new_max = sDispNameMax ? sDispNameMax * 2 : 16;
+		int new_max = g_DispNameMax ? g_DispNameMax * 2 : 16;
 		LPTSTR *new_names = (LPTSTR *)realloc(g_DispNameByIdMinus1, new_max * sizeof(LPTSTR *));
 		if (!new_names)
 			return E_OUTOFMEMORY;
@@ -1844,19 +1845,19 @@ STDMETHODIMP IObjectComCompatible::GetIDsOfNames(REFIID riid, LPOLESTR *rgszName
 		}
 		g_DispNameByIdMinus1 = new_names;
 		g_DispIdSortByName = new_ids;
-		sDispNameMax = new_max;
+		g_DispNameMax = new_max;
 	}
 
 	LPTSTR name_copy = SimpleHeap::Malloc(name);
 	if (!name_copy)
 		return E_OUTOFMEMORY;
 
-	g_DispNameByIdMinus1[sDispNameCount] = name_copy; // Put names in ID order; index = ID - 1.
-	if (left < sDispNameCount)
-		memmove(g_DispIdSortByName + left + 1, g_DispIdSortByName + left, (sDispNameCount - left) * sizeof(DISPID));
-	g_DispIdSortByName[left] = ++sDispNameCount; // Insert ID in order sorted by name, for binary search.  ID = index + 1, to avoid DISPID_VALUE.
+	g_DispNameByIdMinus1[g_DispNameCount] = name_copy; // Put names in ID order; index = ID - 1.
+	if (left < g_DispNameCount)
+		memmove(g_DispIdSortByName + left + 1, g_DispIdSortByName + left, (g_DispNameCount - left) * sizeof(DISPID));
+	g_DispIdSortByName[left] = ++g_DispNameCount; // Insert ID in order sorted by name, for binary search.  ID = index + 1, to avoid DISPID_VALUE.
 
-	*rgDispId = sDispNameCount;
+	*rgDispId = g_DispNameCount;
 	return result_on_success;
 }
 
@@ -1884,7 +1885,7 @@ STDMETHODIMP IObjectComCompatible::Invoke(DISPID dispIdMember, REFIID riid, LCID
 	int param_count = cArgs;
 	LPTSTR name;
 	
-	if (dispIdMember > 0 && dispIdMember <= sDispNameCount)
+	if (dispIdMember > 0 && dispIdMember <= g_DispNameCount)
 		name = g_DispNameByIdMinus1[dispIdMember - 1];
 	else if (dispIdMember == DISPID_VALUE)
 		name = nullptr;
