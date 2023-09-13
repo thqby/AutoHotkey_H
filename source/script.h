@@ -715,11 +715,10 @@ private:
 
 public:
 	#define SET_S_DEREF_BUF(ptr, size) Line::sDerefBuf = ptr, Line::sDerefBufSize = size
-	#define SET_S_DEREF_BUF_BKP(ptr, size) Line::sDerefBuf = Line::sDerefBufBackup = ptr, Line::sDerefBufSize = size
-
+	
 	#define NULLIFY_S_DEREF_BUF \
 	{\
-		SET_S_DEREF_BUF_BKP(NULL, 0);\
+		SET_S_DEREF_BUF(NULL, 0);\
 		if (sDerefBufSize > LARGE_DEREF_BUF_SIZE)\
 			--sLargeDerefBufs;\
 	}
@@ -738,7 +737,7 @@ public:
 				if (Line::sDerefBufSize > LARGE_DEREF_BUF_SIZE)\
 					--Line::sLargeDerefBufs;\
 			}\
-			SET_S_DEREF_BUF_BKP(our_deref_buf, our_deref_buf_size);\
+			SET_S_DEREF_BUF(our_deref_buf, our_deref_buf_size);\
 		}
 		//else the original buffer is NULL, so keep any new sDerefBuf that might have been created (should
 		// help avg-case performance).
@@ -1387,13 +1386,13 @@ public:
 
 
 
-enum FuncParamDefaults {PARAM_DEFAULT_NONE, PARAM_DEFAULT_STR, PARAM_DEFAULT_INT, PARAM_DEFAULT_FLOAT, PARAM_DEFAULT_UNSET};
+enum FuncParamDefaults {PARAM_DEFAULT_NONE, PARAM_DEFAULT_STR, PARAM_DEFAULT_INT, PARAM_DEFAULT_FLOAT, PARAM_DEFAULT_UNSET, PARAM_DEFAULT_EXPR};
 struct FuncParam
 {
 	Var *var;
 	WORD is_byref; // Boolean, but defined as WORD in case it helps data alignment and/or performance (BOOL vs. WORD didn't help benchmarks).
 	WORD default_type;
-	union {LPTSTR default_str; __int64 default_int64; double default_double;};
+	union {LPTSTR default_str; __int64 default_int64; double default_double; Line *default_expr;};
 };
 
 struct FuncResult : public ResultToken

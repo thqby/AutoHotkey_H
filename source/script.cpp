@@ -453,6 +453,9 @@ Script::~Script() // Destructor.
 	// DestroyWindow() will cause MainWindowProc() to immediately receive and process the
 	// WM_DESTROY msg, which should in turn result in any child windows being destroyed
 	// and other cleanup being done:
+	KILL_DEREF_TIMER
+	KILL_INPUT_TIMER
+	KILL_MAIN_TIMER
 	g_DestroyWindowCalled = true;
 	DestroyWindow(g_hWnd);
 	g_hWnd = NULL;
@@ -598,11 +601,6 @@ Script::~Script() // Destructor.
 		group = nextGroup;
 	}
 	
-	// Free DerefBackup before deleting functions since Object::Delete() uses Deref and access violation is caused. Not sure if memory leak is possible
-	if (Line::sDerefBufBackup && !IsBadStringPtr(Line::sDerefBufBackup, Line::sDerefBufSize))
-		free(Line::sDerefBufBackup);
-	Line::sDerefBufBackup = NULL;
-
 	mPriorHotkeyStartTime = 0;
 	free_compiled_regex();
 
@@ -631,7 +629,6 @@ Script::~Script() // Destructor.
 	g_script = NULL;
 	for (Line *line = mLastLine; line; line = line->mPrevLine)
 		line->Free();
-	Line::FreeDerefBufIfLarge();
 
 	// PeekMessage is required to make sure that Ole/CoUninitialize does not hang
 	PeekMessage(&MSG(), NULL, 0, 0, PM_REMOVE);
@@ -805,7 +802,7 @@ Script::~Script() // Destructor.
 	Line::sSourceFileCount = 0;
 #endif
 	Line::sMaxSourceFiles = 0;
-	Line::FreeDerefBufIfLarge();
+	free(Line::sDerefBuf);
 	Line::sDerefBuf = NULL;
 	Line::sDerefBufSize = 0;
 	Line::sLargeDerefBufs = 0;
@@ -3597,10 +3594,10 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 				{
 					next_option += 4;
 					tcslcpy(suffix, next_option, _countof(suffix)); // The word "Join" by itself will product an empty string, as documented.
-					// Passing true for the last parameter supports `s as the special escape character,
-					// which allows space to be used by itself and also at the beginning or end of a string
-					// containing other chars.
-					ConvertEscapeSequences(suffix, NULL);
+					// Only `s and `t are replaced, as everything else must be in a quoted string, which would
+					// perform its own conversion of escape sequences.  In particular, `` is left as is since
+					// it would otherwise be converted again later; i.e. ```` would become a literal `.
+					ConvertSpaceEscapeSequences(suffix);
 					suffix_length = _tcslen(suffix);
 				}
 				else if (!_tcsnicmp(next_option, _T("LTrim"), 5))
@@ -3688,6 +3685,7 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 		if (next_buf_length == -2) // v1.0.45.03: Special flag that means "this is a commented-out line to be
 			continue;              // entirely omitted from the continuation section." Compare directly to -2 since length is unsigned.
 
+		size_t cp_length, need_escapes = 0;
 		if (*next_buf == ')')
 		{
 			in_continuation_section = 0; // Facilitates back-to-back continuation sections and proper incrementing of phys_line_number.
@@ -3695,7 +3693,7 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 			// Anything that lies to the right of the close-parenthesis gets appended verbatim, with
 			// no trimming (for flexibility) and no options-driven translation:
 			cp = next_buf + 1;  // Use temp var cp to avoid a memcpy.
-			--next_buf_length;  // This is now the length of cp, not next_buf.
+			cp_length = next_buf_length - 1;
 		}
 		else
 		{
@@ -3720,8 +3718,8 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 			// parenthesis (i.e. the block above) is exempt from translations and custom trimming.
 			// This means that commas are always delimiters and percent signs are always deref symbols
 			// in the previous block.
-			if (do_rtrim)
-				next_buf_length = rtrim(next_buf, next_buf_length);
+			cp = next_buf; // Set default, to be overridden in case of ltrim.
+			cp_length = next_buf_length; // Set default, to be overridden in case of rtrim.
 			if (do_ltrim == NEUTRAL)
 			{
 				// Neither "LTrim" nor "LTrim0" was present in this section's options, so
@@ -3729,12 +3727,12 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 				if (!continuation_line_count)
 				{
 					// This is the first line.
-					indent_char = *next_buf;
+					indent_char = *cp;
 					if (IS_SPACE_OR_TAB(indent_char))
 					{
 						// For simplicity, require that only one type of indent char is used. Otherwise
 						// we'd have to provide some way to set the width (in spaces) of a tab char.
-						for (indent_level = 1; next_buf[indent_level] == indent_char; ++indent_level);
+						for (indent_level = 1; cp[indent_level] == indent_char; ++indent_level);
 						// Let the section below actually remove the indentation on this and subsequent lines.
 					}
 					else
@@ -3743,40 +3741,50 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 				if (indent_level)
 				{
 					int i;
-					for (i = 0; i < indent_level && next_buf[i] == indent_char; ++i);
+					for (i = 0; i < indent_level && cp[i] == indent_char; ++i);
 					if (i == indent_level)
 					{
 						// LTrim exactly (indent_level) occurrences of (indent_char).
-						tmemmove(next_buf, next_buf + i, next_buf_length - i + 1); // +1 for null terminator.
-						next_buf_length -= i;
+						cp += i;
+						cp_length -= i;
 					}
 					// Otherwise, the indentation on this line is inconsistent with the first line,
 					// so just leave it as is.
 				}
 			}
 			else if (do_ltrim == TOGGLED_ON)
+			{
 				// Trim all leading whitespace.
-				next_buf_length = ltrim(next_buf, next_buf_length);
+				cp = omit_leading_whitespace(cp);
+				cp_length -= (cp - next_buf);
+			}
+			if (do_rtrim)
+			{
+				// Exclude trailing whitespace from cp_length.
+				while (cp_length && IS_SPACE_OR_TAB(cp[cp_length - 1]))
+					cp_length--;
+			}
+			
 			// Insert escape characters as needed for escape characters or quote marks to be interpreted
 			// literally, as per continuation section options or detection of enclosing quote marks.
-			// For simplicity, allow for worst-case expansion.  In most cases next_buf won't need to be
-			// expanded, and if it is, that space may be reused for subsequent lines.  Using the mode of
-			// StrReplace that allocates memory would require larger code and might increase the number
-			// of buffer expansions needed.
-			if ((literal_escapes || literal_quotes) && !next_buf.EnsureCapacity(next_buf_length * 2))
-				return ScriptError(ERR_OUTOFMEM);
-			if (literal_escapes) // literal_escapes must be done FIRST because otherwise it would also replace any accents added by other options.
-				StrReplace(next_buf, _T("`"), _T("``"), SCS_SENSITIVE, UINT_MAX, -1, nullptr, &next_buf_length);
-			if (literal_quotes)
+			if (literal_escapes || literal_quotes)
 			{
-				StrReplace(next_buf, _T("'"), _T("`'"), SCS_SENSITIVE, UINT_MAX, -1, nullptr, &next_buf_length);
-				StrReplace(next_buf, _T("\""), _T("`\""), SCS_SENSITIVE, UINT_MAX, -1, nullptr, &next_buf_length);
+				// It is probably counter-productive to perform the full calculation, since we really only need
+				// a figure to pass to EnsureCapacity().  If buf needs to be expanded, it will be doubled in size
+				// anyway, and usually will be reused many times.  So just use a simple worst-case estimate:
+				need_escapes = cp_length;
+				//for (size_t i = 0; i < cp_length; ++i)
+				//{
+				//	if (cp[i] == g_EscapeChar)
+				//		literal_escapes ? ++need_escapes : ++i; // If not literal, it might escape a quote mark to its right.
+				//	else if (cp[i] == quote_char) // It's the type of quote that needs to be escaped, and hasn't been.
+				//		need_escapes += literal_quotes;
+				//}
 			}
-			cp = next_buf;
 		} // Handling of a normal line within a continuation section.
 
 		// Must check the combined length only after anything that might have expanded the string above.
-		if (!buf.EnsureCapacity(buf_length + next_buf_length + suffix_length))
+		if (!buf.EnsureCapacity(buf_length + suffix_length + cp_length + need_escapes))
 			return ScriptError(ERR_OUTOFMEM);
 
 		++continuation_line_count;
@@ -3784,18 +3792,44 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 		// The suffix for the previous line gets written immediately prior to writing this next line,
 		// which allows the suffix to be omitted for the final line.  But if this is the first line,
 		// No suffix is written because there is no previous line in the continuation section.
-		// In addition, if cp!=next_buf, this is the special line whose text occurs to the right of the
+		// In addition, if !in_continuation_section, cp is raw text occuring to the right of the
 		// continuation section's closing parenthesis. In this case too, the previous line doesn't
 		// get a suffix.
-		if (continuation_line_count > 1 && suffix_length && cp == next_buf)
+		if (continuation_line_count > 1 && suffix_length && in_continuation_section)
 		{
 			tmemcpy(buf + buf_length, suffix, suffix_length + 1); // Append and include the zero terminator.
 			buf_length += suffix_length; // Must be done only after the old value of buf_length was used above.
 		}
-		if (next_buf_length)
+		if (need_escapes)
 		{
-			tmemcpy(buf + buf_length, cp, next_buf_length + 1); // Append this line to prev. and include the zero terminator.
-			buf_length += next_buf_length; // Must be done only after the old value of buf_length was used above.
+			// Append this line to buf, while also escaping escape characters or quotes as needed.
+			LPTSTR cp2 = buf + buf_length;
+			for (size_t i = 0; i < cp_length; ++i)
+			{
+				if (cp[i] == g_EscapeChar)
+				{
+					*cp2++ = g_EscapeChar;
+					if (!literal_escapes)
+					{
+						++i; // Handle the second char in this iteration to ensure `" won't become ``".
+						if (i >= cp_length) // Only true when there's a trailing `.  Must be checked to prevent overflow.
+							break; // Legacy behaviour: leave it as is, and it may escape the char after the closing parenthesis.
+					}
+				}
+				else if (cp[i] == quote_char) // It's the type of quote that needs to be escaped, and hasn't been.
+				{
+					if (literal_quotes)
+						*cp2++ = g_EscapeChar;
+				}
+				*cp2++ = cp[i];
+			}
+			*cp2 = '\0';
+			buf_length += (cp2 - (buf + buf_length));
+		}
+		else if (cp_length)
+		{
+			tmemcpy(buf + buf_length, cp, cp_length + 1); // Append this line to prev. and include the zero terminator.
+			buf_length += cp_length; // Must be done only after the old value of buf_length was used above.
 		}
 	} // for() each sub-line (continued line) that composes this line.
 	return OK;
@@ -6645,7 +6679,12 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 						this_param.default_double = ATOF(buf);
 						break;
 					default: // Not numeric (and also not a quoted string because that was handled earlier).
-						sntprintf(buf, _countof(buf), _T("%s ??= %.*s"), this_param.var->mName, value_length, param_start);
+						// This was previously done using ??, which gave the wrong result for ByRef parameters,
+						// since ?? checks the target variable when one is provided.  So instead, the Line is executed
+						// directly by UserFunc::Call() if the parameter is omitted.  To prevent them from executing
+						// unconditionally, PreparseExpressions() sets mJumpToLine to the real first line of the body,
+						// after it uses the initial value of mJumpToLine (which is set by ParseAndAddLine below).
+						sntprintf(buf, _countof(buf), _T("%s := %.*s"), this_param.var->mName, value_length, param_start);
 						if (!at_least_one_default_expr)
 						{
 							at_least_one_default_expr = true;
@@ -6654,7 +6693,8 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 						}
 						if (!ParseAndAddLine(buf, ACT_EXPRESSION))
 							return FAIL;
-						this_param.default_type = PARAM_DEFAULT_UNSET;
+						this_param.default_type = PARAM_DEFAULT_EXPR;
+						this_param.default_expr = mLastLine;
 						mLastParamInitializer = mLastLine; // Allow other checks to identify this as not an actual script line.
 					}
 				}
@@ -8358,6 +8398,20 @@ ResultType Script::PreparseExpressions(FuncList &aFuncs)
 		g->CurrentFunc = &func;
 		if (!PreparseExpressions(func.mJumpToLine)) // Preparse this function's body.
 			return FAIL;
+		// Now that expressions have been preparsed, remove any parameter default expressions
+		// from the normal flow of execution by adjusting the function's mJumpToLine.  (This
+		// wasn't done earlier because the original value is needed above.)
+		if (mLastParamInitializer && func.mMinParams < func.mParamCount)
+		{
+			for (int i = func.mParamCount; --i >= func.mMinParams; )
+			{
+				if (func.mParam[i].default_type == PARAM_DEFAULT_EXPR)
+				{
+					func.mJumpToLine = func.mParam[i].default_expr->mNextLine;
+					break;
+				}
+			}
+		}
 		// Nested functions will be preparsed next, due to the fact that they immediately
 		// follow the outer function in aFuncs.
 	}
@@ -10710,7 +10764,7 @@ void Line::FreeDerefBufIfLarge()
 		// deref buffer (they make copies of anything they need prior to calling MsgSleep() or anything
 		// else that might pump messages and thus result in a call to us here).
 		free(sDerefBuf); // The above size-check has ensured this is non-NULL.
-		SET_S_DEREF_BUF_BKP(NULL, 0);
+		SET_S_DEREF_BUF(NULL, 0);
 		--sLargeDerefBufs;
 		if (!sLargeDerefBufs)
 			KILL_DEREF_TIMER
@@ -10741,7 +10795,7 @@ void Line::Free(bool aSkipFatArrowBlockBreakpoint, bool aOnlyBreakpoint)
 		mBreakpoint = nullptr;
 		while (prev && prev->mLineNumber == mLineNumber && prev->mFileIndex == mFileIndex)
 			prev = (line = prev)->mPrevLine;
-		if (aSkipFatArrowBlockBreakpoint && LineIsFatArrowBlock(line))
+		if (aSkipFatArrowBlockBreakpoint && mLineNumber == line->mLineNumber && mFileIndex == line->mFileIndex)
 			return;
 		SetBreakpointForLineGroup(line, nullptr);
 		delete bp;
