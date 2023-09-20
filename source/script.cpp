@@ -10793,7 +10793,9 @@ void Line::Free(bool aSkipFatArrowBlockBreakpoint, bool aOnlyBreakpoint)
 		mBreakpoint = nullptr;
 		while (prev && prev->mLineNumber == mLineNumber && prev->mFileIndex == mFileIndex)
 			prev = (line = prev)->mPrevLine;
-		if (aSkipFatArrowBlockBreakpoint && mLineNumber == line->mLineNumber && mFileIndex == line->mFileIndex)
+		if (aSkipFatArrowBlockBreakpoint &&
+			line->mActionType == ACT_BLOCK_BEGIN && line->mAttribute && line->mNextLine &&
+			mLineNumber == line->mNextLine->mLineNumber && mFileIndex == line->mNextLine->mFileIndex)
 			return;
 		SetBreakpointForLineGroup(line, nullptr);
 		delete bp;

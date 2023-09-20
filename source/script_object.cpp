@@ -3566,9 +3566,6 @@ void Object::CreateRootPrototypes()
 	Object::sClass = CreateClass(_T("Object"), anyClass, Object::sPrototype, NewObject<Object>);
 	Object::sObjectCall = Object::sClass->GetOwnPropMethod(_T("Call"));
 
-	// allow obj.get := val
-	if (auto get = Object::sPrototype->GetOwnPropMethod(_T("Get")))
-		get->AddRef(), Object::sPrototype->SetOwnProp(_T("Get"), get), get->Release();
 	// HotKeyIt: need addref since these are not referenced in script and we release prototype after CreateClass(aPrototype)
 	sAnyPrototype->AddRef();
 	sPrototype->AddRef();
