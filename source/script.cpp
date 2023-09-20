@@ -311,10 +311,9 @@ Script::Script()
 	, mEndChar(0), mThisHotkeyModifiersLR(0)
 	, mOnClipboardChangeIsRunning(false)
 	, mFirstLabel(NULL), mLastLabel(NULL)
-	, mLastHotFunc(nullptr), mUnusedHotFunc(nullptr)
 	, mFirstTimer(NULL), mLastTimer(NULL), mTimerEnabledCount(0), mTimerCount(0)
 	, mFirstMenu(NULL), mLastMenu(NULL), mMenuCount(0)
-	, mOpenBlock(NULL), mNextLineIsFunctionBody(false), mNoUpdateLabels(false)
+	, mNextLineIsFunctionBody(false)
 	, mClassObjectCount(0), mUnresolvedClasses(NULL), mClassProperty(NULL), mClassPropertyDef(NULL)
 	, mCurrFileIndex(0), mCombinedLineNumber(0)
 	, mFileSpec(_T("")), mFileDir(_T("")), mFileName(_T("")), mOurEXE(_T("")), mOurEXEDir(_T("")), mMainWindowTitle(_T(""))
@@ -1269,8 +1268,7 @@ void ReleaseStaticVarObjects(FuncList &aFuncs)
 {
 	for (int i = 0; i < aFuncs.mCount; ++i)
 	{
-		ASSERT(dynamic_cast<UserFunc*>(aFuncs.mItem[i]));
-		auto &f = *(UserFunc *)aFuncs.mItem[i];
+		UserFunc &f = *aFuncs.mItem[i];
 		// Since it doesn't seem feasible to release all var backups created by recursive function
 		// calls and all tokens in the 'stack' of each currently executing expression, currently
 		// only static and global variables are released.  It seems best for consistency to also
@@ -1361,19 +1359,17 @@ UINT Script::LoadFromFile(LPCTSTR aFileSpec)
 	// is preparsed first, then each function, working inward through all nested functions.
 	// All of a function's non-dynamic local variables are created before variable names
 	// are resolved in nested functions.
+	// Read references (VARREF_READ) are resolved only after all assignments have been
+	// preparsed throughout the script, in case one creates an assume-global variable.
 	if (!PreparseExpressions(mFirstLine)
-		|| !PreparseExpressions(mHotFuncs) // mHotFuncs first in case they have nested functions, which would be in mFuncs.
 		|| !PreparseExpressions(mFuncs)
 		|| !PreparseVarRefs())
 		return LOADING_FAILED; // Error was already displayed by the above call.
 
 	// Do some processing of local variables to support closures.
 	// This must be done after PreparseExpressions() has resolved all variable references.
-	if (!PreprocessLocalVars(mHotFuncs) // mHotFuncs first in case they have nested functions, which would be in mFuncs.
-		|| !PreprocessLocalVars(mFuncs))
+	if (!PreprocessLocalVars(mFuncs))
 		return LOADING_FAILED;
-
-	free(mHotFuncs.mItem); // Not needed beyond this point.
 
 	// Resolve any unresolved base classes.
 	if (mUnresolvedClasses)
@@ -1688,23 +1684,17 @@ ResultType Script::LoadIncludedFile(TextStream *fp, int aFileIndex)
 	// correct file number even when some #include's have been encountered in the middle of the script:
 	int source_file_index = aFileIndex;
 
-	bool blocks_previously_open = mOpenBlock || mClassObjectCount; // For error detection.
+	bool blocks_previously_open = mLineParent || mClassObjectCount; // For error detection.
 
 	LineBuffer buf, next_buf;
 	size_t &buf_length = buf.length, &next_buf_length = next_buf.length;
-	bool buf_has_brace;
 
 	// File is now open, read lines from it.
 
 	bool has_continuation_section;
-	TCHAR orig_char;
 
-	LPTSTR hotkey_flag, cp, cp1, hotstring_start, hotstring_options;
-	Hotkey *hk;
-	LineNumberType saved_line_number;
-	HookActionType hook_action;
-	bool hook_is_mandatory, hotstring_execute;
-	UCHAR no_suppress;
+	LPTSTR hotkey_flag, hotstring_start, hotstring_options;
+	bool hotstring_execute;
 	ResultType hotkey_validity;
 
 	// Init both for main file and any included files loaded by this function:
@@ -1756,15 +1746,13 @@ process_completed_line:
 
 		hotstring_start = NULL;
 		hotkey_flag = NULL;
-		bool hotkey_uses_otb = false; // used for hotstrings too.
 		if (buf[0] == ':' && buf[1])
 		{
 			hotstring_options = buf + 1; // Point it to the hotstring's option letters, if any.
 			if (buf[1] != ':')
 			{
-				// The following relies on the fact that options should never contain a literal colon.
-				// ALSO, the following doesn't use IS_HOTSTRING_OPTION() for backward compatibility,
-				// performance, and because it seems seldom if ever necessary at this late a stage.
+				// Escape sequences aren't meaningful here; the options always end at the first colon.
+				// For backward compatibility, the following doesn't use IS_HOTSTRING_OPTION().
 				if (   !(hotstring_start = _tcschr(hotstring_options, ':'))   )
 					hotstring_start = NULL; // Indicate that this isn't a hotstring after all.
 				else
@@ -1773,80 +1761,37 @@ process_completed_line:
 			else // Double-colon, so it's a hotstring if there's more after this (but this means no options are present).
 				if (buf[2])
 					hotstring_start = buf + 2;
-				//else it's just a naked "::", which is considered to be an ordinary label whose name is colon.
+				//else it's just a naked "::", which is nothing valid.
 		}
 
 		if (hotstring_start)
 		{
 			// Check for 'X' option early since escape sequence processing depends on it.
 			hotstring_execute = g_HSSameLineAction;
-			for (cp = hotstring_options; cp < hotstring_start; ++cp)
+			for (auto cp = hotstring_options; cp < hotstring_start; ++cp)
 				if (ctoupper(*cp) == 'X')
 				{
 					hotstring_execute = cp[1] != '0';
 					break;
 				}
-			// Find the hotstring's final double-colon by considering escape sequences from left to right.
+			// Find the hotstring's delimiting double-colon, while considering escape sequences.
 			// This is necessary for it to handle cases such as the following:
-			// ::abc```::::Replacement String
-			// The above hotstring translates literally into "abc`::".
-			LPTSTR escaped_double_colon = NULL;
-			for (cp = hotstring_start; ; ++cp)  // Increment to skip over the symbol just found by the inner for().
+			// ::abc```:::Replacement String
+			// The above hotstring translates literally into "abc`:".
+			// v2.0: Use the first non-escaped double-colon, not the last, since it seems more likely
+			// that the user intends to produce text with "::" in it rather than typing "::" to trigger
+			// the hotstring, and generally the trigger should be short.  By contrast, the v1 policy
+			// behaved inconsistently with an odd number of colons, such as:
+			//   ::foo::::bar  ; foo:: -> bar
+			//   ::foo:::bar   ; foo -> :bar
+			for (LPTSTR cp = hotstring_start; cp = _tcsstr(cp, HOTKEY_FLAG); ++cp) // Only increment by 1, since colons 2-3 in both `::: and `:::: are the hotkey flag.
 			{
-				for (; *cp && *cp != g_EscapeChar && *cp != ':'; ++cp);  // Find the next escape char or colon.
-				if (!*cp) // end of string.
+				if (!CharIsEscaped(cp, hotstring_start))
+				{
+					hotkey_flag = cp;
 					break;
-				cp1 = cp + 1;
-				if (*cp == ':')
-				{
-					// v2: Use the first non-escaped double-colon, not the last, since it seems more likely
-					// that the user intends to produce text with "::" in it rather than typing "::" to trigger
-					// the hotstring, and generally the trigger should be short.  By contrast, the v1 policy
-					// behaved inconsistently with an odd number of colons, such as:
-					//   ::foo::::bar  ; foo:: -> bar
-					//   ::foo:::bar   ; foo -> :bar
-					if (!hotkey_flag && *cp1 == ':') // Found a non-escaped double-colon, so this is the right one.
-					{
-						hotkey_flag = cp++;  // Increment to have loop skip over both colons.
-						if (hotstring_execute)
-							break; // Let ParseAndAddLine() properly handle any escape sequences.
-						// else continue with the loop so that escape sequences in the replacement
-						// text (if there is replacement text) are also translated.
-					}
-					// else just a single colon, or the second colon of an escaped pair (`::), so continue.
-					continue;
 				}
-				switch (*cp1)
-				{
-					// Only lowercase is recognized for these:
-					case 'a': *cp1 = '\a'; break;  // alert (bell) character
-					case 'b': *cp1 = '\b'; break;  // backspace
-					case 'f': *cp1 = '\f'; break;  // formfeed
-					case 'n': *cp1 = '\n'; break;  // newline
-					case 'r': *cp1 = '\r'; break;  // carriage return
-					case 't': *cp1 = '\t'; break;  // horizontal tab
-					case 'v': *cp1 = '\v'; break;  // vertical tab
-					case 's': *cp1 = ' '; break;   // space
-					// Otherwise, if it's not one of the above, the escape-char is considered to
-					// mark the next character as literal, regardless of what it is. Examples:
-					// `` -> `
-					// `: -> : (so `::: means a literal : followed by hotkey_flag)
-					// `; -> ;
-					// `c -> c (i.e. unknown escape sequences resolve to the char after the `)
-				}
-				// Below has a final +1 to include the terminator:
-				tmemmove(cp, cp1, _tcslen(cp1) + 1);
-				buf_length--;
-				// v2: The following is not done because 1) it is counter-intuitive for ` to affect two
-				// characters and 2) it hurts flexibility by preventing the escaping of a single colon
-				// immediately prior to the double-colon, such as ::lbl`:::.  Older comment:
-				// Since single colons normally do not need to be escaped, this increments one extra
-				// for double-colons to skip over the entire pair so that its second colon
-				// is not seen as part of the hotstring's final double-colon.  Example:
-				// ::ahc```::::Replacement String
-				//if (*cp == ':' && *cp1 == ':')
-				//	++cp;
-			} // for()
+			}
 			if (!hotkey_flag)
 				hotstring_start = NULL;  // Indicate that this isn't a hotstring after all.
 		}
@@ -1862,12 +1807,12 @@ process_completed_line:
 					// for colon as a remap target would require larger/more complicated code; 3) such hotkeys
 					// are hard for a human to read/interpret.
 				// v1.0.40: It appears to be a hotkey, but validate it as such before committing to processing
-				// it as a hotkey.  If it fails validation as a hotkey, treat it as a command that just happens
-				// to contain a double-colon somewhere.  This avoids the need to escape double colons in scripts.
+				// it as a hotkey.  If it fails validation as a hotkey, try to interpret it as a statement in
+				// case the double-colon is within a quoted string.
 				// Note: Hotstrings can't suffer from this type of ambiguity because a leading colon or pair of
 				// colons makes them easier to detect.
-				cp = omit_trailing_whitespace(buf, hotkey_flag); // For maintainability.
-				orig_char = *cp;
+				auto cp = omit_trailing_whitespace(buf, hotkey_flag); // For maintainability.
+				TCHAR orig_char = *cp;
 				*cp = '\0'; // Temporarily terminate.
 				hotkey_validity = Hotkey::TextInterpret(omit_leading_whitespace(buf), NULL); // Passing NULL calls it in validate-only mode.
 				switch (hotkey_validity)
@@ -1888,11 +1833,7 @@ process_completed_line:
 
 		if (hotkey_flag && hotkey_flag > buf) // It's a hotkey/hotstring label.
 		{
-			
-			// Allow a current function if it is mLastHotFunc, this allows stacking,
-			// x::			// mLastHotFunc created here
-			// y::action	// parsing "y::" now.
-			if ( (g->CurrentFunc && g->CurrentFunc != mLastHotFunc) || mClassObjectCount)
+			if (g->CurrentFunc || mClassObjectCount)
 			{
 				// The reason for not allowing hotkeys and hotstrings inside a function's body is that it
 				// would create a nested function that could be called without ever calling the outer function.
@@ -1908,248 +1849,19 @@ process_completed_line:
 			hotkey_flag += HOTKEY_FLAG_LENGTH;  // Now hotkey_flag is the hotkey's action, if any.
 			
 			LPTSTR next_nonspace = omit_leading_whitespace(hotkey_flag);
-			hotkey_uses_otb = *next_nonspace == '{' && !next_nonspace[1]; // Has already been rtrimmed by GetLine().
+			bool hotkey_uses_otb = *next_nonspace == '{' && !next_nonspace[1]; // Has already been rtrimmed by GetLine().
 			if (!hotstring_start || hotstring_execute)
 			{
 				// Mustn't use ltrim(hotkey_flag) because that would cause buf.length to become incorrect:
 				hotkey_flag = next_nonspace;
 			}
 			// else don't trim auto-replace hotstrings since literal spaces in both substrings are significant.
-			if (!hotstring_start)
-			{
-				// To use '{' as remap_dest, escape it.
-				if (hotkey_flag[0] == g_EscapeChar && hotkey_flag[1] == '{')
-					hotkey_flag++;
-
-				cp = hotkey_flag; // Set default, conditionally overridden below (v1.0.44.07).
-				vk_type remap_dest_vk;
-				// v1.0.40: Check if this is a remap rather than hotkey:
-				if (!hotkey_uses_otb   
-					&& *hotkey_flag // This hotkey's action is on the same line as its trigger definition.
-					&& (remap_dest_vk = hotkey_flag[1] ? TextToVK(cp = const_cast<LPTSTR>(Hotkey::TextToModifiers(hotkey_flag, NULL))) : 0xFF)   ) // And the action appears to be a remap destination rather than a command.
-					// For above:
-					// Fix for v1.0.44.07: Set remap_dest_vk to 0xFF if hotkey_flag's length is only 1 because:
-					// 1) It allows a destination key that doesn't exist in the keyboard layout (such as 6::ð in
-					//    English).
-					// 2) It improves performance a little by not calling TextToVK except when the destination key
-					//    might be a mouse button or some longer key name whose actual/correct VK value is relied
-					//    upon by other places below.
-					// Fix for v1.0.40.01: Since remap_dest_vk is also used as the flag to indicate whether
-					// this line qualifies as a remap, must do it last in the statement above.  Otherwise,
-					// the statement might short-circuit and leave remap_dest_vk as non-zero even though
-					// the line shouldn't be a remap.  For example, I think a hotkey such as "x & y::return"
-					// would trigger such a bug.
-				{
-					
-					vk_type remap_source_vk;
-					TCHAR remap_source[32], remap_dest[32], remap_dest_modifiers[8]; // Must fit the longest key name (currently Browser_Favorites [17]), but buffer overflow is checked just in case.
-					bool remap_source_is_combo, remap_source_is_mouse, remap_dest_is_mouse, remap_keybd_to_mouse;
-
-					// These will be ignored in other stages if it turns out not to be a remap later below:
-					LPCTSTR cp1;
-					remap_source_vk = TextToVK(cp1 = Hotkey::TextToModifiers(buf, NULL)); // An earlier stage verified that it's a valid hotkey, though VK could be zero.
-					remap_source_is_combo = _tcsstr(cp1, COMPOSITE_DELIMITER);
-					remap_source_is_mouse = IsMouseVK(remap_source_vk);
-					remap_dest_is_mouse = IsMouseVK(remap_dest_vk);
-					remap_keybd_to_mouse = !remap_source_is_mouse && remap_dest_is_mouse;
-					sntprintf(remap_source, _countof(remap_source), _T("%s%s%s")
-						, remap_source_is_combo ? _T("") : _T("*") // v1.1.27.01: Omit * when the remap source is a custom combo.
-						, _tcslen(cp1) == 1 && IsCharUpper(*cp1) ? _T("+") : _T("")  // Allow A::b to be different than a::b.
-						, static_cast<LPTSTR>(buf)); // Include any modifiers too, e.g. ^b::c.
-					if (*cp == '"' || *cp == g_EscapeChar) // Need to escape these.
-					{
-						*remap_dest = g_EscapeChar;
-						remap_dest[1] = *cp;
-						remap_dest[2] = '\0';
-					}
-					else
-						tcslcpy(remap_dest, cp, _countof(remap_dest));  // But exclude modifiers here; they're wanted separately.
-					tcslcpy(remap_dest_modifiers, hotkey_flag, _countof(remap_dest_modifiers));
-					if (cp - hotkey_flag < _countof(remap_dest_modifiers)) // Avoid reading beyond the end.
-						remap_dest_modifiers[cp - hotkey_flag] = '\0';   // Terminate at the proper end of the modifier string.
-					
-					if (!*remap_dest_modifiers	
-						&& (remap_dest_vk == VK_PAUSE)	
-						&& (!_tcsicmp(remap_dest, _T("Pause")))) // Specifically "Pause", not "vk13".
-					{
-						// In the unlikely event that the dest key has the same name as a command, disqualify it
-						// from being a remap (as documented). 
-						// v1.0.40.05: If the destination key has any modifiers,
-						// it is unambiguously a key name rather than a command.
-					}
-					else
-					{
-						// It is a remapping. Create one "down" and one "up" hotkey,
-						// eg, "x::y" yields,
-						// *x::
-						// {
-						// SetKeyDelay(-1), Send("{Blind}{y DownR}")
-						// }
-						// *x up::
-						// {
-						// SetKeyDelay(-1), Send("{Blind}{y Up}")
-						// }
-						// Using one line to facilitate code.
-
-						// For remapping, decided to use a "macro expansion" approach because I think it's considerably
-						// smaller in code size and complexity than other approaches would be.  I originally wanted to
-						// do it with the hook by changing the incoming event prior to passing it back out again (for
-						// example, a::b would transform an incoming 'a' keystroke into 'b' directly without having
-						// to suppress the original keystroke and simulate a new one).  Unfortunately, the low-level
-						// hooks apparently do not allow this.  Here is the test that confirmed it:
-						// if (event.vkCode == 'A')
-						// {
-						//	event.vkCode = 'B';
-						//	event.scanCode = 0x30; // Or use vk_to_sc(event.vkCode).
-						//	return CallNextHookEx(g_KeybdHook, aCode, wParam, lParam);
-						// }
-
-						if (mLastHotFunc)		
-							// Checking this to disallow stacking, eg
-							// x::
-							// y::z
-							// which would cause x:: to just do the "down"
-							// part of y::z.
-							return ScriptError(ERR_HOTKEY_MISSING_BRACE);
-
-						auto make_remap_hotkey = [&](LPTSTR aKey)
-						{
-							if (!CreateHotFunc())
-									return FAIL;
-							hk = Hotkey::FindHotkeyByTrueNature(aKey, no_suppress, hook_is_mandatory);
-							if (hk)
-							{
-								if (!hk->AddVariant(mLastHotFunc, no_suppress))
-									return FAIL;
-							}
-							else if (!Hotkey::AddHotkey(mLastHotFunc, HK_NORMAL, aKey, no_suppress))
-								return FAIL;
-							return OK;
-						};
-						// Start with the "down" hotkey:
-						if (!make_remap_hotkey(remap_source)) 
-							return FAIL;
-						
-						TCHAR remap_buf[LINE_SIZE];
-						cp = remap_buf;
-						cp += _stprintf(cp
-							, _T("%s(-1),") // Does NOT need to be "-1, -1" for SetKeyDelay (see below).
-							, remap_dest_is_mouse ? _T("SetMouseDelay") : _T("SetKeyDelay") // Using the full function names vs. Set%sDelay might help size due to string pooling.
-						);
-						// It seems unnecessary to set press-duration to -1 even though the auto-exec section might
-						// have set it to something higher than -1 because:
-						// 1) Press-duration doesn't apply to normal remappings since they use down-only and up-only events.
-						// 2) Although it does apply to remappings such as a::B and a::^b (due to press-duration being
-						//    applied after a change to modifier state), those remappings are fairly rare and supporting
-						//    a non-negative-one press-duration (almost always 0) probably adds a degree of flexibility
-						//    that may be desirable to keep.
-						// 3) SendInput may become the predominant SendMode, so press-duration won't often be in effect anyway.
-						// 4) It has been documented that remappings use the auto-execute section's press-duration.
-						// The primary reason for adding Key/MouseDelay -1 is to minimize the chance that a one of
-						// these hotkey threads will get buried under some other thread such as a timer, which
-						// would disrupt the remapping if #MaxThreadsPerHotkey is at its default of 1.
-						if (remap_keybd_to_mouse)
-						{
-							// Since source is keybd and dest is mouse, prevent keyboard auto-repeat from auto-repeating
-							// the mouse button (since that would be undesirable 90% of the time).  This is done
-							// by inserting a single extra IF-statement above the Send that produces the down-event:
-							cp += _stprintf(cp, _T("!GetKeyState(\"%s\")&&"), remap_dest); // Should be no risk of buffer overflow due to prior validation.
-						}
-						// Otherwise, remap_keybd_to_mouse==false.
-
-						TCHAR blind_mods[17], *next_blind_mod = blind_mods;
-						const auto mod_string = MODLR_STRING;
-						auto &hk = *Hotkey::shk[Hotkey::sHotkeyCount - 1];
-						for (int i = 0; i < 8; ++i)
-							if (hk.mModifiersConsolidatedLR & (1 << i))
-								if (!_tcschr(remap_dest_modifiers, mod_string[i*2+1])) // This works around an issue with {Blind+}+x releasing RShift to press LShift.
-								{
-									*next_blind_mod++ = mod_string[i*2]; // < or >
-									*next_blind_mod++ = mod_string[i*2+1]; // One of ^!+#
-								}
-						*next_blind_mod = '\0';
-						LPTSTR extra_event = _T(""); // Set default.
-						switch (remap_dest_vk)
-						{
-						case VK_LMENU:
-						case VK_RMENU:
-						case VK_MENU:
-							switch (remap_source_vk)
-							{
-							case VK_LCONTROL:
-							case VK_CONTROL:
-								extra_event = _T("{LCtrl up}"); // Somewhat surprisingly, this is enough to make "Ctrl::Alt" properly remap both right and left control.
-								break;
-							case VK_RCONTROL:
-								extra_event = _T("{RCtrl up}");
-								break;
-								// Below is commented out because its only purpose was to allow a shift key remapped to alt
-								// to be able to alt-tab.  But that wouldn't work correctly due to the need for the following
-								// hotkey, which does more harm than good by impacting the normal Alt key's ability to alt-tab
-								// (if the normal Alt key isn't remapped): *Tab::Send {Blind}{Tab}
-								//case VK_LSHIFT:
-								//case VK_SHIFT:
-								//	extra_event = "{LShift up}";
-								//	break;
-								//case VK_RSHIFT:
-								//	extra_event = "{RShift up}";
-								//	break;
-							}
-							break;
-						}
-						cp += _stprintf(cp
-							, _T("Send(\"{Blind%s}%s%s{%s DownR}\")") // DownR vs. Down. See Send's DownR handler for details.
-							, blind_mods, extra_event, remap_dest_modifiers, remap_dest);
-
-						auto define_remap_func = [&]()
-						{
-							if (!AddLine(ACT_BLOCK_BEGIN)
-								|| !ParseAndAddLine(remap_buf)
-								|| !AddLine(ACT_BLOCK_END))
-								return FAIL;
-							return OK;
-						};
-						if (!define_remap_func()) // the "down" function.
-							return FAIL;
-						//
-						// "Down" is finished, proceed with "Up":
-						//
-						_stprintf(remap_buf
-							, _T("%s up") // Key-up hotkey, e.g. *LButton up::
-							, remap_source);
-						if (!make_remap_hotkey(remap_buf)) 
-							return FAIL;
-						_stprintf(remap_buf
-							, _T("%s(-1),")
-							_T("Send(\"{Blind}{%s Up}\")\n") // Unlike the down-event above, remap_dest_modifiers is not included for the up-event; e.g. ^{b up} is inappropriate.
-							, remap_dest_is_mouse ? _T("SetMouseDelay") : _T("SetKeyDelay") // Using the full function names vs. Set%sDelay might help size due to string pooling.
-							, remap_dest
-						);
-						if (!define_remap_func()) // define the "up" function.
-							return FAIL;
-						goto continue_main_loop;
-					}
-					// Since above didn't goto this is not a remap after all:
-				}
-			}
+			HookActionType hook_action; // Becomes valid only when !hotstring_start.
 			
-			auto set_last_hotfunc = [&]()
-			{
-				if (!mLastHotFunc)
-					return CreateHotFunc();
-				else
-					return mLastHotFunc;
-			};
 			if (hotstring_start)
 			{
 				if (!*hotstring_start)
-				{
-					// The following error message won't indicate the correct line number because
-					// the hotstring (as a label) does not actually exist as a line.  But it seems
-					// best to report it this way in case the hotstring is inside a #Include file,
-					// so that the correct file name and approximate line number are shown:
 					return ScriptError(_T("This hotstring is missing its abbreviation."), buf); // Display buf vs. hotkey_flag in case the line is simply "::::".
-				}
 				// In the case of hotstrings, hotstring_start is the beginning of the hotstring itself,
 				// i.e. the character after the second colon.  hotstring_options is the first character
 				// in the options list (which is terminated by a colon).  hotkey_flag is blank or the
@@ -2158,15 +1870,6 @@ process_completed_line:
 				// hotstrings are less commonly used and also because it requires more code to find
 				// hotstring duplicates (and performs a lot worse if a script has thousands of
 				// hotstrings) because of all the hotstring options.
-
-				if (hotstring_execute && (!*hotkey_flag || hotkey_uses_otb))
-					// Do not allow execute option with blank line or OTB.
-					// Without this check, this
-					// :X:x::
-					// {
-					// }
-					// would execute the block. But X is supposed to mean "execute this line".
-					return ScriptError(ERR_EXPECTED_ACTION);
 
 				if (hotkey_uses_otb)
 				{
@@ -2184,20 +1887,20 @@ process_completed_line:
 						hotkey_uses_otb = false;
 				}
 
+				LPCTSTR replacement;
+
 				// The hotstring never uses otb if it uses X or T options (either explicitly or via #hotstring).
-				if ( (!*hotkey_flag || hotkey_uses_otb) || hotstring_execute)
+				if (!*hotkey_flag || hotkey_uses_otb || hotstring_execute)
 				{
 					// It is not auto-replace
-					if (!set_last_hotfunc())
-						return FAIL;
-				} 
-				else if (mLastHotFunc)
+					replacement = nullptr;
+				}
+				else if (mPendingHotkey)
 				{
-					// It is autoreplace but an earlier hotkey or hotstring
-					// is "stacked" above, treat it as and error as it doesn't
-					// make sense. Otherwise one could write something like:
+					// It is autoreplace but an earlier hotkey or hotstring is "stacked" above.  Treat it
+					// as an error as it doesn't make sense.  Otherwise one could write something like:
 					/*
-					::abc:: 
+					::abc::
 					::def::text
 					x::action
 					 which would work as,
@@ -2205,22 +1908,58 @@ process_completed_line:
 					::abc::
 					x::action
 					*/
-					// Note that if it is ":X:def::action" instead, we do not end up here and
-					// "::abc::" will also trigger "action".
-					mCombinedLineNumber--;	// It must be the previous line.
-					return ScriptError(ERR_HOTKEY_MISSING_BRACE);
+					// Note that if it is ":X:def::action" instead, we do not end up here and "::abc::"
+					// will also trigger "action".  The line number determined below may be incorrect,
+					// but is better than reporting the line of this autoreplace hotstring.
+					mCombinedLineNumber--;
+					return ScriptError(ERR_HOTKEY_MISSING_BRACE, mPendingHotkey);
 				}
+				else
+					replacement = hotkey_flag;
 				
-				if (!Hotstring::AddHotstring(buf, mLastHotFunc, hotstring_options
-					, hotstring_start, hotstring_execute || hotkey_uses_otb ? _T("") : hotkey_flag, has_continuation_section))
+				ConvertEscapeSequences(hotstring_start);
+				if (replacement)
+					ConvertEscapeSequences(hotkey_flag);
+
+				if (!Hotstring::AddHotstring(buf, nullptr, hotstring_options, hotstring_start, replacement, has_continuation_section))
 					return FAIL;
-				if (!mLastHotFunc)
+				if (replacement)
 					goto continue_main_loop;
+				mPendingHotkey = Hotstring::shs[Hotstring::sHotstringCount-1]->mName; // For error-reporting.
 			}
 			else // It's a hotkey vs. hotstring.
 			{
+				// To use '{' as remap_dest, escape it.
+				if (hotkey_flag[0] == g_EscapeChar && hotkey_flag[1] == '{')
+					hotkey_flag++;
+
+				auto remap_name = hotkey_flag; // Set default, conditionally overridden below (v1.0.44.07).
+				vk_type remap_dest_vk;
+				// v1.0.40: Check if this is a remap rather than hotkey:
+				if (!hotkey_uses_otb   
+					&& *hotkey_flag // This hotkey's action is on the same line as its trigger definition.
+					&& (remap_dest_vk = remap_name[1] ? TextToVK(remap_name = const_cast<LPTSTR>(Hotkey::TextToModifiers(hotkey_flag, NULL))) : 0xFF)   ) // And the action appears to be a remap destination rather than a command.
+					// For above:
+					// Fix for v1.0.44.07: Set remap_dest_vk to 0xFF if hotkey_flag's length is only 1 because:
+					// 1) It allows a destination key that doesn't exist in the keyboard layout (such as 6::ð in
+					//    English).
+					// 2) It improves performance a little by not calling TextToVK except when the destination key
+					//    might be a mouse button or some longer key name whose actual/correct VK value is relied
+					//    upon by other places below.
+				{
+					auto result = ParseRemap(buf, remap_dest_vk, remap_name, hotkey_flag);
+					if (!result)
+						return result;
+					if (result != CONDITION_FALSE)
+						goto continue_main_loop;
+					// Since above didn't goto this is not a remap after all:
+				}
+
+				UCHAR no_suppress;
+				bool hook_is_mandatory;
 				hook_action = Hotkey::ConvertAltTab(hotkey_flag, false);
-				if (hk = Hotkey::FindHotkeyByTrueNature(buf, no_suppress, hook_is_mandatory)) // Parent hotkey found.  Add a child/variant hotkey for it.
+				auto hk = Hotkey::FindHotkeyByTrueNature(buf, no_suppress, hook_is_mandatory);
+				if (hk) // Parent hotkey found.  Add a child/variant hotkey for it.
 				{
 					if (hook_action) // no_suppress has always been ignored for these types (alt-tab hotkeys).
 					{
@@ -2239,9 +1978,7 @@ process_completed_line:
 							mCurrLine = NULL;  // Prevents showing unhelpful vicinity lines.
 							return ScriptError(_T("Duplicate hotkey."), buf);
 						}
-						if (!set_last_hotfunc())
-							return FAIL;
-						if (!hk->AddVariant(mLastHotFunc, no_suppress))
+						if (!hk->AddVariant(nullptr, no_suppress))
 							return ScriptError(ERR_OUTOFMEM, buf);
 						if (hook_is_mandatory || g_ForceKeybdHook)
 						{
@@ -2254,25 +1991,20 @@ process_completed_line:
 				}
 				else // No parent hotkey yet, so create it.
 				{
-					if (hook_action != HK_NORMAL && mLastHotFunc)
+					if (hook_action != HK_NORMAL && mPendingHotkey)
 						// A hotkey is stacked above, eg,
 						// x::
 						// y & z::altTab
 						// Not supported.
-						return ScriptError(ERR_HOTKEY_MISSING_BRACE);
+						return ScriptError(ERR_HOTKEY_MISSING_BRACE, mPendingHotkey);
 					
-					if (hook_action == HK_NORMAL 
-						&& !set_last_hotfunc())
-						return FAIL;
-					
-					hk = Hotkey::AddHotkey(mLastHotFunc, hook_action, buf, no_suppress);
+					hk = Hotkey::AddHotkey(nullptr, hook_action, buf, no_suppress);
 					if (!hk)
 					{
 						if (hotkey_validity != CONDITION_TRUE)
 							return FAIL; // It already displayed the error.
 						// This hotkey uses a single-character key name, which could be valid on some other
 						// keyboard layout.  Allow the script to start, but warn the user about the problem.
-						// Note that this hotkey's label is still valid even though the hotkey wasn't created.
 #ifndef AUTOHOTKEYSC
 						if (!mValidateThenExit) // Current keyboard layout is not relevant in /validate mode.
 #endif
@@ -2283,6 +2015,8 @@ process_completed_line:
 						}
 					}
 				}
+				if (hook_action == HK_NORMAL && hk) // For simplicity, there's no detection of invalid stacking of "inactive" single-letter hotkeys (see above).
+					mPendingHotkey = hk->mName;
 			}
 			if (*hotkey_flag) // This hotkey's/hotstring's action is on the same line as its label.
 			{
@@ -2301,17 +2035,17 @@ process_completed_line:
 					// {
 					// msgbox
 					// }
-					ASSERT(mLastHotFunc && mLastHotFunc == g->CurrentFunc);
 					// Remove the hotkey from buf.
 					buf_length -= hotkey_flag - buf;
 					tmemmove(buf, hotkey_flag, buf_length);
 					buf[buf_length] = '\0';
 					// Before adding the line, apply expression line-continuation logic, which hasn't
 					// been applied yet because hotkey labels can contain unbalanced ()[]{}:
-					if (   !GetLineContExpr(fp, buf, next_buf, phys_line_number, has_continuation_section)
-						|| !AddLine(ACT_BLOCK_BEGIN)			// Implicit start of function
-						|| !ParseAndAddLine(buf)				// Function body - one line
-						|| !AddLine(ACT_BLOCK_END))				// Implicit end of function
+					if (!GetLineContExpr(fp, buf, next_buf, phys_line_number, has_continuation_section))
+						return FAIL;
+					if (IsFunctionDefinition(buf, next_buf)) // x::y(ThisHotkey){
+						goto process_completed_line;
+					if (!ParseAndAddLineInBlock(buf)) // Function body - one line
 						return FAIL;
 				}
 			}
@@ -2330,20 +2064,20 @@ process_completed_line:
 			// v2.0: Require label names to use the same set of characters as other identifiers.
 			// Aside from consistency and ensuring readability, this might enable future changes
 			// to the parser or new syntax.
-			cp = find_identifier_end<LPTSTR>(buf);
+			auto cp = find_identifier_end<LPTSTR>(buf);
 			if ((cp - buf + 1) == buf_length && cp > buf)
 			{
 				buf[--buf_length] = '\0';  // Remove the trailing colon.
-				if (!_tcsicmp(buf, _T("Default")) && mOpenBlock && mOpenBlock->mPrevLine // "Default:" case.
-					&& mOpenBlock->mPrevLine->mActionType == ACT_SWITCH) // It's a normal label in any other case.
+				if (!_tcsicmp(buf, _T("Default")) && mLineParent && mLineParent->mPrevLine // "Default:" case.
+					&& mLineParent->mPrevLine->mActionType == ACT_SWITCH) // It's a normal label in any other case.
 				{
 					if (!AddLine(ACT_CASE))
 						return FAIL;
 				}
 				else
 				{
-					if (mLastHotFunc) // It is a label in a "stack" of hotkeys.
-						return ScriptError(ERR_HOTKEY_MISSING_BRACE);
+					if (mPendingHotkey) // It is a label in a "stack" of hotkeys.
+						return ScriptError(ERR_HOTKEY_MISSING_BRACE, mPendingHotkey);
 					if (!AddLabel(buf, false))
 						return FAIL;
 				}
@@ -2359,7 +2093,7 @@ process_completed_line:
 				if (!GetLineContExpr(fp, buf, next_buf, phys_line_number, has_continuation_section))
 					return FAIL;
 			}
-			saved_line_number = mCombinedLineNumber; // Backup in case IsDirective() processes an include file, which would change mCombinedLineNumber's value.
+			auto saved_line_number = mCombinedLineNumber; // Backup in case IsDirective() processes an include file, which would change mCombinedLineNumber's value.
 			switch(IsDirective(buf)) // Note that it may alter the contents of buf
 			{
 			case CONDITION_TRUE:
@@ -2401,7 +2135,7 @@ process_completed_line:
 					mClassObject[mClassObjectCount]->EndClassDefinition(); // Remove instance variables from the class object.
 					mClassObject[mClassObjectCount]->Release();
 					// Revert to the name of the class this class is nested inside, or "" if none.
-					if (cp1 = _tcsrchr(mClassName, '.'))
+					if (auto cp1 = _tcsrchr(mClassName, '.'))
 						*cp1 = '\0';
 					else
 						*mClassName = '\0';
@@ -2409,10 +2143,9 @@ process_completed_line:
 			}
 			else // Normal block begin/end.
 			{
-				auto end_func = *buf != '{' ? g->CurrentFunc : nullptr;
 				if (!AddLine(*buf == '{' ? ACT_BLOCK_BEGIN : ACT_BLOCK_END))
 					return FAIL;
-				if (mExprContainingThisFunc && end_func == mExprContainingThisFunc->func)
+				if (mExprContainingThisFunc && *buf != '{' && mLastLine->mAttribute == mExprContainingThisFunc->func)
 				{
 					if (IS_IDENTIFIER_CHAR(buf[1])) // Prevent (a(){...}b) from producing (ab).
 						return ScriptError(ERR_EXPR_SYNTAX, buf);
@@ -2421,24 +2154,53 @@ process_completed_line:
 					// was encountered by ParseAndAddLine().  expr->code includes up to (and including)
 					// the function name.  Append this current line to form the final expression (unless
 					// there's another function definition, in which case, rinse and repeat).
-					// If the function had no explicit name, AddFunc has given it one we can insert here.
-					size_t extra = !IS_IDENTIFIER_CHAR(expr->code[expr->length - 1]) ? _tcslen(expr->func->mName) : 0;
+					// A special marker is inserted so that ParseOperands() can reference the function.
+					size_t extra = FDE_SUBSTITUTE_STRING_LENGTH;
 					if (!buf.EnsureCapacity(--buf_length + expr->length + extra))
 						return MemoryError();
 					tmemmove(buf + expr->length + extra, buf + 1, buf_length + 1);
 					tmemmove(buf, expr->code, expr->length);
-					tmemmove(buf + expr->length, expr->func->mName, extra); // Insert automatic name, if any.
+					tmemmove(buf + expr->length, FDE_SUBSTITUTE_STRING, extra);
 					buf_length += expr->length + extra;
 					mCombinedLineNumber = expr->line_no;
-					// Restoring mPendingParentLine ensures that both the new line's mParentLine and the
-					// parent line's mRelatedLine will be set correctly.  By contrast, mPendingRelatedLine
-					// shouldn't be changed since mRelatedLine for any prior line was already handled, and
-					// mPendingRelatedLine should now point to end_func's block-begin.
-					mPendingParentLine = expr->pending_parent;
-					mExprContainingThisFunc = expr->outer;
-					delete expr;
 					mCurrLine = NULL; // See comments below.
-					goto process_completed_line;
+					mExprContainingThisFunc = expr->outer;
+					if (!GetLineContExpr(fp, buf, next_buf, phys_line_number, has_continuation_section))
+						return FAIL;
+					if (!expr->action && IsFunctionDefinition(buf, next_buf))
+					{
+						if (!DefineFunc(buf))
+							return FAIL;
+					}
+					else
+					{
+						if (  !ParseAndAddLine(buf, expr->action)
+							|| expr->add_block_end_after && !AddLine(ACT_BLOCK_END)  )
+							return FAIL;
+					}
+					if (mExprContainingThisFunc != expr->outer) // (f1(){},f2(){}) or f2(a:=f1(){}){}
+					{
+						mExprContainingThisFunc->pending_hotkey = expr->pending_hotkey;
+						mExprContainingThisFunc->rejoin_first_line = expr->rejoin_first_line;
+						mExprContainingThisFunc->rejoin_last_line = expr->rejoin_last_line;
+					}
+					else if (expr->pending_hotkey) // #HotIf fn(){}
+					{
+						mPendingHotkey = expr->pending_hotkey;
+						ASSERT(expr->func->mOuterFunc->mJumpToLine->mActionType == ACT_HOTKEY_IF);
+						expr->func->mOuterFunc->mJumpToLine->mAttribute = g->HotCriterion;
+					}
+					else if (expr->rejoin_first_line) // Used by DefineClassVarInit().
+					{
+						mLastLine->mNextLine = expr->rejoin_first_line;
+						expr->rejoin_first_line->mPrevLine = mLastLine;
+						g->CurrentFunc = nullptr;
+						mLastLine = expr->rejoin_last_line;
+						if (mLastLine->mActionType == ACT_BLOCK_END)
+							mPendingRelatedLine = mLastLine->mParentLine;
+					}
+					delete expr;
+					goto continue_main_loop;
 				}
 			}
 			// Allow the remainder of the line to be treated as a separate line:
@@ -2508,6 +2270,7 @@ process_completed_line:
 					return FAIL;
 				goto continue_main_loop;
 			}
+			LPCTSTR cp;
 			for (cp = id; IS_IDENTIFIER_CHAR(*cp) || *cp == '.'; ++cp);
 			if (cp > id) // i.e. buf begins with an identifier.
 			{
@@ -2520,6 +2283,7 @@ process_completed_line:
 				}
 				if (!*cp || *cp == '[' || *cp == '{' || (*cp == '=' && cp[1] == '>')) // Property or invalid.
 				{
+					bool buf_has_brace;
 					if (!DefineClassProperty(id, is_static, buf_has_brace))
 						return FAIL;
 					if (!buf_has_brace)
@@ -2561,11 +2325,14 @@ continue_main_loop: // This method is used in lieu of "continue" for performance
 	// that another file might follow this one and fill in the missing part, it's much more
 	// likely to be an error.  blocks_previously_open is checked rather than source_file_index
 	// so that errors in auto-includes are detected.
+	
+	if (mLineParent && mLineParent->mActionType != ACT_BLOCK_BEGIN) // If, Else, Loop, etc. without a block or action.
+		return mLineParent->LineUnexpectedError();
 
-	if (!blocks_previously_open && (mOpenBlock || mClassObjectCount))
+	if (!blocks_previously_open && (mLineParent || mClassObjectCount))
 	{
-		if (mOpenBlock)
-			return mOpenBlock->LineError(ERR_MISSING_CLOSE_BRACE);
+		if (mLineParent)
+			return mLineParent->LineError(ERR_MISSING_CLOSE_BRACE);
 		// A class definition has not been closed with "}".  Previously this was detected by adding
 		// the open and close braces as lines, but this way is simpler and has less overhead.
 		// The downside is that the line number won't be shown; however, the class name will.
@@ -2573,15 +2340,175 @@ continue_main_loop: // This method is used in lieu of "continue" for performance
 		return ScriptError(ERR_MISSING_CLOSE_BRACE, mClassName);
 	}
 
-	if (mPendingParentLine) // If, Else, Loop, etc. without a block or action.
-		return mPendingParentLine->LineUnexpectedError();
-
-	if (mLastHotFunc)
-		// A hotkey at the end of the file, with no function body.  Checking for this here
-		// ensures mJumpToLine is always non-null for later stages.
-		return ScriptError(ERR_HOTKEY_MISSING_BRACE);
+	if (mPendingHotkey)
+		return ScriptError(ERR_HOTKEY_MISSING_BRACE, mPendingHotkey);
 
 	++mCombinedLineNumber; // L40: Put the implicit ACT_EXIT on the line after the last physical line (for the debugger).
+	return OK;
+}
+
+
+
+ResultType Script::ParseRemap(LPCTSTR aSource, vk_type remap_dest_vk, LPCTSTR aDestName, LPCTSTR aDestMods)
+{
+	TCHAR remap_source[32], remap_dest[32], remap_dest_modifiers[8]; // Must fit the longest key name (currently Browser_Favorites [17]), but buffer overflow is checked just in case.
+	LPCTSTR cp1;
+	auto remap_source_vk = TextToVK(cp1 = Hotkey::TextToModifiers(aSource, NULL)); // An earlier stage verified that it's a valid hotkey, though VK could be zero.
+	bool remap_source_is_combo = _tcsstr(cp1, COMPOSITE_DELIMITER);
+	bool remap_source_is_mouse = IsMouseVK(remap_source_vk);
+	bool remap_dest_is_mouse = IsMouseVK(remap_dest_vk);
+	bool remap_keybd_to_mouse = !remap_source_is_mouse && remap_dest_is_mouse;
+	bool remap_wheel = IS_WHEEL_VK(remap_source_vk) || IS_WHEEL_VK(remap_dest_vk);
+	sntprintf(remap_source, _countof(remap_source), _T("%s%s%s")
+		, remap_source_is_combo ? _T("") : _T("*") // v1.1.27.01: Omit * when the remap source is a custom combo.
+		, _tcslen(cp1) == 1 && IsCharUpper(*cp1) ? _T("+") : _T("")  // Allow A::b to be different than a::b.
+		, aSource); // Include any modifiers too, e.g. ^b::c.
+	if (*aDestName == '"' || *aDestName == g_EscapeChar) // Need to escape these.
+	{
+		*remap_dest = g_EscapeChar;
+		remap_dest[1] = *aDestName;
+		remap_dest[2] = '\0';
+	}
+	else
+		tcslcpy(remap_dest, aDestName, _countof(remap_dest));  // But exclude modifiers here; they're wanted separately.
+	tcslcpy(remap_dest_modifiers, aDestMods, min(_countof(remap_dest_modifiers), aDestName - aDestMods + 1));
+
+	if (remap_dest_vk == VK_PAUSE
+		&& !*remap_dest_modifiers // If modifiers are present, it can't be a call to the Pause function.
+		&& (!_tcsicmp(remap_dest, _T("Pause")))) // Specifically "Pause", not "vk13".
+	{
+		// Pause is excluded because it is more common to create a hotkey to pause the script than
+		// to remap something to the Pause/Break key, and that's how it was in v1.  Any other key
+		// names are interpreted as remapping even if the user defines a function with that name.
+		// Doing otherwise would be complicated and probably undesirable.
+		return CONDITION_FALSE;
+	}
+
+	// It is a remapping. Create one "down" and one "up" hotkey,
+	// eg, "x::y" yields,
+	// *x::
+	// {
+	// SetKeyDelay(-1), Send("{Blind}{y DownR}")
+	// }
+	// *x up::
+	// {
+	// SetKeyDelay(-1), Send("{Blind}{y Up}")
+	// }
+	// Using one line to facilitate code.
+
+	// For remapping, decided to use a "macro expansion" approach because I think it's considerably
+	// smaller in code size and complexity than other approaches would be.  I originally wanted to
+	// do it with the hook by changing the incoming event prior to passing it back out again (for
+	// example, a::b would transform an incoming 'a' keystroke into 'b' directly without having
+	// to suppress the original keystroke and simulate a new one).  Unfortunately, the low-level
+	// hooks apparently do not allow this.  Here is the test that confirmed it:
+	// if (event.vkCode == 'A')
+	// {
+	//	event.vkCode = 'B';
+	//	event.scanCode = 0x30; // Or use vk_to_sc(event.vkCode).
+	//	return CallNextHookEx(g_KeybdHook, aCode, wParam, lParam);
+	// }
+
+	if (mPendingHotkey)
+		// Checking this to disallow stacking, eg
+		// x::
+		// y::z
+		// which would cause x:: to just do the "down"
+		// part of y::z.
+		return ScriptError(ERR_HOTKEY_MISSING_BRACE, mPendingHotkey);
+
+	auto make_remap_hotkey = [&](LPTSTR aKey)
+		{
+			auto func = CreateHotFunc();
+			if (!func)
+				return FAIL;
+			UCHAR no_suppress;
+			bool hook_is_mandatory;
+			auto hk = Hotkey::FindHotkeyByTrueNature(aKey, no_suppress, hook_is_mandatory);
+			if (hk)
+			{
+				if (!hk->AddVariant(func, no_suppress))
+					return FAIL;
+			}
+			else if (!Hotkey::AddHotkey(func, HK_NORMAL, aKey, no_suppress))
+				return FAIL;
+			return OK;
+		};
+	// Start with the "down" hotkey:
+	if (!make_remap_hotkey(remap_source))
+		return FAIL;
+
+	TCHAR remap_buf[LINE_SIZE];
+	auto cp = remap_buf;
+	cp += _stprintf(cp
+		, _T("%s(-1),") // Does NOT need to be "-1, -1" for SetKeyDelay (see below).
+		, remap_dest_is_mouse ? _T("SetMouseDelay") : _T("SetKeyDelay") // Using the full function names vs. Set%sDelay might help size due to string pooling.
+	);
+	// It seems unnecessary to set press-duration to -1 even though the auto-exec section might
+	// have set it to something higher than -1 because:
+	// 1) Press-duration doesn't apply to normal remappings since they use down-only and up-only events.
+	// 2) Although it does apply to remappings such as a::B and a::^b (due to press-duration being
+	//    applied after a change to modifier state), those remappings are fairly rare and supporting
+	//    a non-negative-one press-duration (almost always 0) probably adds a degree of flexibility
+	//    that may be desirable to keep.
+	// 3) SendInput may become the predominant SendMode, so press-duration won't often be in effect anyway.
+	// 4) It has been documented that remappings use the auto-execute section's press-duration.
+	// The primary reason for adding Key/MouseDelay -1 is to minimize the chance that a one of
+	// these hotkey threads will get buried under some other thread such as a timer, which
+	// would disrupt the remapping if #MaxThreadsPerHotkey is at its default of 1.
+	if (remap_keybd_to_mouse && !remap_wheel)
+	{
+		// Since source is keybd and dest is mouse, prevent keyboard auto-repeat from auto-repeating
+		// the mouse button (since that would be undesirable 90% of the time).  This is done
+		// by inserting a single extra IF-statement above the Send that produces the down-event:
+		cp += _stprintf(cp, _T("!GetKeyState(\"%s\")&&"), remap_dest); // Should be no risk of buffer overflow due to prior validation.
+	}
+	// Otherwise, remap_keybd_to_mouse==false.
+
+	TCHAR blind_mods[17], *next_blind_mod = blind_mods;
+	const auto mod_string = MODLR_STRING;
+	auto &hk = *Hotkey::shk[Hotkey::sHotkeyCount - 1];
+	for (int i = 0; i < 8; ++i)
+		if (hk.mModifiersConsolidatedLR & (1 << i))
+			if (!_tcschr(remap_dest_modifiers, mod_string[i*2+1])) // This works around an issue with {Blind+}+x releasing RShift to press LShift.
+			{
+				*next_blind_mod++ = mod_string[i*2]; // < or >
+				*next_blind_mod++ = mod_string[i*2+1]; // One of ^!+#
+			}
+	*next_blind_mod = '\0';
+	LPTSTR extra_event = _T(""); // Set default.
+	cp += _stprintf(cp
+		, _T("Send(\"{Blind%s}%s%s{%s%s}\")") // DownR vs. Down. See Send's DownR handler for details.
+		, blind_mods, extra_event, remap_dest_modifiers, remap_dest, remap_wheel ? _T("") : _T(" DownR"));
+
+	auto define_remap_func = [&]()
+		{
+			if (!AddLine(ACT_BLOCK_BEGIN)
+				|| !ParseAndAddLine(remap_buf)
+				|| !AddLine(ACT_BLOCK_END))
+				return FAIL;
+			return OK;
+		};
+	if (!define_remap_func()) // the "down" function.
+		return FAIL;
+	if (remap_wheel) // Mapping key-down to wheel or vice versa is sufficient; mapping key-up to wheel would cause double scrolling.
+		return OK;
+	//
+	// "Down" is finished, proceed with "Up":
+	//
+	_stprintf(remap_buf
+		, _T("%s up") // Key-up hotkey, e.g. *LButton up::
+		, remap_source);
+	if (!make_remap_hotkey(remap_buf))
+		return FAIL;
+	_stprintf(remap_buf
+		, _T("%s(-1),")
+		_T("Send(\"{Blind}{%s Up}\")\n") // Unlike the down-event above, remap_dest_modifiers is not included for the up-event; e.g. ^{b up} is inappropriate.
+		, remap_dest_is_mouse ? _T("SetMouseDelay") : _T("SetKeyDelay") // Using the full function names vs. Set%sDelay might help size due to string pooling.
+		, remap_dest
+	);
+	if (!define_remap_func()) // define the "up" function.
+		return FAIL;
 	return OK;
 }
 
@@ -2591,6 +2518,8 @@ bool Script::EndsWithOperator(LPTSTR aBuf, LPTSTR aBuf_marker)
 // Returns true if aBuf_marker is the end of an operator, excluding ++ and --.
 {
 	LPTSTR cp = aBuf_marker; // Caller has omitted trailing whitespace.
+	if (*cp == '.') // It's only a meaningful end-of-line operator if preceded by a space; something like "2." should not cause continuation.
+		return cp > aBuf && IS_SPACE_OR_TAB(cp[-1]);
 	if (_tcschr(EXPR_OPERATOR_SYMBOLS, *cp) // It's a binary operator or ++ or --.
 		&& !((*cp == '+' || *cp == '-') && cp > aBuf && cp[-1] == *cp)) // Not ++ or --.
 		return true;
@@ -3051,10 +2980,10 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 				{
 					next_option += 4;
 					tcslcpy(suffix, next_option, _countof(suffix)); // The word "Join" by itself will product an empty string, as documented.
-					// Passing true for the last parameter supports `s as the special escape character,
-					// which allows space to be used by itself and also at the beginning or end of a string
-					// containing other chars.
-					ConvertEscapeSequences(suffix, NULL);
+					// Only `s and `t are replaced, as everything else must be in a quoted string, which would
+					// perform its own conversion of escape sequences.  In particular, `` is left as is since
+					// it would otherwise be converted again later; i.e. ```` would become a literal `.
+					ConvertSpaceEscapeSequences(suffix);
 					suffix_length = _tcslen(suffix);
 				}
 				else if (!_tcsnicmp(next_option, _T("LTrim"), 5))
@@ -3142,6 +3071,7 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 		if (next_buf_length == -2) // v1.0.45.03: Special flag that means "this is a commented-out line to be
 			continue;              // entirely omitted from the continuation section." Compare directly to -2 since length is unsigned.
 
+		size_t cp_length, need_escapes = 0;
 		if (*next_buf == ')')
 		{
 			in_continuation_section = 0; // Facilitates back-to-back continuation sections and proper incrementing of phys_line_number.
@@ -3149,7 +3079,7 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 			// Anything that lies to the right of the close-parenthesis gets appended verbatim, with
 			// no trimming (for flexibility) and no options-driven translation:
 			cp = next_buf + 1;  // Use temp var cp to avoid a memcpy.
-			--next_buf_length;  // This is now the length of cp, not next_buf.
+			cp_length = next_buf_length - 1;
 		}
 		else
 		{
@@ -3174,8 +3104,8 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 			// parenthesis (i.e. the block above) is exempt from translations and custom trimming.
 			// This means that commas are always delimiters and percent signs are always deref symbols
 			// in the previous block.
-			if (do_rtrim)
-				next_buf_length = rtrim(next_buf, next_buf_length);
+			cp = next_buf; // Set default, to be overridden in case of ltrim.
+			cp_length = next_buf_length; // Set default, to be overridden in case of rtrim.
 			if (do_ltrim == NEUTRAL)
 			{
 				// Neither "LTrim" nor "LTrim0" was present in this section's options, so
@@ -3183,12 +3113,12 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 				if (!continuation_line_count)
 				{
 					// This is the first line.
-					indent_char = *next_buf;
+					indent_char = *cp;
 					if (IS_SPACE_OR_TAB(indent_char))
 					{
 						// For simplicity, require that only one type of indent char is used. Otherwise
 						// we'd have to provide some way to set the width (in spaces) of a tab char.
-						for (indent_level = 1; next_buf[indent_level] == indent_char; ++indent_level);
+						for (indent_level = 1; cp[indent_level] == indent_char; ++indent_level);
 						// Let the section below actually remove the indentation on this and subsequent lines.
 					}
 					else
@@ -3197,40 +3127,50 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 				if (indent_level)
 				{
 					int i;
-					for (i = 0; i < indent_level && next_buf[i] == indent_char; ++i);
+					for (i = 0; i < indent_level && cp[i] == indent_char; ++i);
 					if (i == indent_level)
 					{
 						// LTrim exactly (indent_level) occurrences of (indent_char).
-						tmemmove(next_buf, next_buf + i, next_buf_length - i + 1); // +1 for null terminator.
-						next_buf_length -= i;
+						cp += i;
+						cp_length -= i;
 					}
 					// Otherwise, the indentation on this line is inconsistent with the first line,
 					// so just leave it as is.
 				}
 			}
 			else if (do_ltrim == TOGGLED_ON)
+			{
 				// Trim all leading whitespace.
-				next_buf_length = ltrim(next_buf, next_buf_length);
+				cp = omit_leading_whitespace(cp);
+				cp_length -= (cp - next_buf);
+			}
+			if (do_rtrim)
+			{
+				// Exclude trailing whitespace from cp_length.
+				while (cp_length && IS_SPACE_OR_TAB(cp[cp_length - 1]))
+					cp_length--;
+			}
+			
 			// Insert escape characters as needed for escape characters or quote marks to be interpreted
 			// literally, as per continuation section options or detection of enclosing quote marks.
-			// For simplicity, allow for worst-case expansion.  In most cases next_buf won't need to be
-			// expanded, and if it is, that space may be reused for subsequent lines.  Using the mode of
-			// StrReplace that allocates memory would require larger code and might increase the number
-			// of buffer expansions needed.
-			if ((literal_escapes || literal_quotes) && !next_buf.EnsureCapacity(next_buf_length * 2))
-				return ScriptError(ERR_OUTOFMEM);
-			if (literal_escapes) // literal_escapes must be done FIRST because otherwise it would also replace any accents added by other options.
-				StrReplace(next_buf, _T("`"), _T("``"), SCS_SENSITIVE, UINT_MAX, -1, nullptr, &next_buf_length);
-			if (literal_quotes)
+			if (literal_escapes || literal_quotes)
 			{
-				StrReplace(next_buf, _T("'"), _T("`'"), SCS_SENSITIVE, UINT_MAX, -1, nullptr, &next_buf_length);
-				StrReplace(next_buf, _T("\""), _T("`\""), SCS_SENSITIVE, UINT_MAX, -1, nullptr, &next_buf_length);
+				// It is probably counter-productive to perform the full calculation, since we really only need
+				// a figure to pass to EnsureCapacity().  If buf needs to be expanded, it will be doubled in size
+				// anyway, and usually will be reused many times.  So just use a simple worst-case estimate:
+				need_escapes = cp_length;
+				//for (size_t i = 0; i < cp_length; ++i)
+				//{
+				//	if (cp[i] == g_EscapeChar)
+				//		literal_escapes ? ++need_escapes : ++i; // If not literal, it might escape a quote mark to its right.
+				//	else if (cp[i] == quote_char) // It's the type of quote that needs to be escaped, and hasn't been.
+				//		need_escapes += literal_quotes;
+				//}
 			}
-			cp = next_buf;
 		} // Handling of a normal line within a continuation section.
 
 		// Must check the combined length only after anything that might have expanded the string above.
-		if (!buf.EnsureCapacity(buf_length + next_buf_length + suffix_length))
+		if (!buf.EnsureCapacity(buf_length + suffix_length + cp_length + need_escapes))
 			return ScriptError(ERR_OUTOFMEM);
 
 		++continuation_line_count;
@@ -3238,18 +3178,44 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 		// The suffix for the previous line gets written immediately prior to writing this next line,
 		// which allows the suffix to be omitted for the final line.  But if this is the first line,
 		// No suffix is written because there is no previous line in the continuation section.
-		// In addition, if cp!=next_buf, this is the special line whose text occurs to the right of the
+		// In addition, if !in_continuation_section, cp is raw text occuring to the right of the
 		// continuation section's closing parenthesis. In this case too, the previous line doesn't
 		// get a suffix.
-		if (continuation_line_count > 1 && suffix_length && cp == next_buf)
+		if (continuation_line_count > 1 && suffix_length && in_continuation_section)
 		{
 			tmemcpy(buf + buf_length, suffix, suffix_length + 1); // Append and include the zero terminator.
 			buf_length += suffix_length; // Must be done only after the old value of buf_length was used above.
 		}
-		if (next_buf_length)
+		if (need_escapes)
 		{
-			tmemcpy(buf + buf_length, cp, next_buf_length + 1); // Append this line to prev. and include the zero terminator.
-			buf_length += next_buf_length; // Must be done only after the old value of buf_length was used above.
+			// Append this line to buf, while also escaping escape characters or quotes as needed.
+			LPTSTR cp2 = buf + buf_length;
+			for (size_t i = 0; i < cp_length; ++i)
+			{
+				if (cp[i] == g_EscapeChar)
+				{
+					*cp2++ = g_EscapeChar;
+					if (!literal_escapes)
+					{
+						++i; // Handle the second char in this iteration to ensure `" won't become ``".
+						if (i >= cp_length) // Only true when there's a trailing `.  Must be checked to prevent overflow.
+							break; // Legacy behaviour: leave it as is, and it may escape the char after the closing parenthesis.
+					}
+				}
+				else if (cp[i] == quote_char) // It's the type of quote that needs to be escaped, and hasn't been.
+				{
+					if (literal_quotes)
+						*cp2++ = g_EscapeChar;
+				}
+				*cp2++ = cp[i];
+			}
+			*cp2 = '\0';
+			buf_length += (cp2 - (buf + buf_length));
+		}
+		else if (cp_length)
+		{
+			tmemcpy(buf + buf_length, cp, cp_length + 1); // Append this line to prev. and include the zero terminator.
+			buf_length += cp_length; // Must be done only after the old value of buf_length was used above.
 		}
 	} // for() each sub-line (continued line) that composes this line.
 	return OK;
@@ -3589,9 +3555,8 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 	// L4: Handle #HotIf (expression) directive.
 	if (IS_DIRECTIVE_MATCH(_T("#HotIf")))
 	{
-		// Disallow #HotIf inside a function or class, but allow it interspersed with hotkey labels;
-		// i.e. g->CurrentFunc and mLastHotFunc must both be null or the same non-null value.
-		if (mClassObjectCount || g->CurrentFunc != mLastHotFunc) 
+		// Disallow #HotIf inside a function or class.
+		if (mClassObjectCount || g->CurrentFunc)
 			return ScriptError(ERR_INVALID_USAGE);
 
 		if (!parameter) // The omission of the parameter indicates that any existing criteria should be turned off.
@@ -3607,30 +3572,30 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 		if (g->HotCriterion = FindHotkeyIfExpr(parameter))
 			return CONDITION_TRUE;
 
-		auto pending_hotfunc = mLastHotFunc;
-		
+		auto pending_hotkey = mPendingHotkey;
+		mPendingHotkey = nullptr;
+
 		// Create a function to return the result of the expression
 		// specified by "parameter":
 
-		CreateHotFunc();
+		auto func = CreateHotFunc();
 		
-		auto fr = Hotkey::IfExpr(mLastHotFunc); // Set the new criterion.
+		auto fr = Hotkey::IfExpr(func); // Set the new criterion.
 		if (fr != OK) // Only OK and FR_E_OUTOFMEM should be possible given how it's called.
 			return fr == FR_E_OUTOFMEM ? ScriptError(ERR_OUTOFMEM) : FAIL;
 
 		g->HotCriterion->OriginalExpr = SimpleHeap::Alloc(parameter);
 		
-		auto func = mLastHotFunc; // AddLine will set mLastHotFunc to nullptr below
-		
-		if (!AddLine(ACT_BLOCK_BEGIN)
-			|| !ParseAndAddLine(parameter, ACT_HOTKEY_IF) // PreparseExpressions will change this to ACT_RETURN
-			|| !AddLine(ACT_BLOCK_END))
+		if (!ParseAndAddLineInBlock(parameter, ACT_HOTKEY_IF)) // PreparseExpressions will change this to ACT_RETURN
 			return ScriptError(ERR_OUTOFMEM);
 
-		func->mJumpToLine->mAttribute = g->HotCriterion;	// Must be set for PreparseHotkeyIfExpr
-
-		ASSERT(!g->CurrentFunc && !mLastHotFunc); // Should be null due to ACT_BLOCK_END and prior checks.
-		g->CurrentFunc = mLastHotFunc = pending_hotfunc; // Restore any pending hotkey function.
+		if (mExprContainingThisFunc)
+			mExprContainingThisFunc->pending_hotkey = pending_hotkey;
+		else
+		{
+			mPendingHotkey = pending_hotkey;
+			func->mJumpToLine->mAttribute = g->HotCriterion; // Must be set for PreparseHotkeyIfExpr
+		}
 		
 		return CONDITION_TRUE;
 	}
@@ -3656,8 +3621,8 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 				// after the word EndChar.
 				if (    !(parameter = StrChrAny(suboption, _T("\t ")))   )
 					return CONDITION_TRUE;
-				tcslcpy(g_EndChars, ++parameter, _countof(g_EndChars));
-				ConvertEscapeSequences(g_EndChars, NULL);
+				parameter++;
+				ConvertEscapeSequences(g_EndChars, _countof(g_EndChars), parameter, _tcslen(parameter));
 				return CONDITION_TRUE;
 			}
 			if (!_tcsnicmp(parameter, _T("NoMouse"), 7)) // v1.0.42.03
@@ -4089,23 +4054,7 @@ ResultType Script::AddLabel(LPTSTR aLabelName, bool aAllowDupe)
 
 
 
-void Script::RemoveLabel(Label *aLabel)
-// Remove a label from the linked list.
-// Used by DefineFunc to implement hotkey/hotstring functions.
-{
-	if (aLabel->mPrevLabel)
-		aLabel->mPrevLabel->mNextLabel = aLabel->mNextLabel;
-	else
-		mFirstLabel = aLabel->mNextLabel;
-	if (aLabel->mNextLabel)
-		aLabel->mNextLabel->mPrevLabel = aLabel->mPrevLabel;
-	else
-		mLastLabel = aLabel->mPrevLabel;
-}
-
-
-
-ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType, LPTSTR aLiteralMap, size_t aLiteralMapLength)
+ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType)
 // Returns OK or FAIL.
 // aLineText needs to be a string whose contents are modifiable (though the string won't be made any
 // longer than it is now, so it doesn't have to be of size LINE_SIZE). This helps performance by
@@ -4178,21 +4127,8 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 			case '"':
 			case '\'':
 				for (quote = aLineText[i--]; i > 0; --i)
-				{
-					if (aLineText[i] == quote)
-					{
-						// Only the escape char can escape itself, so any odd number of preceding
-						// escape chars means this quote mark is escaped; e.g. `" or ```".
-						bool escaped = false;
-						if (aLiteralMap)
-							escaped = aLiteralMap[i];
-						else
-							while (i > 0 && aLineText[i - 1] == g_EscapeChar)
-								escaped = !escaped, --i;
-						if (!escaped)
-							break;
-					}
-				}
+					if (aLineText[i] == quote && !CharIsEscaped(aLineText + i, aLineText))
+						break;
 			}
 		}
 		ASSERT(!open);
@@ -4200,6 +4136,16 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 		LPTSTR id = open_paren;
 		while (id > aLineText && IS_IDENTIFIER_CHAR(id[-1]))
 			--id;
+		if (id == aLineText && !aActionType)
+		{
+			// This catches any lines *starting with* a function definition that somehow make it here instead of
+			// going to DefineFunc().  Without this, the definition might be called since the preprocessed line
+			// will look like a function call statement.
+			mCurrLine = nullptr;
+			return ScriptError(ERR_UNEXPECTED_DECL, aLineText);
+		}
+		if (end_marker) // Action name was parsed from aLineText, so to repeat that we must reset aActionType.
+			aActionType = ACT_INVALID; // Store the original value passed by our caller.
 		// Save everything up to (but not including) the open parentheses.  When the close brace
 		// is found, anything following it will be appended to this code, effectively forming an
 		// expression which references the function by name.
@@ -4208,10 +4154,10 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 		if (!code)
 			return MemoryError();
 		tmemcpy(code, aLineText, len);
-		code[open_paren - aLineText] = '\0';
-		auto expr = new PartialExpression(code, len, *this); // Save the prefix code and some current script state.
+		code[len] = '\0';
+		auto expr = new PartialExpression(code, len, aActionType, *this); // Save the prefix code and some current script state.
 		// Parse the start of the function definition, including the open brace.
-		if (!DefineFunc(id, false, true))
+		if (!DefineFunc(id, false, FuncDefExpression))
 		{
 			delete expr;
 			return FAIL;
@@ -4232,7 +4178,7 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 
 		if (*aLineText == '"' || *aLineText == '\'')
 		{
-			action_args = aLineText + FindTextDelim(aLineText, *aLineText, 1, aLiteralMap);
+			action_args = aLineText + FindTextDelim(aLineText, *aLineText, 1);
 			if (*action_args)
 			{
 				action_args = omit_leading_whitespace(action_args + 1);
@@ -4701,33 +4647,6 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 
 	Action &this_action = g_act[aActionType];
 
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	// Handle escaped-sequences (escaped delimiters and all others except variable deref symbols).
-	// This section must occur after all other changes to the pointer value action_args have
-	// occurred above.
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	LPTSTR literal_map;
-	if (aLiteralMap)
-	{
-		// Caller's aLiteralMap starts at aLineText, so adjust it so that it starts at the newly
-		// found position of action_args instead:
-		literal_map = aLiteralMap + (action_args - aLineText);
-	}
-	else
-	{
-		literal_map = (LPTSTR)_alloca(sizeof(TCHAR) * line_length);
-		ZeroMemory(literal_map, sizeof(TCHAR) * line_length);  // Must be fully zeroed for this purpose.
-		// Resolve escaped sequences and make a map of which characters in the string should
-		// be interpreted literally rather than as their native function.  In other words,
-		// convert any escape sequences in order from left to right.  This part must be
-		// done *after* checking for comment-flags that appear to the right of a valid line, above.
-		// How literal comment-flags (e.g. semicolons) work:
-		//string1; string2 <-- not a problem since string2 won't be considered a comment by the above.
-		//string1 ; string2  <-- this would be a user mistake if string2 wasn't supposed to be a comment.
-		//string1 `; string 2  <-- since esc seq. is resolved *after* checking for comments, this behaves as intended.
-		ConvertEscapeSequences(action_args, literal_map);
-	}
-
 	// v2: All statements accept expressions by default, except goto/break/continue.
 	if (aActionType > ACT_LAST_JUMP || aActionType < ACT_FIRST_JUMP)
 		all_args_are_expressions = true;
@@ -4763,7 +4682,7 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 	/////////////////////////////////////////////////////////////
 	// MaxParams has already been verified as being <= MAX_ARGS.
 	int nArgs;
-	LPTSTR arg[MAX_ARGS], arg_map[MAX_ARGS];
+	LPTSTR arg[MAX_ARGS];
 	int max_params = this_action.MaxParams;
 	int max_params_minus_one = max_params - 1;
 	bool is_expression;
@@ -4771,17 +4690,16 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 	for (nArgs = mark = 0; action_args[mark] && nArgs < max_params; ++nArgs)
 	{
 		arg[nArgs] = action_args + mark;
-		arg_map[nArgs] = literal_map + mark;
 
 		is_expression = all_args_are_expressions; // This would be false for goto/break/continue.
 
 		// Find the end of the above arg:
 		if (is_expression)
 			// Find the next delimiter, taking into account quote marks, parentheses, etc.
-			mark = FindExprDelim(action_args, g_delimiter, mark, literal_map);
+			mark = FindExprDelim(action_args, g_delimiter, mark);
 		else
 			// Find the next non-literal delimiter.
-			mark = FindTextDelim(action_args, g_delimiter, mark, literal_map);
+			mark = FindTextDelim(action_args, g_delimiter, mark);
 
 		if (action_args[mark])  // A non-literal delimiter was found.
 		{
@@ -4792,14 +4710,10 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 			}
 			action_args[mark] = '\0';  // Terminate the previous arg.
 			// Trim any whitespace from the previous arg.  This operation will not alter the contents
-			// of anything beyond action_args[i], so it should be safe.  In addition, even though it
-			// changes the contents of the arg[nArgs] substring, we don't have to update literal_map
-			// because the map is still accurate due to the nature of rtrim).  UPDATE: Note that this
-			// version of rtrim() specifically avoids trimming newline characters, since the user may
-			// have included literal newlines at the end of the string by using an escape sequence:
-			rtrim_literal(arg[nArgs], arg_map[nArgs]);
+			// of anything beyond action_args[i], so it should be safe.
+			rtrim(arg[nArgs], (action_args + mark) - arg[nArgs]);
 			// Omit the leading whitespace from the next arg:
-			for (++mark; IS_SPACE_OR_TAB(action_args[mark]) && !literal_map[mark]; ++mark);
+			for (++mark; IS_SPACE_OR_TAB(action_args[mark]); ++mark);
 			// Now <mark> marks the end of the string, the start of the next arg,
 			// or a delimiter-char (if the next arg is blank).
 		}
@@ -4857,7 +4771,7 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 	if (aActionType == ACT_SWITCH && nArgs && !*arg[0]) // Switch with parameters - do this only after the above, since it might remove one arg.
 		ScriptError(ERR_PARAM1_MUST_NOT_BE_BLANK); // "Switch , y" or "Switch , "
 
-	if (!AddLine(aActionType, arg, nArgs, arg_map, all_args_are_expressions))
+	if (!AddLine(aActionType, arg, nArgs, all_args_are_expressions))
 		return FAIL;
 	if (add_openbrace_afterward)
 		if (!AddLine(ACT_BLOCK_BEGIN))
@@ -4906,22 +4820,22 @@ inline ActionTypeType Script::ConvertActionType(LPCTSTR aActionTypeString)
 
 
 
-ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc, LPTSTR aArgMap[], bool aAllArgsAreExpressions)
+ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc, bool aAllArgsAreExpressions)
 // aArg must be a collection of pointers to memory areas that are modifiable, and there
-// must be at least aArgc number of pointers in the aArg array.  In v1.0.40, a caller (namely
-// the "macro expansion" for remappings such as "a::b") is allowed to pass a non-NULL value for
-// aArg but a NULL value for aArgMap.
+// must be at least aArgc number of pointers in the aArg array.
 // Returns OK or FAIL.
 {
 #ifdef _DEBUG
 	if (aActionType == ACT_INVALID)
 		return ScriptError(_T("DEBUG: BAD AddLine"), aArgc > 0 ? aArg[0] : _T(""));
 #endif
-	if (mLastHotFunc)
+	if (mPendingHotkey)
 	{
 		if (aActionType != ACT_BLOCK_BEGIN)
-			return ScriptError(ERR_HOTKEY_MISSING_BRACE);
-		mLastHotFunc = nullptr;
+			return ScriptError(ERR_HOTKEY_MISSING_BRACE, mPendingHotkey);
+		if (!CreateHotFunc())
+			return FAIL;
+		mPendingHotkey = nullptr;
 	}
 	if (aActionType == ACT_BLOCK_BEGIN && mIgnoreNextBlockBegin)
 	{
@@ -4934,18 +4848,18 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 		*aArg = _T("unset");
 		aArgc = 1;
 	}
-	else if (aActionType == ACT_BLOCK_END && g->CurrentFunc && mOpenBlock && g->CurrentFunc == mOpenBlock->mAttribute // This is the block-end of a function.
+	else if (aActionType == ACT_BLOCK_END && mLineParent && mLineParent->mActionType == ACT_BLOCK_BEGIN
+		&& mLineParent->mAttribute == g->CurrentFunc && g->CurrentFunc // This is the block-end of a function.
 		&& mDefaultReturn == SYM_MISSING // It should default to unset, and doesn't end with a return.
-		&& !mPendingParentLine // There's no misplaced IF/LOOP/etc. at the end of the function.
-		&& (mLastLine->mActionType != ACT_RETURN || mLastLine->mParentLine != mOpenBlock)) // It wouldn't be "unreachable".
+		&& (mLastLine->mActionType != ACT_RETURN || mLastLine->mParentLine != mLineParent)) // It wouldn't be "unreachable".
 	{
-		if (!AddLine(ACT_RETURN, nullptr, 0, nullptr, true)) // The recursive call will detect that this needs to be `return unset`.
+		if (!AddLine(ACT_RETURN, nullptr, 0, true)) // The recursive call will detect that this needs to be `return unset`.
 			return FAIL;
 	}
 
 	DerefList deref;  // Will be used to temporarily store the var-deref locations in each arg.
 	ArgStruct *new_arg;  // We will allocate some dynamic memory for this, then hang it onto the new line.
-	LPTSTR this_aArgMap, this_aArg;
+	LPTSTR this_aArg;
 
 	//////////////////////////////////////////////////////////
 	// Build the new arg list in dynamic memory.
@@ -4965,7 +4879,6 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 			// FOR EACH ARG:
 			////////////////
 			this_aArg = aArg[i];                        // For performance and convenience.
-			this_aArgMap = aArgMap ? aArgMap[i] : NULL; // Same.
 			ArgStruct &this_new_arg = new_arg[i];       // Same.
 			this_new_arg.postfix = NULL;                // Set default early, for maintainability.
 
@@ -4994,15 +4907,14 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 			// Now that any escaped quote marks etc. have been marked, pre-parse all operands
 			// in this_new_arg.text.  Review is needed to determine whether var derefs still
 			// need to be resolved at this stage (and whether this is optimal).  Other operands
-			// are marked at this stage to avoid some redundant processing later, and so that we
-			// don't need to make this_aArgMap persistent.
+			// are marked at this stage to avoid some redundant processing later.
 			// Note: this_new_arg.text is scanned rather than this_aArg because we want to
 			// establish pointers to the correct area of memory:
 			deref.count = 0;  // Init for each arg.
 
 			if (this_new_arg.is_expression)
 			{
-				if (!ParseOperands(this_new_arg.text, this_aArgMap, deref))
+				if (!ParseOperands(this_new_arg.text, deref))
 					return FAIL;
 			}
 			// Otherwise, this arg does not contain an expression and therefore cannot contain
@@ -5054,6 +4966,12 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 		if (aArgc > 0 && !g->CurrentFunc)
 			return ScriptError(_T("Return's parameter should be blank except inside a function."));
 	}
+	
+	if (mNextLineIsFunctionBody)
+	{
+		g->CurrentFunc->mJumpToLine = the_new_line;
+		mNextLineIsFunctionBody = false;
+	}
 
 	// This next section and the block-begin/end sections below are responsible
 	// for setting up the relationships of lines (mParentLine and mRelatedLine).
@@ -5063,11 +4981,11 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 	switch (aActionType)
 	{
 	case ACT_CASE:
-		if (!(mOpenBlock && mOpenBlock->mPrevLine && mOpenBlock->mPrevLine->mActionType == ACT_SWITCH)
-			|| mPendingParentLine)
+		if (!(mLineParent && mLineParent->mPrevLine && mLineParent->mPrevLine->mActionType == ACT_SWITCH))
 			return line.LineUnexpectedError();
+		ASSERT(mLineParent->mActionType == ACT_BLOCK_BEGIN);
 		Line *last_case;
-		if ((last_case = mOpenBlock->mNextLine) && last_case != &line)
+		if ((last_case = mLineParent->mNextLine) && last_case != &line)
 		{
 			// Form a linked list of CASE lines for this SWITCH.
 			while (last_case->mRelatedLine)
@@ -5132,32 +5050,16 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 		if (break_time)
 			break;
 	}
-	if (mPendingParentLine) // A line waiting for block or single-line action.
-	{
-		line.mParentLine = mPendingParentLine;
-		if (aActionType != ACT_BLOCK_BEGIN)
-			mPendingRelatedLine = mPendingParentLine; // The next line will be the parent's mRelatedLine.
-		mPendingParentLine = nullptr;
-	}
+
+	if (!line.mParentLine)
+		line.mParentLine = mLineParent;
 	if (ACT_IS_LINE_PARENT(aActionType))
 	{
-		mPendingParentLine = &line;
-		mPendingRelatedLine = nullptr;
+		mLineParent = &line;
 	}
-	// If no parent line was determined above, this line belongs to the current block.
-	if (!line.mParentLine)
-		line.mParentLine = mOpenBlock;
-
-	if (mNextLineIsFunctionBody)
+	else if (aActionType == ACT_BLOCK_BEGIN)
 	{
-		g->CurrentFunc->mJumpToLine = the_new_line;
-		mNextLineIsFunctionBody = false;
-	}
-
-	// Now that we've finished using the previous value of mOpenBlock, check the following:
-	if (aActionType == ACT_BLOCK_BEGIN)
-	{
-		mOpenBlock = the_new_line;
+		mLineParent = &line;
 		// It's only necessary to check the last func, not the one(s) that come before it, to see if its
 		// mJumpToLine is NULL.  This is because our caller has made it impossible for a function
 		// to ever have been defined in the first place if it lacked its opening brace.  Search on
@@ -5171,6 +5073,16 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 			mNextLineIsFunctionBody = true;
 		}
 	}
+	else if (mLineParent && mLineParent->mActionType != ACT_BLOCK_BEGIN)
+	{
+		 // A parent line's action was just added, and isn't itself a parent.
+		if (mLineParent->mActionType == ACT_SWITCH)
+			return mLineParent->LineError(ERR_MISSING_OPEN_BRACE);
+		mPendingRelatedLine = mLineParent; // The next line will be the parent's mRelatedLine.
+		do
+			mLineParent = mLineParent->mParentLine;
+		while (mLineParent && mLineParent->mActionType != ACT_BLOCK_BEGIN);
+	}
 	// See further below for ACT_BLOCK_END.
 
 	// Above must be done prior to the below, since it sometimes sets mAttribute for use below.
@@ -5182,7 +5094,10 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 	// UPDATE: In addition, keep searching backward through the labels until a non-NULL
 	// mJumpToLine is found.  All the ones with a NULL should point to this new line to
 	// support cases where one label immediately follows another in the script.
-	if (!mNoUpdateLabels)
+	// v2.1: mNoUpdateLabels was originally used by some callers who are inserting lines
+	// which shouldn't be associated with any pending labels, but was superseded in v2.0
+	// by searching only g->CurrentFunc, which has no labels in those cases.
+	//if (!mNoUpdateLabels)
 	{
 		for (Label *label = g->CurrentFunc ? g->CurrentFunc->mLastLabel : mLastLabel;
 			label != NULL && label->mJumpToLine == NULL; label = label->mPrevLabel)
@@ -5224,28 +5139,35 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 
 	if (aActionType == ACT_BLOCK_END)
 	{
-		if (!mOpenBlock || line.mParentLine != mOpenBlock)
+		if (!mLineParent || mLineParent->mActionType != ACT_BLOCK_BEGIN)
 			return line.LineUnexpectedError();
-		mPendingRelatedLine = mOpenBlock; // The next line will be the block-begin's mRelatedLine, and possibly its parent's mRelatedLine.
+		mPendingRelatedLine = mLineParent; // The next line will be the block-begin's mRelatedLine, and possibly its parent's mRelatedLine.
 
 		// Rather than checking whether each newly added line is being added into a Switch,
-		// just verify here that the first line of each Switch is valid:
-		if (mOpenBlock->mPrevLine && mOpenBlock->mPrevLine->mActionType == ACT_SWITCH
-			&& mOpenBlock->mNextLine->mActionType != ACT_CASE
-			&& mOpenBlock->mNextLine != &line)
-			return mOpenBlock->mNextLine->LineError(_T("Expected Case/Default."));
+		// just verify here that the first line of each Switch's block is valid:
+		if (mLineParent->mPrevLine && mLineParent->mPrevLine->mActionType == ACT_SWITCH
+			&& mLineParent->mNextLine->mActionType != ACT_CASE
+			&& mLineParent->mNextLine != &line)
+			return mLineParent->mNextLine->LineError(_T("Expected Case/Default."));
 
-		if (g->CurrentFunc && g->CurrentFunc == mOpenBlock->mAttribute)
+		if (g->CurrentFunc && g->CurrentFunc == mLineParent->mAttribute)
 		{
 			line.mAttribute = g->CurrentFunc;  // Flag this ACT_BLOCK_END as the ending brace of this function's body.
 			g->CurrentFunc = g->CurrentFunc->mOuterFunc;  // Step out of this function.
 			if (g->CurrentFunc && !g->CurrentFunc->mJumpToLine)
 				// The outer function has no body yet, so it probably began with one or more nested functions.
 				mNextLineIsFunctionBody = true;
+			// If the function's block-begin's parent is not a block-begin, the function must be
+			// a fat arrow function.  Don't look further up the chain in that case because the next
+			// line should be a child of the same parent as the block-begin.
+			mLineParent = mLineParent->mParentLine;
 		}
-		do
-			mOpenBlock = mOpenBlock->mParentLine;
-		while (mOpenBlock && mOpenBlock->mActionType != ACT_BLOCK_BEGIN);
+		else
+		{
+			do
+				mLineParent = mLineParent->mParentLine;
+			while (mLineParent && mLineParent->mActionType != ACT_BLOCK_BEGIN);
+		}
 	}
 
 	return OK;
@@ -5270,7 +5192,7 @@ ResultType DerefList::Push()
 
 
 
-ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDeref, int *aPos, TCHAR aEndChar)
+ResultType Script::ParseOperands(LPTSTR aArgText, DerefList &aDeref, int *aPos, TCHAR aEndChar)
 {
 	LPTSTR op_begin, op_end;
 	size_t operand_length;
@@ -5279,14 +5201,6 @@ ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDe
 	bool is_function;
 	bool is_double_deref;
 	SymbolType wordop;
-
-	// Escape sequences outside of literal strings have no meaning, so could be considered illegal
-	// to improve error detection and reserve ` for future use.  However, in that case ` must still
-	// be allowed inside quoted strings and for `) in continuation sections, so this is inadequate:
-	//if (this_aArgMap) // This arg has an arg map indicating which chars are escaped/literal vs. normal.
-	//	for (j = 0; this_new_arg.text[j]; ++j)
-	//		if (this_aArgMap[j])
-	//			return ScriptError(ERR_EXP_ILLEGAL_CHAR, this_new_arg.text + j);
 
 	op_begin = aArgText;
 	if (aPos)
@@ -5349,7 +5263,7 @@ ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDe
 			if (close_char == ')')
 			{
 				// Before parsing derefs, check if this is the parameter list of an inline function.
-				LPTSTR close_paren = aArgText + FindExprDelim(aArgText, close_char, j, aArgMap);
+				LPTSTR close_paren = aArgText + FindExprDelim(aArgText, close_char, j);
 				if (*close_paren)
 				{
 					cp = omit_leading_whitespace(close_paren + 1);
@@ -5361,13 +5275,39 @@ ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDe
 							if (d.type == DT_VAR && d.marker + d.length == op_begin)
 								op_begin = d.marker;
 						}
-						if (!ParseFatArrow(aArgText, aArgMap, aDeref, op_begin, close_paren, cp + 2, op_begin))
+						if (!ParseFatArrow(aArgText, aDeref, op_begin, close_paren, cp + 2, op_begin))
 							return FAIL;
+						continue;
+					}
+					else if (!_tcsnicmp(op_begin, FDE_SUBSTITUTE_STRING, FDE_SUBSTITUTE_STRING_LENGTH))
+					{
+						// Find the next unresolved FDE at the current nesting level.
+						int &index = mExprContainingThisFunc ? mExprContainingThisFunc->funcs_index : mExprFuncIndex;
+						for (; index < mFuncs.mCount && mFuncs.mItem[index]->mIsFuncExpression != FuncDefExpression; ++index);
+						if (index >= mFuncs.mCount)
+							return ScriptError(ERR_EXPR_SYNTAX, FDE_SUBSTITUTE_STRING); // The source code likely included FDE_SUBSTITUTE_STRING, but it might have been a prior one.
+						auto func = mFuncs.mItem[index++];
+						func->mIsFuncExpression = FuncDefExpressionResolved; // Allow outer functions to skip over this one when looking for their own FDE.
+						func->mOuterFunc = g->CurrentFunc;
+						auto var = AddFuncVar(func);
+						if (!var)
+							return FAIL;
+
+						DerefType *d = aDeref.count ? aDeref.Last() : nullptr;
+						if (d && d->type == DT_VAR && d->marker + d->length == op_begin)
+							d->length += FDE_SUBSTITUTE_STRING_LENGTH;
+						else if (!aDeref.Push())
+							return FAIL;
+						else
+							d = aDeref.Last(), d->marker = op_begin, d->length = FDE_SUBSTITUTE_STRING_LENGTH;
+						d->type = DT_FUNCREF;
+						d->var = var;
+						op_begin = d->marker + d->length;
 						continue;
 					}
 				}
 			}
-			if (!ParseOperands(aArgText, aArgMap, aDeref, &j, close_char))
+			if (!ParseOperands(aArgText, aDeref, &j, close_char))
 				return FAIL;
 			op_begin = aArgText + j;
 			if (*op_begin)
@@ -5382,7 +5322,7 @@ ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDe
 
 		if (*op_begin == '"' || *op_begin == '\'')
 		{
-			op_end = aArgText + FindTextDelim(aArgText, *op_begin, int(op_begin - aArgText + 1), aArgMap);
+			op_end = aArgText + FindTextDelim(aArgText, *op_begin, int(op_begin - aArgText + 1));
 			if (!*op_end)
 				return ScriptError(ERR_MISSING_CLOSE_QUOTE, op_begin);
 			if (!aDeref.Push())
@@ -5430,7 +5370,7 @@ ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDe
 		{
 			// This operand is the leading literal part of a double dereference.
 			j = (int)(op_begin - aArgText);
-			if (!ParseDoubleDeref(aArgText, aArgMap, aDeref, &j))
+			if (!ParseDoubleDeref(aArgText, aDeref, &j))
 				return FAIL;
 			op_end = aArgText + j;
 			is_function = *op_end == '('; // Dynamic function call.
@@ -5462,7 +5402,7 @@ ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDe
 			}
 			else if (*cp == '=' && cp[1] == '>') // one_param => Fat arrow function.
 			{
-				if (!ParseFatArrow(aArgText, aArgMap, aDeref, op_begin, op_end, cp + 2, op_end))
+				if (!ParseFatArrow(aArgText, aDeref, op_begin, op_end, cp + 2, op_end))
 					return FAIL;
 				continue;
 			}
@@ -5525,7 +5465,7 @@ ResultType Script::ParseOperands(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDe
 }
 
 
-ResultType Script::ParseDoubleDeref(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDeref, int *aPos)
+ResultType Script::ParseDoubleDeref(LPTSTR aArgText, DerefList &aDeref, int *aPos)
 {
 	LPTSTR op_begin, dd_begin;
 	LPTSTR op_end;
@@ -5549,7 +5489,7 @@ ResultType Script::ParseDoubleDeref(LPTSTR aArgText, LPTSTR aArgMap, DerefList &
 		if (this_deref.terminal)
 			break;
 		(*aPos)++;
-		if (!ParseOperands(aArgText, aArgMap, aDeref, aPos, g_DerefChar))
+		if (!ParseOperands(aArgText, aDeref, aPos, g_DerefChar))
 			return FAIL;
 		op_end = aArgText + *aPos;
 		if (*op_end != g_DerefChar)
@@ -5590,33 +5530,26 @@ SymbolType Script::ConvertWordOperator(LPCTSTR aWord, size_t aLength)
 }
 
 
-ResultType Script::ParseFatArrow(LPTSTR aArgText, LPTSTR aArgMap, DerefList &aDeref
+ResultType Script::ParseFatArrow(LPTSTR aArgText, DerefList &aDeref
 	, LPTSTR aPrmStart, LPTSTR aPrmEnd, LPTSTR aExpr, LPTSTR &aExprEnd)
 {
 	int expr_start_pos = int(aExpr - aArgText);
-	int expr_end_pos = FindExprDelim(aArgText, 0, expr_start_pos, aArgMap);
-	if (!ParseFatArrow(aDeref, aPrmStart, aPrmEnd, aExpr, aArgText + expr_end_pos, aArgMap + expr_start_pos))
+	int expr_end_pos = FindExprDelim(aArgText, 0, expr_start_pos);
+	if (!ParseFatArrow(aDeref, aPrmStart, aPrmEnd, aExpr, aArgText + expr_end_pos))
 		return FAIL;
 	aExprEnd = aArgText + expr_end_pos;
 	return OK;
 }
 
 
-ResultType Script::ParseFatArrow(DerefList &aDeref, LPTSTR aPrmStart, LPTSTR aPrmEnd, LPTSTR aExpr, LPTSTR aExprEnd, LPTSTR aExprMap)
+ResultType Script::ParseFatArrow(DerefList &aDeref, LPTSTR aPrmStart, LPTSTR aPrmEnd, LPTSTR aExpr, LPTSTR aExprEnd)
 {
 	TCHAR orig_end;
-
-	// Avoid pointing any pending labels at the fat arrow function's body (let the caller
-	// finish adding the line which contains this expression and make it the label's target).
-	bool nolabels = mNoUpdateLabels; // Could be true if this line is a static declaration.
-	Line *parent_line = mPendingParentLine;
-	mNoUpdateLabels = true;
-
 	if (*aPrmEnd == ')') // `() => e` or `fn() => e`, not `v => e`.
 	{
 		orig_end = aPrmEnd[1];
 		aPrmEnd[1] = '\0';
-		if (!DefineFunc(aPrmStart, false, true))
+		if (!DefineFunc(aPrmStart, false, FuncDefFatArrow))
 			return FAIL;
 		aPrmEnd[1] = orig_end;
 	}
@@ -5625,25 +5558,18 @@ ResultType Script::ParseFatArrow(DerefList &aDeref, LPTSTR aPrmStart, LPTSTR aPr
 		// Format the parameter list as needed for DefineFunc().
 		TCHAR prm[MAX_VAR_NAME_LENGTH + 4];
 		sntprintf(prm, _countof(prm), _T("(%.*s)"), aPrmEnd - aPrmStart, aPrmStart);
-		if (!DefineFunc(prm, false, true))
+		if (!DefineFunc(prm, false, FuncDefFatArrow))
 			return FAIL;
 	}
 
-	if (!AddLine(ACT_BLOCK_BEGIN))
-		return FAIL;
-	auto block_begin = mLastLine;
+	auto &func = *g->CurrentFunc;
 
 	for (; aExprEnd > aExpr && IS_SPACE_OR_TAB(aExprEnd[-1]); --aExprEnd);
 	orig_end = *aExprEnd;
 	*aExprEnd = '\0';
-	if (!ParseAndAddLine(aExpr, ACT_RETURN, aExprMap, aExprEnd - aExpr))
+	if (!ParseAndAddLineInBlock(aExpr, ACT_RETURN))
 		return FAIL;
 	*aExprEnd = orig_end;
-
-	auto name = g->CurrentFunc->mName; // Must be done before AddLine(ACT_BLOCK_END).
-
-	if (!AddLine(ACT_BLOCK_END))
-		return FAIL;
 
 	if (*aPrmStart == '(' || *aPrmEnd != ')') // Anonymous function is not yet preceded by a DT_VAR.
 	{
@@ -5658,39 +5584,51 @@ ResultType Script::ParseFatArrow(DerefList &aDeref, LPTSTR aPrmStart, LPTSTR aPr
 	fr.type = DT_FUNCREF;
 	fr.marker = aPrmStart; // Mark the entire fat arrow expression as a function deref.
 	fr.length = DerefLengthType(aExprEnd - aPrmStart); // Relies on the fact that an arg can't be longer than the max deref length (because ArgLengthType == DerefLengthType).
-	if (*name)
-		fr.var = FindVar(name, 0); // Find the Var already added by AddFunc().
-	else // No name, so AddFunc() inserted it at position 0.
-		fr.var = g->CurrentFunc ? g->CurrentFunc->mVars.mItem[0] : GlobalVars()->mItem[0];
-
-	mNoUpdateLabels = nolabels;
-	if (parent_line)
-	{
-		mPendingParentLine = parent_line;
-		mPendingRelatedLine = block_begin; // This ensures block_begin->mRelatedLine is set for PreparseExpressions.
-	}
+	// Find the Var already added by AddFunc(), or inserted at position 0 if anonymous.
+	// Avoid using FindVar() because g->CurrentFunc is not set appropriately if aExpr
+	// contains the start of a function definition expression.
+	auto &vars = func.mOuterFunc ? func.mOuterFunc->mVars : *GlobalVars();
+	fr.var = *func.mName ? vars.Find(func.mName) : vars.mItem[0];
+	ASSERT(fr.var && vars.mCount);
 
 	return OK;
 }
 
 
-ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
+ResultType Script::ParseAndAddLineInBlock(LPTSTR aLineText, ActionTypeType aActionType)
+{
+	if (!AddLine(ACT_BLOCK_BEGIN))
+		return FAIL;
+
+	auto expr = mExprContainingThisFunc;
+	if (!ParseAndAddLine(aLineText, aActionType))
+		return FAIL;
+
+	if (mExprContainingThisFunc != expr)
+	{
+		mExprContainingThisFunc->add_block_end_after = true;
+		return OK;
+	}
+	return AddLine(ACT_BLOCK_END);
+}
+
+
+
+UserFunc* Script::CreateHotFunc()
+{
+	if (!DefineFunc(_T("<Hotkey>(ThisHotkey)")))
+		return nullptr;
+	return g->CurrentFunc;
+}
+
+
+
+ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, FuncDefType aIsInExpression)
 // Returns OK or FAIL.
 {
 	LPTSTR param_end, param_start = _tcschr(aBuf, '('); // Caller has ensured that this will return non-NULL.
 	int insert_pos;
 	
-	auto last_hotfunc = mLastHotFunc;
-	if (last_hotfunc)
-	{
-		// This means we are defining a function under a "trigger::".
-		// Then mLastHotFunc will not be used, instead all variants which have set it as its
-		// mJumpLabel will replace it with the new function defined in this call.
-		ASSERT(last_hotfunc == g->CurrentFunc);
-		g->CurrentFunc =					// To avoid nesting the new function inside it.
-			mLastHotFunc = nullptr;			// To avoid the next call AddLine demanding a ACT_BLOCK_BEGIN.										
-	}
-
 	bool is_method = mClassObjectCount && !g->CurrentFunc && !aIsInExpression;
 	if (is_method) // Class method or property getter/setter.
 	{
@@ -5711,14 +5649,14 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 		*param_start = '('; // Undo temporary termination.
 
 		// Below passes class_object for AddFunc() to store the func "by reference" in it:
-		if (  !(g->CurrentFunc = AddFunc(full_name, -1, class_object))  )
+		if (  !(g->CurrentFunc = AddFunc(full_name, -1, aIsInExpression, class_object))  )
 			return FAIL;
 	}
 	else
 	{
 		// The value of g->CurrentFunc must be set here rather than by our caller since AddVar(), which we call,
 		// relies upon it having been done.
-		if (   !(g->CurrentFunc = AddFunc(aBuf, param_start - aBuf))   )
+		if (   !(g->CurrentFunc = AddFunc(aBuf, param_start - aBuf, aIsInExpression))   )
 			return FAIL; // It already displayed the error.
 	}
 
@@ -5740,8 +5678,6 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 	func.mLineNumber = mCombinedLineNumber;
 	func.mFileIndex = mCurrFileIndex;
 #endif
-
-	func.mIsFuncExpression = aIsInExpression;
 
 	if (is_method)
 	{
@@ -5830,13 +5766,13 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 				if (*param_end) // Close-quote was found.
 				{
 					auto next_non_white = *omit_leading_whitespace(param_end + 1);
-					if ((next_non_white == ',' || next_non_white == ')') // Just a literal string.
-						&& param_end - param_start < _countof(buf)) // If it's too long for the buffer, let it raise an error in the next section.
+					if (next_non_white == ',' || next_non_white == ')') // Just a literal string.
 					{
-						tcslcpy(buf, param_start + 1, param_end - param_start); // +1 skips the opening quote and also accounts for the terminator for tcslcpy.
-						ConvertEscapeSequences(buf, NULL); // Raw escape sequences like `n haven't been converted yet, so do it now.
+						param_start++; // Skip the opening quote mark.
+						size_t len;
+						// Raw escape sequences like `n haven't been converted yet, so it's done here while also copying the string.
 						this_param.default_type = PARAM_DEFAULT_STR;
-						this_param.default_str = SimpleHeap::Alloc(buf);
+						this_param.default_str = ConvertEscapeSequences<SimpleHeap::Alloc<TCHAR>>(param_start, param_end - param_start, len);
 						++param_end; // Move beyond the close-quote, for below.
 					}
 				}
@@ -5880,7 +5816,12 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 						this_param.default_double = _tstof(buf); // _tstof() vs. ATOF() because PURE_FLOAT is never hexadecimal.
 						break;
 					default: // Not numeric (and also not a quoted string because that was handled earlier).
-						sntprintf(buf, _countof(buf), _T("%s ??= %.*s"), this_param.var->mName, value_length, param_start);
+						// This was previously done using ??, which gave the wrong result for ByRef parameters,
+						// since ?? checks the target variable when one is provided.  So instead, the Line is executed
+						// directly by UserFunc::Call() if the parameter is omitted.  To prevent them from executing
+						// unconditionally, PreparseExpressions() sets mJumpToLine to the real first line of the body,
+						// after it uses the initial value of mJumpToLine (which is set by ParseAndAddLine below).
+						sntprintf(buf, _countof(buf), _T("%s := %.*s"), this_param.var->mName, value_length, param_start);
 						if (!at_least_one_default_expr)
 						{
 							at_least_one_default_expr = true;
@@ -5889,7 +5830,8 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 						}
 						if (!ParseAndAddLine(buf, ACT_EXPRESSION))
 							return FAIL;
-						this_param.default_type = PARAM_DEFAULT_UNSET;
+						this_param.default_type = PARAM_DEFAULT_EXPR;
+						this_param.default_expr = mLastLine;
 						mLastParamInitializer = mLastLine; // Allow other checks to identify this as not an actual script line.
 					}
 				}
@@ -5938,8 +5880,12 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 	}
 	//else leave func.mParam/mParamCount set to their NULL/0 defaults.
 	
-	if (last_hotfunc)
+	if (mPendingHotkey)
 	{
+		if (func.mMinParams > 1 || (func.mParamCount == 0 && !func.mIsVariadic))
+			// func must accept at least one parameter (or use *), any remaining parameters must be optional.
+			return ScriptError(ERR_HOTKEY_FUNC_PARAMS, aBuf);
+
 		// Check all hotkeys, since there might be multiple
 		// hotkeys stacked:
 		// ^a::
@@ -5948,7 +5894,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 		for (int i = 0; i < Hotkey::sHotkeyCount; ++i)
 		{
 			for (HotkeyVariant* v = Hotkey::shk[i]->mFirstVariant; v; v = v->mNextVariant)
-				if (v->mCallback == last_hotfunc)
+				if (!v->mCallback)
 				{
 					v->mCallback = &func;
 					v->mOriginalCallback = &func;	// To make scripts more maintainable and to
@@ -5969,7 +5915,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 		// Check hotstrings as well (even if a hotkey was found):
 		for (int i = Hotstring::sHotstringCount - 1; i >= 0; --i) // Start with the last one defined, for performance.
 		{
-			if (Hotstring::shs[i]->mCallback != last_hotfunc)
+			if (Hotstring::shs[i]->mCallback || Hotstring::shs[i]->mReplacement)
 				// This hotstring has a function or is auto-replace.
 				// Since hotstrings are listed in order of definition and we're iterating in
 				// the reverse order, there's no need to continue.
@@ -5977,13 +5923,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 			Hotstring::shs[i]->mCallback = &func;
 		}
 
-		if (func.mMinParams > 1 || (func.mParamCount == 0 && !func.mIsVariadic))
-			// func must accept at least one parameter (or use *), any remaining parameters must be optional.
-			return ScriptError(func.mParamCount == 0 ? ERR_PARAM_REQUIRED : ERR_HOTKEY_FUNC_PARAMS, aBuf);
-		
-		mUnusedHotFunc = last_hotfunc;	// This function not used now, so reuse it for the 
-										// next hotkey which needs a function.
-		mHotFuncs.mCount--;				// Consider it gone from the list.
+		mPendingHotkey = nullptr;
 	}
 
 	// At this point, param_start points to ')'.
@@ -6000,9 +5940,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, bool aIsInExpression)
 		param_start = omit_leading_whitespace(param_start + 2);
 		if (!*param_start)
 			return ScriptError(ERR_INVALID_FUNCDECL, aBuf);
-		if (!AddLine(ACT_BLOCK_BEGIN)
-			|| !ParseAndAddLine(param_start, ACT_RETURN)
-			|| !AddLine(ACT_BLOCK_END))
+		if (!ParseAndAddLineInBlock(param_start, ACT_RETURN))
 			return FAIL;
 	}
 	else
@@ -6460,25 +6398,34 @@ ResultType Script::DefineClassVarInit(LPTSTR aBuf, bool aStatic, Object *aObject
 	mLastLine = block_end->mPrevLine; // i.e. insert before block_end.
 	mLastLine->mNextLine = nullptr; // For maintainability; AddLine() should overwrite it regardless.
 	mCurrLine = nullptr; // Fix for v1.1.09.02: Leaving this non-NULL at best causes error messages to show irrelevant vicinity lines, and at worst causes a crash because the linked list is in an inconsistent state.
+	if (init_func->mJumpToLine == block_end) // This can be true only for the first static initializer.
+		mNextLineIsFunctionBody = true;
 
 	Line *prl = mPendingRelatedLine; // This was set by AddLine(ACT_BLOCK_END) if DefineClassInit() was just called.
 	mPendingRelatedLine = nullptr;
-	mNoUpdateLabels = true;
+	// No need to account for pending labels because 1) labels aren't allowed in a class body,
+	// 2) any label above the class would already point to the implied "initialization" line,
+	// 3) AddLine will only check for pending labels in g->CurrentFunc (i.e. init_func).
 	if (!ParseAndAddLine(aBuf, aActionType))
 		return FAIL; // Above already displayed the error.
-	mNoUpdateLabels = false;
-	mPendingRelatedLine = prl;
-
-	if (init_func->mJumpToLine == block_end) // This can be true only for the first static initializer.
-		init_func->mJumpToLine = mLastLine;
-	// Rejoin the function's block-end (and any lines following it) to the main script.
-	mLastLine->mNextLine = block_end;
-	block_end->mPrevLine = mLastLine;
-	// mFirstLine should be left as it is: if it was NULL, it now contains a pointer to our
-	// __init function's block-begin, which is now the very first executable line in the script.
-	g->CurrentFunc = nullptr;
-	// Restore mLastLine so that any subsequent script lines are added at the correct point.
-	mLastLine = script_last_line;
+	if (mExprContainingThisFunc)
+	{
+		// aBuf contained the start of a function definition expression, so defer the rest.
+		mExprContainingThisFunc->rejoin_first_line = block_end;
+		mExprContainingThisFunc->rejoin_last_line = script_last_line;
+	}
+	else
+	{
+		mPendingRelatedLine = prl;
+		// Rejoin the function's block-end (and any lines following it) to the main script.
+		mLastLine->mNextLine = block_end;
+		block_end->mPrevLine = mLastLine;
+		// mFirstLine should be left as it is: if it was NULL, it now contains a pointer to our
+		// __init function's block-begin, which is now the very first executable line in the script.
+		g->CurrentFunc = nullptr;
+		// Restore mLastLine so that any subsequent script lines are added at the correct point.
+		mLastLine = script_last_line;
+	}
 	return OK;
 }
 
@@ -6798,7 +6745,7 @@ Func *Script::GetBuiltInFunc(LPTSTR aFuncName)
 
 
 
-UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aClassObject)
+UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, FuncDefType aIsInExpression, Object *aClassObject)
 // Returns the address of the new function or NULL on failure.
 // The caller must already have verified that this isn't a duplicate function.
 {
@@ -6834,10 +6781,15 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 	// since the script currently always exits if an error occurs anywhere below:
 	LPTSTR new_name = SimpleHeap::Alloc(aFuncName, aFuncNameLength);
 
-	if (!aClassObject && *new_name && !Var::ValidateName(new_name, DISPLAY_FUNC_ERROR))  // Variable and function names are both validated the same way.
+	// new_name can legitimately be blank for some callers, or something like <Hotkey>.
+	// Invalid chars are excluded by preventing recognition as a function definition,
+	// but names beginning with numbers can reach this point.
+	if (!aClassObject && *new_name && *new_name != '<' && !Var::ValidateName(new_name, DISPLAY_FUNC_ERROR))  // Variable and function names are both validated the same way.
 		return nullptr; // Above already displayed the error for us.
 
 	auto the_new_func = new UserFunc(new_name);
+
+	the_new_func->mIsFuncExpression = aIsInExpression;
 
 	if (aClassObject)
 	{
@@ -6879,61 +6831,87 @@ UserFunc *Script::AddFunc(LPCTSTR aFuncName, size_t aFuncNameLength, Object *aCl
 		// Also add it to the script's list of functions, to support #Warn LocalSameAsGlobal
 		// and automatic cleanup of objects in static vars on program exit.
 	}
-	else
+	else if (*new_name != '<' // i.e. not <Hotkey>
+		&& aIsInExpression != FuncDefExpression) // Defer the following for these.
 	{
-		ResultType result = OK;
-		VarList *varlist;
-		int insert_pos;
-		int scope = (g->CurrentFunc ? VAR_DECLARE_LOCAL : VAR_DECLARE_GLOBAL);
 		if (is_static)
-		{
 			the_new_func->mIsStatic = true;
-			scope |= VAR_LOCAL_STATIC;
-		}
-		if (!aFuncNameLength) // Anonymous.
-		{
-			// Give it a name for debugging purposes and to allow function definition expressions to
-			// be anonymous (since they currently work by preprocessing/replacing the definition with
-			// just its name).  Starting with a digit ensures it will never conflict.
-			TCHAR buf[16];
-			static UINT sCount = 0;
-			aFuncNameLength = _stprintf(buf, _T("%ufn"), ++sCount);
-			the_new_func->mName = aFuncName = SimpleHeap::Alloc(buf, aFuncNameLength); // The previous value of the_new_func->mName was the constant _T("").
-		}
-		Var *var = aFuncNameLength ? FindVar(aFuncName, aFuncNameLength, FINDVAR_NO_BIF | scope, &varlist, &insert_pos, &result) : NULL;
-		if (var)
-		{
-			// Anything found at this early stage must have been created by a prior declaration
-			// or predefined.  Treat it as an error even if var is uninitialized, otherwise:
-			//  1) "static x" or "global x" prior to the function would affect its scope/duration
-			//     in a way that is problematic for closures and probably unintentional.
-			//  2) It would be possible to declare the function as local/global prior to defining
-			//     it, but not afterward (as the conflict would be detected by ParseAndAddLine).
-			ConflictingDeclarationError(_T("function"), var);
+		if (!AddFuncVar(the_new_func))
 			return nullptr;
-		}
-		var = AddVar(aFuncName, aFuncNameLength, varlist, insert_pos, scope | ADDVAR_NO_VALIDATE); // Already validated, or invalid in the case of anonymous functions.
-		if (!var)
-			return nullptr;
-		var->Assign(the_new_func);
-		var->MakeReadOnly();
 	}
 
-	the_new_func->mOuterFunc = g->CurrentFunc;
-	
-	// The general rule is that a nested function's namespace includes all of the names that
-	// were in the outer function's namespace by default.  In other words, if the outer function
-	// is assume-global, the nested function should also default to assume-global.
-	if (the_new_func->mOuterFunc && the_new_func->mOuterFunc->IsAssumeGlobal())
-		the_new_func->mDefaultVarType = VAR_GLOBAL; // Not VAR_DECLARE_GLOBAL, which would prevent referencing of outer vars.
+	return AddFuncToList(the_new_func);
+}
 
-	if (!mFuncs.Insert(the_new_func, mFuncs.mCount))
+
+
+Var *Script::AddFuncVar(UserFunc *aFunc)
+{
+	ResultType result = OK;
+	VarList *varlist;
+	int insert_pos;
+	int scope = (g->CurrentFunc ? VAR_DECLARE_LOCAL : VAR_DECLARE_GLOBAL);
+	if (aFunc->mIsStatic)
+		scope |= VAR_LOCAL_STATIC;
+	size_t name_length = _tcslen(aFunc->mName);
+	Var *var = name_length ? FindVar(aFunc->mName, name_length, FINDVAR_NO_BIF | scope, &varlist, &insert_pos, &result) : NULL;
+	if (var && var->IsDeclared())
+	{
+		// Anything found at this early stage must have been created by a prior declaration
+		// or predefined.  Treat it as an error even if var is uninitialized, otherwise:
+		//  1) "static x" or "global x" prior to the function would affect its scope/duration
+		//     in a way that is problematic for closures and probably unintentional.
+		//  2) It would be possible to declare the function as local/global prior to defining
+		//     it, but not afterward (as the conflict would be detected by ParseAndAddLine).
+		ConflictingDeclarationError(_T("function"), var);
+		return nullptr;
+	}
+	if (!var)
+	{
+		if (!name_length)
+		{
+			insert_pos = 0;
+			varlist = g->CurrentFunc ? &g->CurrentFunc->mVars : GlobalVars();
+		}
+		var = AddVar(aFunc->mName, name_length, varlist, insert_pos, scope | ADDVAR_NO_VALIDATE); // Already validated, or invalid in the case of anonymous functions.
+		if (!var)
+			return nullptr;
+	}
+	ASSERT(var->IsUninitialized());
+	var->Assign(aFunc);
+	var->MakeReadOnly();
+	return var;
+}
+
+
+	
+UserFunc *Script::AddFuncToList(UserFunc *aFunc)
+{
+	aFunc->mOuterFunc = g->CurrentFunc;
+	
+	// Function definition expressions are parsed before the expression which "contains" them,
+	// which puts the FDE before its outer function in mFuncs, in cases like `outer() => FDE(){`.
+	// To correct that, insert new non-FDE functions before the first unresolved FDE.
+	int &index = mExprContainingThisFunc ? mExprContainingThisFunc->funcs_index : mExprFuncIndex;
+	int new_index = mFuncs.mCount;
+	if (index == INT_MAX && aFunc->mIsFuncExpression == FuncDefExpression)
+		index = new_index;
+	if (aFunc->mIsFuncExpression != FuncDefExpression && index <= new_index) // <= vs < keeps it pointing beyond the end when there aren't any FDEs.
+	{
+		// index might not point to an FDE if functions were defined within a previous FDE,
+		// or if a previous FDE was resolved prior to this definition.  This might not be
+		// necessary, but keeps mFuncs in a sensible order:
+		for (; index < mFuncs.mCount && mFuncs.mItem[index]->mIsFuncExpression != FuncDefExpression; ++index);
+		new_index = index++; // Insert here and increment index so it still points to the same item.
+	}
+
+	if (!mFuncs.Insert(aFunc, new_index))
 	{
 		ScriptError(ERR_OUTOFMEM);
 		return nullptr;
 	}
 
-	return the_new_func;
+	return aFunc;
 }
 
 
@@ -7206,7 +7184,7 @@ Var *Script::FindUpVar(LPCTSTR aVarName, size_t aVarNameLength, UserFunc &aInner
 	// At this point aInner doesn't have a variable by this name, so create one:
 	int insert_pos;
 	aInner.mVars.Find(aVarName, &insert_pos);
-	Var *inner_var = AddVar(aVarName, aVarNameLength, &aInner.mVars, insert_pos, VAR_LOCAL | VAR_DECLARED); // VAR_DECLARED suppresses checking for a global for #Warn LocalSameAsGlobal or when #Warn UseUnset is triggered.
+	Var *inner_var = AddVar(aVarName, aVarNameLength, &aInner.mVars, insert_pos, VAR_LOCAL | VAR_DECLARED | ADDVAR_NO_VALIDATE); // VAR_DECLARED suppresses checking for a global for #Warn LocalSameAsGlobal or when #Warn UseUnset is triggered.
 	if (!inner_var)
 	{
 		if (aDisplayError)
@@ -7458,11 +7436,34 @@ ResultType Script::PreparseExpressions(FuncList &aFuncs)
 {
 	for (int i = 0; i < aFuncs.mCount; ++i)
 	{
-		ASSERT(dynamic_cast<UserFunc*>(aFuncs.mItem[i]));
-		auto &func = *(UserFunc *)aFuncs.mItem[i];
+		UserFunc &func = *aFuncs.mItem[i];
+		
+		// Variables that were assignable in the outer function should also be assignable
+		// in the inner function by default; i.e. assume-global mode should be inherited.
+		// This must be done before assignments are parsed, and can't be done when the
+		// function is first added because a function definition expression's initial value
+		// for mOuterFunc can be incorrect (if it's inside a parameter default initializer
+		// or fat arrow function, although the latter can't use a global declaration).
+		if (func.mOuterFunc && func.mOuterFunc->IsAssumeGlobal() && func.mDefaultVarType == VAR_DECLARE_LOCAL)
+			func.mDefaultVarType = VAR_GLOBAL; // Not VAR_DECLARE_GLOBAL, which would prevent referencing of outer vars.
+
 		g->CurrentFunc = &func;
 		if (!PreparseExpressions(func.mJumpToLine)) // Preparse this function's body.
 			return FAIL;
+		// Now that expressions have been preparsed, remove any parameter default expressions
+		// from the normal flow of execution by adjusting the function's mJumpToLine.  (This
+		// wasn't done earlier because the original value is needed above.)
+		if (mLastParamInitializer && func.mMinParams < func.mParamCount)
+		{
+			for (int i = func.mParamCount; --i >= func.mMinParams; )
+			{
+				if (func.mParam[i].default_type == PARAM_DEFAULT_EXPR)
+				{
+					func.mJumpToLine = func.mParam[i].default_expr->mNextLine;
+					break;
+				}
+			}
+		}
 		// Nested functions will be preparsed next, due to the fact that they immediately
 		// follow the outer function in aFuncs.
 	}
@@ -8512,8 +8513,10 @@ unquoted_literal:
 
 			if (!can_be_optimized_out)
 			{
-				LPTSTR str = SimpleHeap::Alloc(this_deref_ref.marker, this_deref_ref.length);
-				infix[infix_count].SetValue(str, this_deref_ref.length);
+				size_t length;
+				auto str = ConvertEscapeSequences<SimpleHeap::Alloc<TCHAR>>(this_deref_ref.marker, this_deref_ref.length, length);
+				ASSERT(!str[length]);
+				infix[infix_count].SetValue(str, length);
 				infix_count++;
 			}
 			cp += this_deref_ref.length;
@@ -9174,6 +9177,7 @@ standard_pop_into_postfix: // Use of a goto slightly reduces code size.
 					bool is_post_op = (infix_symbol == SYM_POST_INCREMENT || infix_symbol == SYM_POST_DECREMENT);
 					if (   is_post_op
 						|| infix_symbol != SYM_DOT && infix_symbol != SYM_OPAREN // Do not apply the "++" to the "x.y" part of "++x.y.z" (SYM_DOT) or "++x.y.%z%" (SYM_OPAREN).
+							&& infix_symbol != SYM_OBRACKET // or the "x.y" in "x.y[z]", or "x[y]" in "x[y][z]".
 						&& (stack_symbol == SYM_PRE_INCREMENT || stack_symbol == SYM_PRE_DECREMENT)   )
 					{
 						auto get_token = this_postfix;
@@ -9340,7 +9344,8 @@ standard_pop_into_postfix: // Use of a goto slightly reduces code size.
 				|| stack_symbol == SYM_POST_INCREMENT || stack_symbol == SYM_POST_DECREMENT)
 				return LineError(ERR_INVALID_ASSIGNMENT, FAIL, (*stk)->error_reporting_marker);
 			if (  !(stack_symbol == SYM_FUNC || stack_symbol == SYM_MAYBE
-				|| IS_OPAREN_LIKE(stack_symbol) || stack_symbol == SYM_BEGIN)  )
+				|| IS_OPAREN_LIKE(stack_symbol) || stack_symbol == SYM_BEGIN
+				|| stack_symbol == SYM_REF && (stk < stack + stack_count - 1) && stk[1]->symbol == SYM_ASSIGN)  )
 				return LineError(_T("This operator's right operand must not be unset."), FAIL, (*stk)->error_reporting_marker);
 			this_postfix->circuit_token = postfix[postfix_count - 1]; // Update the final jump target (has no effect unless chain_end is followed by the else branch of a ternary).
 			// For each MAYBE at the top of the stack, pop it off and update its jump target too.
@@ -12129,8 +12134,7 @@ ResultType Script::PreprocessLocalVars(FuncList &aFuncs)
 {
 	for (int i = 0; i < aFuncs.mCount; ++i)
 	{
-		ASSERT(dynamic_cast<UserFunc*>(aFuncs.mItem[i]));
-		auto &func = *(UserFunc *)aFuncs.mItem[i];
+		UserFunc &func = *aFuncs.mItem[i];
 		if (!PreprocessLocalVars(func))
 			return FAIL;
 		// Nested functions will be preparsed next, due to the fact that they immediately
@@ -12256,8 +12260,6 @@ ResultType Script::PreprocessLocalVars(UserFunc &aFunc)
 
 ResultType Script::PreparseVarRefs()
 {
-	// AddLine() and ExpressionToPostfix() currently leave validation of output variables
-	// and lvalues to this function, to reduce code size.  Search for "VarIsReadOnlyError".
 	for (Line *line = mFirstLine; line; line = line->mNextLine)
 	{
 		switch (line->mActionType)
