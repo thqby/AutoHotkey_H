@@ -2650,15 +2650,6 @@ process_completed_line:
 				// hotstring duplicates (and performs a lot worse if a script has thousands of
 				// hotstrings) because of all the hotstring options.
 
-				if (hotstring_execute && (!*hotkey_flag || hotkey_uses_otb))
-					// Do not allow execute option with blank line or OTB.
-					// Without this check, this
-					// :X:x::
-					// {
-					// }
-					// would execute the block. But X is supposed to mean "execute this line".
-					return ScriptError(ERR_EXPECTED_ACTION);
-
 				if (hotkey_uses_otb)
 				{
 					// Never use otb if text or raw mode is in effect for this hotstring.
@@ -3145,6 +3136,8 @@ bool Script::EndsWithOperator(LPTSTR aBuf, LPTSTR aBuf_marker)
 // Returns true if aBuf_marker is the end of an operator, excluding ++ and --.
 {
 	LPTSTR cp = aBuf_marker; // Caller has omitted trailing whitespace.
+	if (*cp == '.') // It's only a meaningful end-of-line operator if preceded by a space; something like "2." should not cause continuation.
+		return cp > aBuf && IS_SPACE_OR_TAB(cp[-1]);
 	if (_tcschr(EXPR_OPERATOR_SYMBOLS, *cp) // It's a binary operator or ++ or --.
 		&& !((*cp == '+' || *cp == '-') && cp > aBuf && cp[-1] == *cp)) // Not ++ or --.
 		return true;
@@ -4253,6 +4246,8 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 			return CONDITION_TRUE;
 
 		auto pending_hotfunc = mLastHotFunc;
+		if (pending_hotfunc)
+			mHotFuncs.mCount--; // See comments toward the end.
 		
 		// Create a function to return the result of the expression
 		// specified by "parameter":
@@ -4276,6 +4271,9 @@ inline ResultType Script::IsDirective(LPTSTR aBuf)
 
 		ASSERT(!g->CurrentFunc && !mLastHotFunc); // Should be null due to ACT_BLOCK_END and prior checks.
 		g->CurrentFunc = mLastHotFunc = pending_hotfunc; // Restore any pending hotkey function.
+		if (pending_hotfunc)
+			// Ensure mLastHotFunc is always the last item, as DefineFunc requires it.
+			mHotFuncs.Insert(pending_hotfunc, mHotFuncs.mCount);
 		
 		return CONDITION_TRUE;
 	}

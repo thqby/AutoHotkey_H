@@ -3230,6 +3230,7 @@ ResultType MsgMonitorList::Call(ExprTokenType *aParamValue, int aParamCount, int
 
 ResultType MsgMonitorList::Call(ExprTokenType *aParamValue, int aParamCount, UINT aMsg, UCHAR aMsgType, GuiType *aGui, INT_PTR *aRetVal)
 {
+	DEBUGGER_STACK_PUSH(_T("Gui"))
 	ResultType result = OK;
 	__int64 retval = 0;
 	BOOL thread_used = FALSE;
@@ -3265,6 +3266,7 @@ ResultType MsgMonitorList::Call(ExprTokenType *aParamValue, int aParamCount, UIN
 	}
 	if (aRetVal)
 		*aRetVal = (INT_PTR)retval;
+	DEBUGGER_STACK_POP()
 	return result;
 }
 
