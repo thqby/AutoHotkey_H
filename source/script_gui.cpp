@@ -2616,7 +2616,7 @@ FResult GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 			handlers.Delete(mon);
 		if (aEventKind == GUI_EVENTKIND_MESSAGE)
 			UpdateMsgMonitor(aControl, aEvent, 0);
-		else
+		else if (aEventKind == GUI_EVENTKIND_EVENT)
 			ApplyEventStyles(aControl, aEvent, false);
 		return OK;
 	}
@@ -2669,7 +2669,7 @@ FResult GuiType::OnEvent(GuiControlType *aControl, UINT aEvent, UCHAR aEventKind
 	mon->msg_type = aEventKind;
 	if (aEventKind == GUI_EVENTKIND_MESSAGE)
 		UpdateMsgMonitor(aControl, aEvent, aMaxThreads);
-	else
+	else if (aEventKind == GUI_EVENTKIND_EVENT)
 		ApplyEventStyles(aControl, aEvent, true);
 	return OK;
 }
