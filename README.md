@@ -90,13 +90,20 @@ class JSON {
   static true => ComValue
   static false => ComValue
 
-  // @param keep_type If true, convert true/false/null to JSON.true / JSON.false / JSON.null, otherwise 1 / 0 / ''
-  // @param as_map If true, convert `{}` to Map, otherwise Object
+  /**
+   * @param keep_type If true, convert true/false/null to JSON.true / JSON.false / JSON.null, otherwise 1 / 0 / ''
+   * @param as_map If true, convert `{}` to Map, otherwise Object
+   * supports [JSON5](https://spec.json5.org/) format.
+   */
   static parse(text, keep_type := true, as_map := true) => Map | Array
 
-  // the object include map,array,object and custom objects with `__enum` metagenics
-  // @param space The number of Spaces or string used for indentation
-  static stringify(obj, space := 0) => String
+  /**
+   * the object include map,array,object and custom objects with `__enum` meta function
+   * @param options {Integer|String|Object} The number of Spaces or string used for indentation
+   * @param options.indent The number of spaces or string used for indentation
+   * @param options.depth Expands the specified number of levels
+   */
+  static stringify(obj, options := 0) => String
 }
 
 class Worker {
@@ -172,7 +179,7 @@ Cast(DataType, Value, NewDataType) => Number
 
 ComObjDll(hModule, CLSID [, IID]) => ComObject
  
-CryptAES(AddOrBuf [, Size], password, EncryptOrDecrypt := true, Algorithm := 256)
+CryptAES(AddOrBuf [, Size], password, EncryptOrDecrypt := true, Algorithm := 256) => Buffer
 
 DynaCall(DllFunc, ParameterDefinition, Params*) => Number | String
 
@@ -212,31 +219,31 @@ UMap([Key1, Value1, ...]) => Map
 
 UObject([Key1, Value1, ...]) => Object
 
-UnZip(BufOrAddOrFile [, Size], DestinationFolder [, FileToExtract, DestinationFileName, Password]) => void
+UnZip(AddOrBufOrFile [, Size], DestinationFolder, FileToExtract?, DestinationFileName?, Password?, CodePage := 0) => void
 
-UnZipBuffer(AddOrBufOrFile [, Size], FileToExtract [, Password]) => Buffer
+UnZipBuffer(AddOrBufOrFile [, Size], FileToExtract, Password?, CodePage := 0) => Buffer
 
-UnZipRawMemory(AddOrBuf [, Size, Password]) => Buffer
+UnZipRawMemory(AddOrBuf [, Size], Password?) => Buffer
 
-ZipAddBuffer(ZipHandle, AddOrBuf [, Size], FileName) => Number
+ZipAddBuffer(ZipHandle, AddOrBuf [, Size], FileName?) => void
 
-ZipAddFile(ZipHandle, FileName [, ZipFileName]) => Number
+ZipAddFile(ZipHandle, FileName [, ZipFileName]) => void
 
-ZipAddFolder(ZipHandle, ZipFoldName) => Number
+ZipAddFolder(ZipHandle, ZipFoldName) => void
 
 ZipCloseBuffer(ZipHandle) => Buffer
 
-ZipCloseFile(ZipHandle) => Number
+ZipCloseFile(ZipHandle) => void
 
-ZipCreateBuffer(MaxSize [, Password]) => Number
+ZipCreateBuffer(MaxSize, Password?) => Number
 
-ZipCreateFile(FileName [, Password]) => Number
+ZipCreateFile(FileName, Password?) => Number
 
-ZipInfo(AddOrBufOrFile [, Size]) => Array
+ZipInfo(AddOrBufOrFile [, Size], CodePage := 0) => Array
 
-ZipOptions(ZipHandle, Options) => Number
+ZipOptions(ZipHandle, Options) => void
 
-ZipRawMemory(AddOrBuf [, Size , Password]) => Buffer
+ZipRawMemory(AddOrBuf [, Size], Password?) => Buffer
 ```
 
 ## AutoHotkey.dll Module

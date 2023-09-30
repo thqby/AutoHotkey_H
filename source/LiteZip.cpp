@@ -1,17 +1,13 @@
 #include "stdafx.h"
-#include "LiteZip.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <tchar.h>
+#include "LiteZip.h"
 #include "globaldata.h"
-#define IDS_OK        20
-#define IDS_UNKNOWN   21
-#define DIRSLASH_CHAR	'\\'
-#ifndef CP_UTF8
-#define CP_UTF8		65001
-#endif
 
+
+#define DIRSLASH_CHAR	'\\'
 
 // =========================== Defines ======================
 // Basic data types
@@ -25,7 +21,6 @@ typedef unsigned long	lutime_t;	// define it ourselves since we don't include ti
 #define UNZIP_HANDLE		0x04
 #define UNZIP_RAW			0x08
 #define UNZIP_ALREADYINIT	0x40000000
-#define UNZIP_UNICODE		0x80000000
 
 // Allowed flush values; see deflate() for details
 #define Z_NO_FLUSH		0
@@ -56,8 +51,13 @@ typedef unsigned long	lutime_t;	// define it ourselves since we don't include ti
 // value below is more than safe.
 #define MANY		1440
 
-
-
+// Signatures for zip file information headers
+#define LOCSIG     0x04034b50L
+#define CENSIG     0x02014b50L
+#define ENDSIG     0x06054b50L
+#define END64SIG   0x06064b50L
+#define END64LOCSIG 0x07064b50L
+#define EXTLOCSIG  0x08074b50L
 
 
 // =========================== Structs ======================
@@ -294,6 +294,7 @@ typedef struct
 typedef struct
 {
 	DWORD			Flags;
+	UINT			CodePage;
 	HANDLE			ArchivePtr;					// Points to a handle, or a buffer if TZIP_ARCMEMORY
 	DWORD			LastErr;					// Holds the last TUNZIP error code
 	DWORD			InitialArchiveOffset;		// Initial offset within a file where the ZIP archive begins. This allows reading a ZIP archive contained within another file
@@ -312,38 +313,8 @@ typedef struct
 	ZIPENTRYINFO	CurrentEntryInfo;			// Info about the currently selected entry (gotten from the Central Dir)
 	ZIPENTRYINFO64	CurrentEntryInfo64;			// Info about the currently selected entry (gotten from the Central Dir)
 	ENTRYREADVARS	EntryReadVars;				// Variables/buffers for decompressing the current entry
-	unsigned char	Rootdir[MAX_PATH];			// Root dir for unzipping entries. Includes a trailing slash. Must be the last field!!!
+	WCHAR			Rootdir[MAX_PATH];			// Root dir for unzipping entries. Includes a trailing slash. Must be the last field!!!
 } TUNZIP;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -391,10 +362,6 @@ static DWORD setCurrentEntry(TUNZIP *, ZIPENTRY *, DWORD);
 #define OUTBYTE(a) {*q++=(UCH)(a);m--;}
 //   load local pointers 
 #define LOAD {LOADIN LOADOUT}
-
-
-
-
 
 
 
@@ -637,38 +604,30 @@ static const uInt CpDExt[30] = { // Extra bits for distance codes
 
 // Error messages
 static const char UnknownErr[] = "Unknown zip result code";
-static const char ErrorMsgs[] = "Success\0\
-								Can't create/open file\0\
-								Failed to allocate memory\0\
-								Error writing to file\0\
-								Entry not found in the zip archive\0\
-								Still more data to unzip\0\
-								Zip archive is corrupt or not a zip archive\0\
-								Error reading file\0\
-								The entry is in a format that can't be decompressed by this Unzip add-on\0\
-								Faulty arguments\0\
-								Can get memory only of a memory-mapped zip\0\
-								Not enough space allocated for memory zip\0\
-								There was a previous error\0\
-								Additions to the zip have already been ended\0\
-								The anticipated size turned out wrong\0\
-								Mixing creation and opening of zip\0\
-								Trying to seek the unseekable\0\
-								Tried to change mind, but not allowed\0\
-								An internal error during flation\0\
-								Password is incorrect\0\
-								Aborted\0";
+static const char ErrorMsgs[] = 
+"Success\0\
+Can't create/open file\0\
+Failed to allocate memory\0\
+Error writing to file\0\
+Entry not found in the zip archive\0\
+Still more data to unzip\0\
+Zip archive is corrupt or not a zip archive\0\
+Error reading file\0\
+The entry is in a format that can't be decompressed by this Unzip add-on\0\
+Faulty arguments\0\
+Can get memory only of a memory-mapped zip\0\
+Not enough space allocated for memory zip\0\
+There was a previous error\0\
+Additions to the zip have already been ended\0\
+The anticipated size turned out wrong\0\
+Mixing creation and opening of zip\0\
+Trying to seek the unseekable\0\
+Tried to change mind, but not allowed\0\
+An internal error during flation\0\
+Password is incorrect\0\
+Aborted\0";
 
 #pragma data_seg()
-
-
-
-
-
-
-
-
-
 
 
 
@@ -709,12 +668,6 @@ static void dosdatetime2filetime(FILETIME *ft, DWORD dosdate, DWORD dostime)
 
 
 
-
-
-
-
-
-
 // ======================= Low level DEFLATE code =====================
 
 
@@ -744,7 +697,7 @@ static int inflate_flush(INFLATE_BLOCKS_STATE *s, Z_STREAM * z, int r)
 	// copy as far as end of window 
 	if (n)          // check for n!=0 to avoid waking up CodeGuard
 	{
-		CopyMemory(p, q, n);
+		memcpy(p, q, n);
 		p += n;
 		q += n;
 	}
@@ -771,7 +724,7 @@ static int inflate_flush(INFLATE_BLOCKS_STATE *s, Z_STREAM * z, int r)
 		// copy
 		if (n)
 		{
-			CopyMemory(p, q, n);
+			memcpy(p, q, n);
 			p += n;
 			q += n;
 		}
@@ -787,12 +740,11 @@ static int inflate_flush(INFLATE_BLOCKS_STATE *s, Z_STREAM * z, int r)
 
 
 
-
 static INFLATE_CODES_STATE *inflate_codes_new(uInt bl, uInt bd, const INFLATE_HUFT *tl, const INFLATE_HUFT *td, Z_STREAM * z)
 {
 	INFLATE_CODES_STATE *c;
 
-	if ((c = (INFLATE_CODES_STATE *)GlobalAlloc(GMEM_FIXED, sizeof(INFLATE_CODES_STATE))))
+	if ((c = (INFLATE_CODES_STATE *)malloc(sizeof(INFLATE_CODES_STATE))))
 	{
 		ZeroMemory(c, sizeof(INFLATE_CODES_STATE));
 		c->mode = START;
@@ -1011,10 +963,6 @@ static int inflate_codes(INFLATE_BLOCKS_STATE *s, Z_STREAM * z, int r)
 
 
 
-
-
-
-
 // infblock.c -- interpret and process block types to last block
 // Copyright (C) 1995-1998 Mark Adler
 // For conditions of distribution and use, see copyright notice in zlib.h
@@ -1071,8 +1019,8 @@ static void inflate_blocks_reset(Z_STREAM *z)
 
 	z->state->sub.check.was = s->check;
 
-	if (s->mode == IBM_BTREE || s->mode == IBM_DTREE) GlobalFree(s->sub.trees.blens);
-	if (s->mode == IBM_CODES) GlobalFree(s->sub.decode.codes);
+	if (s->mode == IBM_BTREE || s->mode == IBM_DTREE) free(s->sub.trees.blens);
+	if (s->mode == IBM_CODES) free(s->sub.decode.codes);
 
 	s->mode = IBM_TYPE;
 	s->bitk = s->bitb = 0;
@@ -1082,8 +1030,6 @@ static void inflate_blocks_reset(Z_STREAM *z)
 	LuTracev((stderr, "inflate:   blocks reset\n"));
 #endif
 }
-
-
 
 
 
@@ -1210,7 +1156,7 @@ static int inflate_blocks(Z_STREAM * z, int r)
 					t = s->sub.left;
 				if (t > n) t = n;
 				if (t > m) t = m;
-				CopyMemory(q, p, t);
+				memcpy(q, p, t);
 				p += t;  n -= t;
 				q += t;  m -= t;
 				if ((s->sub.left -= t) != 0)
@@ -1239,7 +1185,7 @@ static int inflate_blocks(Z_STREAM * z, int r)
 
 				// end remove
 				t = 258 + (t & 0x1f) + ((t >> 5) & 0x1f);
-				if (!(s->sub.trees.blens = (uInt *)GlobalAlloc(GMEM_FIXED, t * sizeof(uInt))))
+				if (!(s->sub.trees.blens = (uInt *)malloc(t * sizeof(uInt))))
 				{
 					r = Z_MEM_ERROR;
 					LEAVE
@@ -1271,7 +1217,7 @@ static int inflate_blocks(Z_STREAM * z, int r)
 					r = t;
 					if (r == Z_DATA_ERROR)
 					{
-						GlobalFree(s->sub.trees.blens);
+						free(s->sub.trees.blens);
 						s->mode = IBM_BAD;
 					}
 
@@ -1314,7 +1260,7 @@ static int inflate_blocks(Z_STREAM * z, int r)
 						t = s->sub.trees.table;
 						if (i + j > 258 + (t & 0x1f) + ((t >> 5) & 0x1f) || (c == 16 && i < 1))
 						{
-							GlobalFree(s->sub.trees.blens);
+							free(s->sub.trees.blens);
 							s->mode = IBM_BAD;
 #ifdef _DEBUG
 							z->msg = (char*)"invalid bit length repeat";
@@ -1346,7 +1292,7 @@ static int inflate_blocks(Z_STREAM * z, int r)
 					{
 						if (t == (uInt)Z_DATA_ERROR)
 						{
-							GlobalFree(s->sub.trees.blens);
+							free(s->sub.trees.blens);
 							s->mode = IBM_BAD;
 						}
 						r = t;
@@ -1363,7 +1309,7 @@ static int inflate_blocks(Z_STREAM * z, int r)
 					s->sub.decode.codes = c;
 				}
 
-				GlobalFree(s->sub.trees.blens);
+				free(s->sub.trees.blens);
 				s->mode = IBM_CODES;
 			}
 
@@ -1373,7 +1319,7 @@ static int inflate_blocks(Z_STREAM * z, int r)
 					if ((r = inflate_codes(s, z, r)) != Z_STREAM_END)
 						return inflate_flush(s, z, r);
 				r = Z_OK;
-				GlobalFree(s->sub.decode.codes);
+				free(s->sub.decode.codes);
 				LOAD
 #ifdef _DEBUG
 					LuTracev((stderr, "inflate:       codes end, %lu total out\n", z->total_out + (q >= s->read ? q - s->read : (s->end - s->read) + (q - s->window))));
@@ -1662,8 +1608,6 @@ static int huft_build(
 
 
 
-
-
 /******************** inflate_trees_bits() ********************
 * c =		19 code lengths
 * bb =		Bits tree desired/actual depth
@@ -1678,7 +1622,7 @@ static int inflate_trees_bits(uInt *c, uInt *bb, INFLATE_HUFT * *tb, INFLATE_HUF
 	uInt	*v;
 
 	// Allocate work area for huft_build 
-	if (!(v = (uInt *)GlobalAlloc(GMEM_FIXED, 19 * sizeof(uInt))))
+	if (!(v = (uInt *)malloc(19 * sizeof(uInt))))
 		return(Z_MEM_ERROR);
 
 	hn = 0;
@@ -1695,11 +1639,9 @@ static int inflate_trees_bits(uInt *c, uInt *bb, INFLATE_HUFT * *tb, INFLATE_HUF
 	if (r == Z_BUF_ERROR || *bb == 0) r = Z_DATA_ERROR;
 #endif
 
-	GlobalFree(v);
+	free(v);
 	return(r);
 }
-
-
 
 
 
@@ -1719,7 +1661,7 @@ static int inflate_trees_dynamic(
 	uInt	*v;			// work area for huft_build 
 
 	// Allocate work area 
-	if (!(v = (uInt *)GlobalAlloc(GMEM_FIXED, 288 * sizeof(uInt))))
+	if (!(v = (uInt *)malloc(288 * sizeof(uInt))))
 		return(Z_MEM_ERROR);
 
 	// Build literal/length tree 
@@ -1761,16 +1703,14 @@ static int inflate_trees_dynamic(
 #else
 		if (r == Z_MEM_ERROR || r == Z_BUF_ERROR) r = Z_DATA_ERROR;
 #endif
-	bad:	GlobalFree(v);
+	bad:	free(v);
 		return(r);
 	}
 
 	// done 
-	GlobalFree(v);
+	free(v);
 	return(Z_OK);
 }
-
-
 
 
 
@@ -1778,7 +1718,6 @@ static int inflate_trees_dynamic(
 // Copyright (C) 1995-1998 Mark Adler
 // For conditions of distribution and use, see copyright notice in zlib.h
 //
-
 
 
 
@@ -1965,9 +1904,6 @@ static int inflate_fast(uInt bl, uInt bd, const INFLATE_HUFT *tl, const INFLATE_
 
 
 
-
-
-
 /************************ ucrc32() ********************
 * Computes the CRC-32 of the bytes in the specified
 * buffer.
@@ -2009,7 +1945,7 @@ static void update_keys(unsigned long* keys, char c)
 	keys[2] = CRC32(keys[2], keys[1] >> 24);
 }
 
-static char decrypt_byte(unsigned long* keys)
+static inline char decrypt_byte(unsigned long* keys)
 {
 	unsigned temp = ((unsigned)keys[2] & 0xffff) | 2;
 	return((char)(((temp * (temp ^ 1)) >> 8) & 0xff));
@@ -2078,9 +2014,6 @@ s2 %= BASE;
 return (s2 << 16) | s1;
 }
 */
-
-
-
 
 
 
@@ -2341,8 +2274,6 @@ static int inflate(Z_STREAM * z, int f)
 
 
 
-
-
 /********************** seekInZip() *********************
 * Sets the current "file position" within the ZIP archive.
 */
@@ -2381,8 +2312,6 @@ static int seekInZip(TUNZIP *tunzip, LONGLONG offset, DWORD reference)
 
 
 
-
-
 /********************** readFromZip() *********************
 * Reads the specified number of bytes from the ZIP archive
 * (starting at the current position) and copies them to
@@ -2412,13 +2341,10 @@ static DWORD readFromZip(TUNZIP *tunzip, void *ptr, DWORD toread)
 
 	// Reading from memory
 	if (tunzip->ArchiveBufPos + toread > tunzip->ArchiveBufLen) toread = (DWORD)(tunzip->ArchiveBufLen - tunzip->ArchiveBufPos);
-	CopyMemory(ptr, (unsigned char *)tunzip->ArchivePtr + tunzip->ArchiveBufPos, toread);
+	memcpy(ptr, (unsigned char *)tunzip->ArchivePtr + tunzip->ArchiveBufPos, toread);
 	tunzip->ArchiveBufPos += toread;
 	return(toread);
 }
-
-
-
 
 
 
@@ -2474,8 +2400,6 @@ static ULONGLONG getArchiveLongLong(TUNZIP *tunzip)
 
 
 
-
-
 /********************* skipToEntryEnd() *******************
 * Skips the remainder of the currently selected entry's
 * table in the ZIP archive.
@@ -2497,18 +2421,18 @@ lSeek = tunzip->CurrentEntryInfo.size_file_extra;
 // If he doesn't want extra info returned, then he wants to skip past the
 // extra header, and comment fields. Otherwise, we read just the extra
 // header (and don't bother skipping the comment). Caller is responsible
-// for GlobalFree'ing the extra info
+// for free'ing the extra info
 if (extraField)
 {
 char	*extra;
 
-if (!(extra = GlobalAlloc(GMEM_FIXED, lSeek)))
+if (!(extra = malloc(lSeek)))
 tunzip->LastErr = ZR_NOALLOC;
 else
 {
 if (readFromZip(tunzip, extra, lSeek) != lSeek)
 {
-GlobalFree(extra);
+free(extra);
 goto bad;
 }
 
@@ -2524,8 +2448,6 @@ bad:	tunzip->LastErr = ZR_CORRUPT;
 
 
 
-
-
 /********************* getEntryFN() *******************
 * Gets the currently selected entry's filename in the
 * zip archive.
@@ -2538,10 +2460,11 @@ bad:	tunzip->LastErr = ZR_CORRUPT;
 * so caller must clear it first if needed.
 */
 
-static void getEntryFN(TUNZIP *tunzip, char *szFileName)
+static void getEntryFN(TUNZIP *tunzip, WCHAR *szFileName)
 {
 	DWORD		uSizeRead;
 	DWORD		lSeek;
+	char		fn[MAX_PATH];
 
 	lSeek = tunzip->CurrentEntryInfo.size_filename;
 
@@ -2552,8 +2475,12 @@ static void getEntryFN(TUNZIP *tunzip, char *szFileName)
 		uSizeRead = MAX_PATH - 1;
 
 	// Read the filename
-	if (uSizeRead && readFromZip(tunzip, szFileName, uSizeRead) != uSizeRead)
-	bad:	tunzip->LastErr = ZR_CORRUPT;
+	if (uSizeRead && readFromZip(tunzip, fn, uSizeRead) != uSizeRead)
+	{
+	bad:
+		tunzip->LastErr = ZR_CORRUPT;
+		return;
+	}
 	else
 	{
 		// If there are any bytes left that we didn't read, skip them
@@ -2561,10 +2488,18 @@ static void getEntryFN(TUNZIP *tunzip, char *szFileName)
 		if (lSeek && seekInZip(tunzip, lSeek, FILE_CURRENT)) goto bad;
 	}
 
-	szFileName[uSizeRead] = 0;
+	fn[uSizeRead] = 0;
+
+	UINT codepage = tunzip->CodePage;
+	if (!(tunzip->Flags & TZIP_GZIP))
+	{
+		// Bit 11: Language encoding flag (EFS).  If this bit is set,
+		// the filename and comment fields for this file MUST be encoded using UTF - 8.
+		if (tunzip->CurrentEntryInfo.flag & 2048)
+			codepage = CP_UTF8;
+	}
+	MultiByteToWideChar(codepage, 0, fn, uSizeRead + 1, szFileName, MAX_PATH);
 }
-
-
 
 
 
@@ -2656,10 +2591,10 @@ static void getEntryInfo(TUNZIP *tunzip)
 			else
 			{
 				tunzip->CurrentEntryInfo.offset = (DWORD)tunzip->ArchiveBufPos;
-				tunzip->CurrentEntryInfo.compressed_size = (DWORD)(tunzip->ArchiveBufLen - tunzip->ArchiveBufPos - 8);
-				CopyMemory((void *)&tunzip->CurrentEntryInfo.crc, (unsigned char *)tunzip->ArchivePtr + tunzip->ArchiveBufLen - 8, 4);
+				tunzip->CurrentEntryInfo.compressed_size = DWORD(tunzip->ArchiveBufLen - tunzip->ArchiveBufPos - 8);
+				memcpy((void *)&tunzip->CurrentEntryInfo.crc, (unsigned char *)tunzip->ArchivePtr + tunzip->ArchiveBufLen - 8, 4);
 				reformat_long((unsigned char *)&tunzip->CurrentEntryInfo.crc);
-				CopyMemory((void *)&tunzip->CurrentEntryInfo.uncompressed_size, (unsigned char *)tunzip->ArchivePtr + tunzip->ArchiveBufLen - 4, 4);
+				memcpy((void *)&tunzip->CurrentEntryInfo.uncompressed_size, (unsigned char *)tunzip->ArchivePtr + tunzip->ArchiveBufLen - 4, 4);
 				reformat_long((unsigned char *)&tunzip->CurrentEntryInfo.uncompressed_size);
 			}
 
@@ -2696,8 +2631,6 @@ bad:
 
 
 
-
-
 /******************** goToFirstEntry() *******************
 * Set the current entry to the first entry in the ZIP
 * archive.
@@ -2714,8 +2647,6 @@ static void goToFirstEntry(TUNZIP *tunzip)
 	else
 		tunzip->LastErr = ZR_NOTFOUND;
 }
-
-
 
 
 
@@ -2738,8 +2669,6 @@ static void goToNextEntry(TUNZIP *tunzip)
 
 
 
-
-
 /******************* inflateEnd() ********************
 * Frees low level DEFLATE buffers/structs.
 *
@@ -2757,40 +2686,25 @@ static void inflateEnd(ENTRYREADVARS *entryReadVars)
 		case IBM_BTREE:
 		case IBM_DTREE:
 			if ((ptr = entryReadVars->stream.state->blocks.sub.trees.blens))
-			{
-				g_memset(ptr, 0, GlobalSize(ptr));
-				GlobalFree(ptr);
-			}
+				free(ptr);
 			break;
 
 		case IBM_CODES:
 			if ((ptr = entryReadVars->stream.state->blocks.sub.decode.codes))
-			{
-				g_memset(ptr, 0, GlobalSize(ptr));
-				GlobalFree(ptr);
-			}
+				free(ptr);
 		}
 
 		if ((ptr = entryReadVars->stream.state->blocks.window))
-		{
-			g_memset(ptr, 0, GlobalSize(ptr));
-			GlobalFree(ptr);
-		}
+			free(ptr);
 		if ((ptr = entryReadVars->stream.state->blocks.hufts))
-		{
-			g_memset(ptr, 0, GlobalSize(ptr));
-			GlobalFree(ptr);
-		}
-		g_memset(entryReadVars->stream.state, 0, GlobalSize(entryReadVars->stream.state));
-		GlobalFree(entryReadVars->stream.state);
+			free(ptr);
+		free(entryReadVars->stream.state);
 
 #ifdef _DEBUG
 		LuTracev((stderr, "inflate: freed\n"));
 #endif
 	}
 }
-
-
 
 
 
@@ -2804,10 +2718,7 @@ static void cleanupEntry(TUNZIP * tunzip)
 {
 	// Free the input buffer
 	if (tunzip->EntryReadVars.InputBuffer)
-	{
-		g_memset(tunzip->EntryReadVars.InputBuffer, 0, GlobalSize(tunzip->EntryReadVars.InputBuffer));
-		GlobalFree(tunzip->EntryReadVars.InputBuffer);
-	}
+		free(tunzip->EntryReadVars.InputBuffer);
 	tunzip->EntryReadVars.InputBuffer = 0;
 
 	// Free stuff allocated for decompressing in DEFLATE mode
@@ -2817,8 +2728,6 @@ static void cleanupEntry(TUNZIP * tunzip)
 	// No currently selected entry
 	tunzip->CurrentEntryNum = (ULONGLONG)-1;
 }
-
-
 
 
 
@@ -2838,7 +2747,7 @@ static void initEntry(TUNZIP *tunzip, ZIPENTRY *ze)
 	ZeroMemory(&tunzip->EntryReadVars, sizeof(ENTRYREADVARS));
 
 	// Get a read buffer to input, and decrypt, bytes from the ZIP archive
-	if (!(tunzip->EntryReadVars.InputBuffer = (unsigned char *)GlobalAlloc(GMEM_FIXED, UNZ_BUFSIZE)))
+	if (!(tunzip->EntryReadVars.InputBuffer = (unsigned char *)malloc(UNZ_BUFSIZE)))
 	{
 	badalloc:
 		tunzip->LastErr = ZR_NOALLOC;
@@ -2849,7 +2758,7 @@ static void initEntry(TUNZIP *tunzip, ZIPENTRY *ze)
 	// If DEFLATE compression method, we need to get some resources for the deflate routines
 	if (tunzip->CurrentEntryInfo.compression_method)
 	{
-		if (!(tunzip->EntryReadVars.stream.state = (INTERNAL_STATE *)GlobalAlloc(GMEM_FIXED, sizeof(INTERNAL_STATE)))) goto badalloc;
+		if (!(tunzip->EntryReadVars.stream.state = (INTERNAL_STATE *)malloc(sizeof(INTERNAL_STATE)))) goto badalloc;
 		ZeroMemory(tunzip->EntryReadVars.stream.state, sizeof(INTERNAL_STATE));
 
 		// MAX_WBITS: 32K LZ77 window
@@ -2863,8 +2772,8 @@ static void initEntry(TUNZIP *tunzip, ZIPENTRY *ze)
 
 		// Initialize INFLATE_BLOCKS_STATE
 		tunzip->EntryReadVars.stream.state->blocks.mode = IBM_TYPE;
-		if (!(tunzip->EntryReadVars.stream.state->blocks.hufts = (INFLATE_HUFT *)GlobalAlloc(GMEM_FIXED, sizeof(INFLATE_HUFT) * MANY))) goto badalloc;
-		if (!(tunzip->EntryReadVars.stream.state->blocks.window = (UCH *)GlobalAlloc(GMEM_FIXED, 1 << 15))) goto badalloc;
+		if (!(tunzip->EntryReadVars.stream.state->blocks.hufts = (INFLATE_HUFT *)malloc(sizeof(INFLATE_HUFT) * MANY))) goto badalloc;
+		if (!(tunzip->EntryReadVars.stream.state->blocks.window = (UCH *)malloc(1 << 15))) goto badalloc;
 		tunzip->EntryReadVars.stream.state->blocks.end = tunzip->EntryReadVars.stream.state->blocks.window + (1 << 15);
 		tunzip->EntryReadVars.stream.state->blocks.read = tunzip->EntryReadVars.stream.state->blocks.write = tunzip->EntryReadVars.stream.state->blocks.window;
 
@@ -2934,8 +2843,6 @@ static void initEntry(TUNZIP *tunzip, ZIPENTRY *ze)
 	//	if (seekInZip(tunzip, tunzip->EntryReadVars.PosInArchive, FILE_BEGIN)) goto badseek;
 	if (seekInZip(tunzip, offset, FILE_BEGIN)) goto badseek;
 }
-
-
 
 
 
@@ -3054,7 +2961,7 @@ ULONGLONG readEntry(TUNZIP *tunzip, void *buf, ULONGLONG len)
 				uDoCopy = tunzip->EntryReadVars.stream.avail_out;
 			else
 				uDoCopy = tunzip->EntryReadVars.stream.avail_in;
-			CopyMemory(tunzip->EntryReadVars.stream.next_out, tunzip->EntryReadVars.stream.next_in, (DWORD)uDoCopy & 0xFFFFFFFF);
+			memcpy(tunzip->EntryReadVars.stream.next_out, tunzip->EntryReadVars.stream.next_in, (DWORD)uDoCopy & 0xFFFFFFFF);
 
 			tunzip->EntryReadVars.RunningCrc = crc32(tunzip->EntryReadVars.RunningCrc, tunzip->EntryReadVars.stream.next_out, (DWORD)uDoCopy & 0xFFFFFFFF);
 			tunzip->EntryReadVars.RemainingUncompressed -= uDoCopy;
@@ -3101,9 +3008,6 @@ ULONGLONG readEntry(TUNZIP *tunzip, void *buf, ULONGLONG len)
 
 
 
-
-
-
 //  Get the global comment string of the ZipFile, in the szComment buffer.
 //  uSizeBuf is the size of the szComment buffer.
 //  return the number of byte copied or an error code <0
@@ -3128,53 +3032,10 @@ return((int)uReadThis);
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /************************ findEntry() ***********************
 * Locates an entry (within the archive) by name.
 *
-* flags =	1 (case-insensitive) perhaps OR'ed with ZIP_UNICODE.
+* flags =	1 (case-insensitive) perhaps.
 * index =	Where to return the index number of the located entry.
 * ze =		Where to return a filled in ZIPENTRY.
 *
@@ -3187,16 +3048,12 @@ return((int)uReadThis);
 
 static DWORD findEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 {
-	char			name[MAX_PATH];
+	WCHAR			name[MAX_PATH];
 
-	if (flags & UNZIP_UNICODE)
-		WideCharToMultiByte(CP_UTF8, 0, (const WCHAR *)&ze->Name[0], -1, &name[0], MAX_PATH, 0, 0);
-	else
-		lstrcpyA(&name[0], (const char *)&ze->Name[0]);
-	if (lstrlenA(&name[0]) >= UNZ_MAXFILENAMEINZIP) return(ZR_ARGS);
+	wcscpy(name, ze->Name);
 
 	{
-		char		*d;
+		WCHAR		*d;
 
 		// Next we need to replace '\' with '/' chars
 		d = name;
@@ -3215,47 +3072,28 @@ static DWORD findEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 
 	// Start with first entry and read its table from the Central Directory
 	goToFirstEntry(tunzip);
+	auto cmp = (flags & 1) ? _wcsicmp : wcscmp;
 	while (!tunzip->LastErr)
 	{
 		// Get this entry's filename
-		getEntryFN(tunzip, (char *)&ze->Name[0]);
+		getEntryFN(tunzip, ze->Name);
 		if (!tunzip->LastErr)
 		{
 			// Do names match?
-			if (!(flags & 0x01 ? lstrcmpiA(&name[0], (const char *)&ze->Name[0]) : lstrcmpA(&name[0], (const char *)&ze->Name[0])))
+			if (!cmp(ze->Name, name))
 			{
 				// Fill in caller's ZIPENTRY
 				ze->Index = tunzip->CurrentEntryNum;
-				return(setCurrentEntry(tunzip, ze, (flags & UNZIP_UNICODE) | UNZIP_ALREADYINIT));
+				return(setCurrentEntry(tunzip, ze, UNZIP_ALREADYINIT));
 			}
 
 			goToNextEntry(tunzip);
-			/*
-			// Another entry?
-			if (tunzip->CurrentEntryNum + 1 < tunzip->TotalEntries)
-			{
-			// Skip the remainder of the current entry's table
-			skipToEntryEnd(tunzip, 0);
-			if (!tunzip->LastErr)
-			{
-			// Read the info for the next entry
-			tunzip->CurrEntryPosInCentralDir += SIZECENTRALDIRITEM + tunzip->CurrentEntryInfo.size_filename + tunzip->CurrentEntryInfo.size_file_extra + tunzip->CurrentEntryInfo.size_file_comment;
-			++tunzip->CurrentEntryNum;
-			getEntryInfo(tunzip);
-			}
-			}
-			else
-			tunzip->LastErr = ZR_NOTFOUND;
-			*/
 		}
 	}
 
 	cleanupEntry(tunzip);
 	return(tunzip->LastErr);
 }
-
-
-
 
 
 
@@ -3269,7 +3107,6 @@ static DWORD findEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 * flags =		One of the following:
 *				ZIP_ALREADYINIT - ZIPENTRY already filled
 *				in by a call to findEntry().
-*				ZIP_UNICODE - Caller's ZIPENTRY uses UNICODE name.
 *
 * RETURNS: Z_OK if success, otherwise an error code.
 *
@@ -3310,7 +3147,7 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 		}
 
 		// Get the entry's filename
-		getEntryFN(tunzip, (char *)&ze->Name[0]);
+		getEntryFN(tunzip, ze->Name);
 	}
 
 	// We support only STORE and DEFLATE compression methods
@@ -3328,7 +3165,7 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 		extra = 0;
 		if ((size = tunzip->CurrentEntryInfo.size_file_extra))
 		{
-			if (!(extra = (unsigned char*)GlobalAlloc(GMEM_FIXED, size)))
+			if (!(extra = (unsigned char*)malloc(size)))
 			{
 				tunzip->LastErr = ZR_NOALLOC;
 				goto reterr;
@@ -3336,7 +3173,7 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 
 			if (readFromZip(tunzip, extra, size) != size)
 			{
-				GlobalFree(extra);
+				free(extra);
 				tunzip->LastErr = ZR_CORRUPT;
 				goto reterr;
 			}
@@ -3345,10 +3182,10 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 
 	// Copy the entry's name to ZIPENTRY->name[] (UNICODE or ANSI)
 	{
-		char	*sfn;
-		char	*dfn;
-		char			fn[MAX_PATH];
-		unsigned char	previous;
+		WCHAR	*sfn;
+		WCHAR	*dfn;
+		WCHAR	fn[MAX_PATH];
+		WCHAR	previous;
 
 		// As a safety feature: if the zip filename had sneaky stuff like "c:\windows\file.txt" or
 		// "\windows\file.txt" or "fred\..\..\..\windows\file.txt" then we get rid of them all. That
@@ -3358,11 +3195,12 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 		// "\" or "/" or "[stuff]\.." or "[stuff]/.."
 
 		// Copy the root dir name
-		lstrcpyA(&fn[0], (const char *)&tunzip->Rootdir[0]);
+		wcscpy(fn, tunzip->Rootdir);
+		int dirlen = (int)wcslen(tunzip->Rootdir);
 
 		// Prepare to append entry's name
-		sfn = &fn[0] + lstrlenA(&fn[0]);
-		dfn = (char *)&ze->Name[0];
+		sfn = fn + dirlen;
+		dfn = ze->Name;
 
 		// Skip the drive
 		if (dfn[0] && dfn[1] == ':') dfn += 2;
@@ -3377,8 +3215,8 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 				if (dfn[1] == '.' && dfn[2] == '.' && (dfn[3] == '\\' || dfn[3] == '/'))
 				{
 					dfn += 4;
-					lstrcpyA(&fn[0], (const char *)&tunzip->Rootdir[0]);
-					sfn = &fn[0] + lstrlenA(&fn[0]);
+					wcscpy(fn, tunzip->Rootdir);
+					sfn = fn + dirlen;
 					previous = DIRSLASH_CHAR;
 					continue;
 				}
@@ -3393,13 +3231,7 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 			*(sfn)++ = previous = *(dfn)++;
 		}
 		*sfn = 0;
-
-		if (flags & UNZIP_UNICODE)
-		{
-			MultiByteToWideChar(CP_UTF8, 0, &fn[0], -1, (WCHAR *)&ze->Name[0], MAX_PATH);
-		}
-		else
-			lstrcpyA((char *)&ze->Name[0], &fn[0]);
+		wcscpy(ze->Name, fn);
 
 		// Copy the attributes. zip has an 'attribute' 32bit value. Its lower half
 		// is windows stuff. Its upper half is standard unix stat.st_mode. We use the
@@ -3443,15 +3275,11 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 			epos = 0;
 			while (epos + 4 < tunzip->CurrentEntryInfo.size_file_extra)
 			{
-				char	etype[3];
 				DWORD	flags;
 				int		size;
 
-				etype[0] = extra[epos + 0];
-				etype[1] = extra[epos + 1];
-				etype[2] = 0;
 				size = extra[epos + 2];
-				if (!lstrcmpA(etype, "UT"))
+				if (*(SHORT*)(extra + epos) == 0x5455)	// UT
 				{
 					flags = extra[epos + 4];
 					epos += 5;
@@ -3478,7 +3306,7 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 
 					break;
 				}
-				else if (*(SHORT*)etype == 1 && size)
+				else if (*(SHORT*)(extra + epos) == 1 && size)
 				{
 					DWORD apos = epos + 4;
 					if (tunzip->CurrentEntryInfo.compressed_size == -1)
@@ -3499,7 +3327,7 @@ static DWORD setCurrentEntry(TUNZIP *tunzip, ZIPENTRY *ze, DWORD flags)
 			}
 		}
 
-		if (extra) GlobalFree(extra);
+		if (extra) free(extra);
 	}
 good2:
 	// We clear the internal_fa field as a signal to unzipEntry() that a memory-buffer unzip is
@@ -3513,108 +3341,6 @@ good:
 }
 
 
-
-
-
-
-
-
-
-/************************ str_chrA **********************
-* Searches for the first occurence of 'chr' in
-* nul-terminated 'str'. Same as C library's strchr().
-*
-* str =	pointer to string to search
-* chr =	character to search for
-*
-* RETURNS:	pointer to where 'chr' is found in 'str', or 0
-*			if not found.
-*/
-
-static char * str_chrA(char *str, char chr)
-{
-	char	tempch;
-
-	if ((tempch = *str))
-	{
-		do
-		{
-			if (tempch == chr) return(str);
-		} while ((tempch = *(++str)));
-	}
-
-	// Not found
-	return(0);
-}
-
-
-
-
-
-/********************* createMultDirsA() *******************
-* Creates as many dirs as are specified in the
-* nul-terminated string pointed to by dirname.
-*
-* dirname =	The names of directories to create, each
-*				separated by a backslash (but no backslash
-*				at the head or tail of the string).
-*
-* RETURNS: 1 if success, 0 if error.
-*/
-
-unsigned long createMultDirsA(char *dirname, BOOL isDir)
-{
-	char *		ptr;
-	char *		pathbuf;
-	SECURITY_ATTRIBUTES	sc;
-
-	sc.nLength = sizeof(SECURITY_ATTRIBUTES);
-	sc.lpSecurityDescriptor = 0;
-	sc.bInheritHandle = TRUE;
-
-	pathbuf = dirname;
-
-	// Skip drive
-	if (dirname[0] && dirname[1] == ':') dirname += 2;
-	if (dirname[0] == DIRSLASH_CHAR) ++dirname;
-
-	// Another sub-dir to create?
-	while (*dirname)
-	{
-		// Isolate next sub-dir name
-		if (!(ptr = str_chrA(dirname, DIRSLASH_CHAR)))
-		{
-			if (!isDir) break;
-		}
-		else
-		{
-			// Nul-term path
-			*ptr = 0;
-		}
-
-		if (!CreateDirectoryA(pathbuf, &sc) && GetLastError() != ERROR_ALREADY_EXISTS)
-		{
-			if (ptr) *ptr = DIRSLASH_CHAR;
-			return(0);
-		}
-
-		if (!ptr) break;
-
-		// Restore overwritten char
-		*ptr = DIRSLASH_CHAR;
-		dirname = ++ptr;
-	}
-
-	return(1);
-}
-
-
-
-
-
-/************************ str_chrW **********************
-* Wide character version of str_chrA().
-*/
 
 static WCHAR * str_chrW(WCHAR *str, WCHAR chr)
 {
@@ -3632,11 +3358,7 @@ static WCHAR * str_chrW(WCHAR *str, WCHAR chr)
 	return(0);
 }
 
-/********************* createMultDirsW *******************
-* Wide character version of createMultDirsA().
-*/
-
-unsigned long createMultDirsW(WCHAR *dirname, BOOL isDir)
+DWORD createMultDirsW(WCHAR *dirname, BOOL isDir)
 {
 	WCHAR *		ptr;
 	WCHAR *		pathbuf;
@@ -3690,8 +3412,7 @@ unsigned long createMultDirsW(WCHAR *dirname, BOOL isDir)
 * dst =	Handle to file where the entry is decompressed,
 *			or filename, or memory buffer pointer.
 * ze =		Filled in ZIPENTRY struct.
-* flags =	ZIP_MEMORY, ZIP_FILENAME, or ZIP_HANDLE. Also
-*			may be ZIP_UNICODE.
+* flags =	ZIP_MEMORY, ZIP_FILENAME, or ZIP_HANDLE.
 */
 
 static DWORD unzipEntry(TUNZIP *tunzip, void *dst, ZIPENTRY *ze, DWORD flags)
@@ -3740,8 +3461,7 @@ static DWORD unzipEntry(TUNZIP *tunzip, void *dst, ZIPENTRY *ze, DWORD flags)
 		// NOTE: We can't create a directory when spooling to a pipe
 		if (flags & UNZIP_FILENAME)
 		{
-			if (flags & UNZIP_UNICODE) flags = createMultDirsW((WCHAR *)dst, 1);
-			else  flags = createMultDirsA((char *)dst, 1);
+			flags = createMultDirsW((WCHAR *)dst, 1);
 			if (!flags) goto badf;
 		}
 		return(ZR_OK);
@@ -3755,15 +3475,11 @@ static DWORD unzipEntry(TUNZIP *tunzip, void *dst, ZIPENTRY *ze, DWORD flags)
 		DWORD		res;
 
 		// Create any needed directories
-		if (flags & UNZIP_UNICODE) res = createMultDirsW((WCHAR *)dst, 0);
-		else res = createMultDirsA((char *)dst, 0);
+		res = createMultDirsW((WCHAR *)dst, 0);
 		if (!res) goto badf;
 
 		// Create the file to which we'll write the uncompressed entry
-		if (flags & UNZIP_UNICODE)
-			h = CreateFileW((WCHAR *)dst, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, ze->Attributes, 0);
-		else
-			h = CreateFileA((char *)dst, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, ze->Attributes, 0);
+		h = CreateFileW((WCHAR *)dst, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, ze->Attributes, 0);
 	}
 	if (h == INVALID_HANDLE_VALUE)
 	badf:	tunzip->LastErr = ZR_NOFILE;
@@ -3774,7 +3490,7 @@ static DWORD unzipEntry(TUNZIP *tunzip, void *dst, ZIPENTRY *ze, DWORD flags)
 		if (!tunzip->LastErr)
 		{
 			// Get an output buffer (where we decompress bytes)
-			if (!tunzip->OutBuffer && !(tunzip->OutBuffer = (unsigned char *)GlobalAlloc(GMEM_FIXED, 16384))) tunzip->LastErr = ZR_NOALLOC;
+			if (!tunzip->OutBuffer && !(tunzip->OutBuffer = (unsigned char *)malloc(16384))) tunzip->LastErr = ZR_NOALLOC;
 
 			while (!tunzip->LastErr)
 			{
@@ -3808,14 +3524,9 @@ DWORD WINAPI UnzipItemToHandle(HUNZIP tunzip, HANDLE h, ZIPENTRY *ze)
 	return(unzipEntry((TUNZIP*)tunzip, (void *)h, ze, UNZIP_HANDLE));
 }
 
-DWORD WINAPI UnzipItemToFileA(HUNZIP tunzip, const char *fn, ZIPENTRY *ze)
-{
-	return(unzipEntry((TUNZIP*)tunzip, (void *)fn, ze, UNZIP_FILENAME));
-}
-
 DWORD WINAPI UnzipItemToFileW(HUNZIP tunzip, const WCHAR *fn, ZIPENTRY *ze)
 {
-	return(unzipEntry((TUNZIP*)tunzip, (void *)fn, ze, UNZIP_FILENAME | UNZIP_UNICODE));
+	return(unzipEntry((TUNZIP*)tunzip, (void *)fn, ze, UNZIP_FILENAME));
 }
 
 DWORD WINAPI UnzipItemToBuffer(HUNZIP tunzip, void *z, ULONGLONG len, ZIPENTRY *ze)
@@ -3823,32 +3534,6 @@ DWORD WINAPI UnzipItemToBuffer(HUNZIP tunzip, void *z, ULONGLONG len, ZIPENTRY *
 	ze->CompressedSize = len;
 	return(unzipEntry((TUNZIP*)tunzip, z, ze, UNZIP_MEMORY));
 }
-
-
-
-
-
-
-
-
-
-DWORD WINAPI UnzipFormatMessageA(DWORD code, char *buf, DWORD len)
-{
-	return ZipFormatMessageA(code, buf, len);
-}
-
-DWORD WINAPI UnzipFormatMessageW(DWORD code, WCHAR *buf, DWORD len)
-{
-	return ZipFormatMessageW(code, buf, len);
-}
-
-
-
-
-
-
-
-
 
 
 
@@ -3861,16 +3546,11 @@ static void closeArchive(TUNZIP *tunzip)
 	cleanupEntry(tunzip);
 	if (tunzip->Flags & TZIP_ARCCLOSEFH)
 		CloseHandle(tunzip->ArchivePtr);
-	if (tunzip->Password){
-		g_memset(tunzip->Password, 0, GlobalSize(tunzip->Password));
-		GlobalFree(tunzip->Password);
-	}
-	if (tunzip->OutBuffer){
-		g_memset(tunzip->OutBuffer, 0, GlobalSize(tunzip->OutBuffer));
-		GlobalFree(tunzip->OutBuffer);
-	}
-	g_memset(tunzip, 0, GlobalSize(tunzip));
-	GlobalFree(tunzip);
+	if (tunzip->Password)
+		free(tunzip->Password);
+	if (tunzip->OutBuffer)
+		free(tunzip->OutBuffer);
+	free(tunzip);
 }
 
 /********************* UnzipClose() **********************
@@ -3893,41 +3573,19 @@ DWORD WINAPI UnzipClose(HUNZIP tunzip)
 	return(result);
 }
 
-
-
-
-
-
-
-DWORD WINAPI UnzipGetItemA(HUNZIP tunzip, ZIPENTRY *ze)
+DWORD WINAPI UnzipGetItemW(HUNZIP tunzip, ZIPENTRY *ze)
 {
 	if (IsBadReadPtr(tunzip, 1))
 		return(ZR_ARGS);
 	return(setCurrentEntry((TUNZIP *)tunzip, ze, 0));
 }
 
-DWORD WINAPI UnzipGetItemW(HUNZIP tunzip, ZIPENTRY *ze)
-{
-	if (IsBadReadPtr(tunzip, 1))
-		return(ZR_ARGS);
-	return(setCurrentEntry((TUNZIP *)tunzip, ze, UNZIP_UNICODE));
-}
-
-DWORD WINAPI UnzipFindItemA(HUNZIP tunzip, ZIPENTRY *ze, BOOL ic)
+DWORD WINAPI UnzipFindItemW(HUNZIP tunzip, ZIPENTRY *ze, BOOL ic)
 {
 	if (IsBadReadPtr(tunzip, 1))
 		return(ZR_ARGS);
 	return(findEntry((TUNZIP*)tunzip, ze, (DWORD)ic));
 }
-
-DWORD WINAPI UnzipFindItemW(HUNZIP tunzip, ZIPENTRY *ze, BOOL ic)
-{
-	if (IsBadReadPtr(tunzip, 1))
-		return(ZR_ARGS);
-	return(findEntry((TUNZIP*)tunzip, ze, (DWORD)ic | UNZIP_UNICODE));
-}
-
-
 
 
 
@@ -3938,44 +3596,47 @@ DWORD WINAPI UnzipFindItemW(HUNZIP tunzip, ZIPENTRY *ze, BOOL ic)
 * z =	A handle, pointer to filename, or pointer to a
 *		memory buffer where the ZIP archive resides.
 * len = If a memory buffer, its size.
-* flags = ZIP_HANDLE, ZIP_FILENAME, or ZIP_MEMORY. Also,
-*		can be OR'd with ZIP_UNICODE.
+* flags = ZIP_HANDLE, ZIP_FILENAME, or ZIP_MEMORY.
 *
 * RETURNS: Z_OK if success, otherwise an error number.
 */
 
 #define BUFREADCOMMENT (0x400)
 
-static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const char *pwd)
+static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const char *pwd, UINT codepage)
 {
 	TUNZIP		*tunzip;
 	ULONGLONG			centralDirPos;
 	bool				iszip64 = false;
 
+	if (codepage && !IsValidCodePage(codepage))
+		return(flags = ZR_ARGS);
+
 	// Get a TUNZIP
-	if (!(tunzip = (TUNZIP *)GlobalAlloc(GMEM_FIXED, sizeof(TUNZIP))))
+	if (!(tunzip = (TUNZIP *)malloc(sizeof(TUNZIP))))
 	{
 	badalloc:
 		flags = ZR_NOALLOC;
 	bad:	return(flags);
 	}
 	ZeroMemory(tunzip, sizeof(TUNZIP) - MAX_PATH);
+	tunzip->CodePage = codepage;
 
 	// Store password if supplied
-	if (pwd)
+	if (pwd && *pwd)
 	{
-		if (!(tunzip->Password = (unsigned char *)GlobalAlloc(GMEM_FIXED, lstrlenA(pwd) + 1)))
+		if (!(tunzip->Password = (unsigned char *)malloc(strlen(pwd) + 1)))
 		{
-			GlobalFree(tunzip);
+			free(tunzip);
 			goto badalloc;
 		}
-		lstrcpyA((char *)tunzip->Password, pwd);
+		strcpy((char *)tunzip->Password, pwd);
 	}
 
 	// No currently selected entry
 	tunzip->CurrentEntryNum = (ULONGLONG)-1;
 
-	switch (flags & ~(UNZIP_UNICODE | UNZIP_ALREADYINIT | UNZIP_RAW))
+	switch (flags & ~(UNZIP_ALREADYINIT | UNZIP_RAW))
 	{
 		// ZIP archive is from a pipe or already open handle
 	case UNZIP_HANDLE:
@@ -3988,10 +3649,7 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 	// ZIP archive is a disk file
 	case UNZIP_FILENAME:
 	{
-		if (flags & UNZIP_UNICODE)
-			tunzip->ArchivePtr = CreateFileW((const WCHAR *)z, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
-		else
-			tunzip->ArchivePtr = CreateFileA((const char *)z, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+		tunzip->ArchivePtr = CreateFileW((const WCHAR *)z, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
 		if (tunzip->ArchivePtr == INVALID_HANDLE_VALUE)
 		{
 			flags = ZR_NOFILE;
@@ -4068,6 +3726,19 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 	}
 
 	{
+		auto sig = getArchiveLong(tunzip);
+		// Assume GZIP format (ie, no central dir because there is only 1 file)
+		if ((sig & 0xffffff) == 0x088b1f)
+		{
+			tunzip->CentralDirOffset = 3;
+			goto raw;
+		}
+		// Assume ZIP format
+		if (sig != LOCSIG)
+			goto badzip;
+	}
+
+	{
 		// Find the central directory's offset within the archive
 		LONGLONG	uMaxBack;
 		LONGLONG	uSizeFile;
@@ -4087,7 +3758,7 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 		uMaxBack = 0xffff; // maximum size of global comment
 		if (uMaxBack > uSizeFile) uMaxBack = uSizeFile;
 
-		if ((buf = (unsigned char *)GlobalAlloc(GMEM_FIXED, BUFREADCOMMENT + 4)))
+		if ((buf = (unsigned char *)malloc(BUFREADCOMMENT + 4)))
 		{
 			uBackRead = 4;
 			while (uBackRead < uMaxBack)
@@ -4102,9 +3773,9 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 				if (seekInZip(tunzip, centralDirPos, FILE_BEGIN) || !readFromZip(tunzip, buf, uReadSize)) break;
 				for (i = (int)uReadSize - 3; (i--) >= 0;)
 				{
-					if (*(buf + i) == 0x50 && *(buf + i + 1) == 0x4b && *(buf + i + 2) == 0x05 && *(buf + i + 3) == 0x06)
+					if (*(int*)(buf + i) == 0x06054b50)
 					{
-						if (*(buf + i - 20) == 0x50 && *(buf + i + 1 - 20) == 0x4b && *(buf + i + 2 - 20) == 0x06 && *(buf + i + 3 - 20) == 0x07)
+						if (*(int*)(buf + i - 20) == 0x07064b50)
 						{
 							iszip64 = true;
 							centralDirPos = *(ULONGLONG*)(buf + i - 12);
@@ -4113,14 +3784,14 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 						{
 							centralDirPos += i;
 						}
-						GlobalFree(buf);
+						free(buf);
 						seekInZip(tunzip, centralDirPos, FILE_BEGIN);
 						goto gotdir;
 					}
 				}
 			}
 
-			GlobalFree(buf);
+			free(buf);
 		}
 
 		// Memory error?
@@ -4130,6 +3801,8 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 			flags = ZR_NOALLOC;
 			goto bad2;
 		}
+	badzip:	flags = ZR_CORRUPT;
+		goto bad2;
 	}
 
 	{
@@ -4138,15 +3811,6 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 		ULONGLONG		totalEntries_CD;		// total number of entries in the central dir (same as TotalEntries on nospan)
 		ULONGLONG		centralDirSize;
 
-		// Assume GZIP format (ie, no central dir because there is only 1 file)
-		seekInZip(tunzip, 0, FILE_BEGIN);
-		flags = getArchiveShort(tunzip);
-		if (flags != 0x00008b1f)
-		{
-		badzip:	flags = ZR_CORRUPT;
-			goto bad2;
-		}
-		tunzip->CentralDirOffset = 3;
 	raw:
 		tunzip->ByteBeforeZipArchive = tunzip->InitialArchiveOffset;
 		tunzip->LastErr = 0;
@@ -4216,13 +3880,8 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 		tunzip->ByteBeforeZipArchive = (DWORD)(centralDirPos + tunzip->InitialArchiveOffset - (tunzip->CentralDirOffset + centralDirSize));
 		//	tunzip->CentralDirPos = centralDirPos;
 	gotgzip:
-		// Set Rootdir to current directory. (Assume we unzip there)
-		if (!(centralDirPos = GetCurrentDirectoryA(MAX_PATH - 1, (LPSTR)&tunzip->Rootdir[0])) ||
-			tunzip->Rootdir[centralDirPos - 1] != '\\')
-		{
-			tunzip->Rootdir[centralDirPos++] = DIRSLASH_CHAR;
-			tunzip->Rootdir[centralDirPos] = 0;
-		}
+		tunzip->Rootdir[0] = DIRSLASH_CHAR;
+		tunzip->Rootdir[1] = 0;
 
 		// Return the TUNZIP
 		*ptr = tunzip;
@@ -4237,80 +3896,35 @@ static DWORD openArchive(HANDLE *ptr, void *z, ULONGLONG len, DWORD flags, const
 * memory, or from a pipe or an already open file.
 */
 
-DWORD WINAPI UnzipOpenHandle(HUNZIP *tunzip, HANDLE h, const char *password)
+DWORD WINAPI UnzipOpenHandle(HUNZIP *tunzip, HANDLE h, const char *password, UINT codepage)
 {
-	return(openArchive(tunzip, h, 0, UNZIP_HANDLE, password));
+	return(openArchive(tunzip, h, 0, UNZIP_HANDLE, password, codepage));
 }
 
 DWORD WINAPI UnzipOpenHandleRaw(HUNZIP *tunzip, HANDLE h, const char *password)
 {
-	return(openArchive(tunzip, h, 0, UNZIP_HANDLE | UNZIP_RAW, password));
+	return(openArchive(tunzip, h, 0, UNZIP_HANDLE | UNZIP_RAW, password, 0));
 }
 
-DWORD WINAPI UnzipOpenFileA(HUNZIP *tunzip, const char *fn, const char *password)
+DWORD WINAPI UnzipOpenFileW(HUNZIP *tunzip, const WCHAR *fn, const char *password, UINT codepage)
 {
-	return(openArchive(tunzip, (void *)fn, 0, UNZIP_FILENAME, password));
-}
-
-DWORD WINAPI UnzipOpenFileW(HUNZIP *tunzip, const WCHAR *fn, const char *password)
-{
-	return(openArchive(tunzip, (void *)fn, 0, UNZIP_FILENAME | UNZIP_UNICODE, password));
-}
-
-DWORD WINAPI UnzipOpenFileRawA(HUNZIP *tunzip, const char *fn, const char *password)
-{
-	return(openArchive(tunzip, (void *)fn, 0, UNZIP_FILENAME | UNZIP_RAW, password));
+	return(openArchive(tunzip, (void *)fn, 0, UNZIP_FILENAME, password, codepage));
 }
 
 DWORD WINAPI UnzipOpenFileRawW(HUNZIP *tunzip, const WCHAR *fn, const char *password)
 {
-	return(openArchive(tunzip, (void *)fn, 0, UNZIP_FILENAME | UNZIP_UNICODE | UNZIP_RAW, password));
+	return(openArchive(tunzip, (void *)fn, 0, UNZIP_FILENAME | UNZIP_RAW, password, 0));
 }
 
-DWORD WINAPI UnzipOpenBuffer(HUNZIP *tunzip, void *z, ULONGLONG len, const char *password)
+DWORD WINAPI UnzipOpenBuffer(HUNZIP *tunzip, void *z, ULONGLONG len, const char *password, UINT codepage)
 {
-	return(openArchive(tunzip, z, len, UNZIP_MEMORY, password));
+	return(openArchive(tunzip, z, len, UNZIP_MEMORY, password, codepage));
 }
 
 DWORD WINAPI UnzipOpenBufferRaw(HUNZIP *tunzip, void *z, ULONGLONG len, const char *password)
 {
-	return(openArchive(tunzip, z, len, UNZIP_MEMORY | UNZIP_RAW, password));
+	return(openArchive(tunzip, z, len, UNZIP_MEMORY | UNZIP_RAW, password, 0));
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -4318,148 +3932,33 @@ DWORD WINAPI UnzipOpenBufferRaw(HUNZIP *tunzip, void *z, ULONGLONG len, const ch
 * Sets the root directory.
 */
 
-static DWORD unzipSetBaseDir(TUNZIP *tunzip, const void *dir, DWORD isUnicode)
+static DWORD unzipSetBaseDir(TUNZIP *tunzip, const WCHAR *dir)
 {
 	// Make sure TUNZIP if valid
 	if (IsBadReadPtr(tunzip, 1))
-		isUnicode = ZR_ARGS;
+		return ZR_ARGS;
 	else
 	{
-		unsigned char	*lastchar;
+		WCHAR	*lastchar;
 
-		if (isUnicode)
-			WideCharToMultiByte(CP_UTF8, 0, (const WCHAR *)dir, -1, (LPSTR)&tunzip->Rootdir[0], MAX_PATH, 0, 0);
-		else
-			lstrcpyA((char *)&tunzip->Rootdir[0], (const char *)dir);
+		wcscpy(tunzip->Rootdir, dir);
 
 		// Make sure it ends with '\\'
-		lastchar = &tunzip->Rootdir[lstrlenA((char *)&tunzip->Rootdir[0]) - 1];
+		lastchar = &tunzip->Rootdir[wcslen(tunzip->Rootdir) - 1];
 		if (*lastchar != DIRSLASH_CHAR)
 		{
 			lastchar[1] = DIRSLASH_CHAR;
 			lastchar[2] = 0;
 		}
-
-		isUnicode = ZR_OK;
 	}
 
-	return(isUnicode);
-}
-
-DWORD WINAPI UnzipSetBaseDirA(HUNZIP tunzip, const char *dir)
-{
-	return(unzipSetBaseDir((TUNZIP*)tunzip, dir, 0));
+	return ZR_OK;
 }
 
 DWORD WINAPI UnzipSetBaseDirW(HUNZIP tunzip, const WCHAR *dir)
 {
-	return(unzipSetBaseDir((TUNZIP*)tunzip, dir, 1));
+	return(unzipSetBaseDir((TUNZIP*)tunzip, dir));
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -4501,15 +4000,7 @@ typedef unsigned long ULG;      // unsigned 32-bit value
 #define EB_UT_LEN(n)		(EB_UT_MINLEN + 4 * (n))
 #define EB_L_UT_SIZE		(EB_HEADSIZE + EB_UT_LEN(3))
 #define EB_C_UT_SIZE		(EB_HEADSIZE + EB_UT_LEN(1))
-#define EB_UTF_SIZE			9		// tag 0x7075 (short), Tsize (short), version (byte), NameCRC32 (4 bytes),
-
-// Signatures for zip file information headers
-#define LOCSIG     0x04034b50L
-#define CENSIG     0x02014b50L
-#define ENDSIG     0x06054b50L
-#define END64SIG   0x06064b50L
-#define END64LOCSIG 0x07064b50L
-#define EXTLOCSIG  0x08074b50L
+//#define EB_UTF_SIZE			9		// tag 0x7075 (short), Tsize (short), version (byte), NameCRC32 (4 bytes),
 
 // The minimum and maximum match lengths
 #define MIN_MATCH  3
@@ -4618,18 +4109,6 @@ typedef unsigned long ULG;      // unsigned 32-bit value
 
 // Index within the heap array of least frequent node in the Huffman tree
 #define SMALLEST 1
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -4829,6 +4308,7 @@ typedef struct {
 // For storing values to be written to the ZIP Central Directory. Note: We write
 // default values for some of the fields
 typedef struct _TZIPFILEINFO {
+#pragma warning(disable:4200)
 	USH			flg, how;
 	ULG			tim, crc;
 	ULONGLONG	siz, len;
@@ -4838,8 +4318,8 @@ typedef struct _TZIPFILEINFO {
 	ULONGLONG	off;
 	char		*extra;					// Extra field (set only if ext != 0)
 	char		*cextra;				// Extra in central (set only if cext != 0)
-	char		iname[MAX_PATH];		// Internal file name after cleanup
 	struct _TZIPFILEINFO	*nxt;		// Pointer to next header in list
+	char		iname[0];				// Internal file name after cleanup
 } TZIPFILEINFO;
 
 // For TZIP->flags
@@ -4857,6 +4337,7 @@ typedef struct _TZIPFILEINFO {
 typedef struct _TZIP
 {
 	DWORD		flags;
+	BYTE		level;			// CompressionLevel
 
 	// ====================================================================
 	// These variables are for the destination (that we're writing the ZIP to).
@@ -4893,14 +4374,6 @@ typedef struct _TZIP
 	TSTATE		*state;				// We allocate just one state object per zip, because it's big (500k), and store a ptr here. It is freed when the TZIP is freed
 	char		buf[16384];			// Used by some of the compression routines. This must be last!!
 } TZIP;
-
-
-
-
-
-
-
-
 
 
 
@@ -5015,20 +4488,6 @@ static const char		AllFilesStrA[] = "\\*.*";
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // ====================== LOCAL DECLARATIONS =======================
 
 static void			writeDestShort(TZIP *, DWORD);
@@ -5042,10 +4501,6 @@ static unsigned		bi_reverse(unsigned, unsigned char);
 static void			bi_windup(TSTATE *);
 static void			copy_block(TSTATE *, char *, DWORD, DWORD);
 static void			fill_window(TSTATE *);
-
-
-
-
 
 
 
@@ -5086,8 +4541,6 @@ static void getNow(lutime_t *pft, WORD *dosdate, WORD *dostime)
 	FileTimeToDosDateTime(&ft, dosdate, dostime); //filetime2dosdatetime
 	*pft = filetime2timet(ft);
 }
-
-
 
 
 
@@ -5172,12 +4625,6 @@ static DWORD getFileInfo(TZIP *tzip, IZTIMES *times)
 
 
 
-
-
-
-
-
-
 // ==================== DEBUG STUFF ====================
 
 #ifdef _DEBUG
@@ -5197,11 +4644,6 @@ static void Trace(const char *x, ...)
 
 
 
-
-
-
-
-
 // =================== Low level compression ==================
 
 // Send a code of the given tree. c and tree must not have side effects
@@ -5213,8 +4655,6 @@ static void Trace(const char *x, ...)
 
 // the arguments must not have side effects
 #define Max(a,b) (a >= b ? a : b)
-
-
 
 
 
@@ -5236,8 +4676,6 @@ static void init_block(TSTATE *state)
 	state->ts.last_lit = state->ts.last_dist = state->ts.last_flags = 0;
 	state->ts.flags = 0; state->ts.flag_bit = 1;
 }
-
-
 
 
 
@@ -5320,8 +4758,6 @@ static void ct_init(TSTATE *state, USH *attr)
 
 
 
-
-
 /********************** pqremove() ********************
 * Removes the smallest element from the heap and recreates
 * the heap with one less element. Updates heap and heap_len.
@@ -5336,8 +4772,6 @@ static void ct_init(TSTATE *state, USH *attr)
 
 
 
-
-
 /*********************** smaller() *******************
 * Compares two subtrees, using the tree depth as tie
 * breaker when the subtrees have equal frequency. This
@@ -5347,7 +4781,6 @@ static void ct_init(TSTATE *state, USH *attr)
 #define smaller(tree, n, m) \
 	(tree[n].fc.freq < tree[m].fc.freq || \
 	(tree[n].fc.freq == tree[m].fc.freq && state->ts.depth[n] <= state->ts.depth[m]))
-
 
 
 
@@ -5384,8 +4817,6 @@ static void pqdownheap(TSTATE *state, CT_DATA *tree, int k)
 	}
 	state->ts.heap[k] = v;
 }
-
-
 
 
 
@@ -5488,8 +4919,6 @@ static void gen_bitlen(TSTATE *state, TREE_DESC *desc)
 
 
 
-
-
 /************************ gen_codes() *******************
 * Generates the codes for a given tree and bit counts
 * (which need not be optimal).
@@ -5533,8 +4962,6 @@ static void gen_codes(TSTATE *state, CT_DATA *tree, int max_code)
 		}
 	}
 }
-
-
 
 
 
@@ -5633,8 +5060,6 @@ static void build_tree(TSTATE *state, TREE_DESC *desc)
 
 
 
-
-
 /************************** scan_tree() **********************
 * Scans a literal or distance tree to determine the frequencies
 * of the codes in the bit length tree. Updates opt_len to take
@@ -5704,8 +5129,6 @@ static void scan_tree(TSTATE *state, CT_DATA *tree, int max_code)
 		}
 	}
 }
-
-
 
 
 
@@ -5798,8 +5221,6 @@ static BOOL send_tree(TSTATE *state, CT_DATA *tree, int max_code)
 
 
 
-
-
 /************************* build_bl_tree() *******************
 * Constructs the Huffman tree for the bit lengths and returns
 * the index in BL_order[] of the last bit length code to send.
@@ -5836,8 +5257,6 @@ static int build_bl_tree(TSTATE *state)
 	}
 	return(max_blindex);
 }
-
-
 
 
 
@@ -5902,8 +5321,6 @@ out:
 
 
 
-
-
 /********************* set_file_type() ********************
 * Sets the file type to ASCII or BINARY, using a crude
 * approximation: binary if more than 20% of the bytes are
@@ -5927,8 +5344,6 @@ static void set_file_type(TSTATE *state)
 	while (n < LITERALS) bin_freq += state->ts.dyn_ltree[n++].fc.freq;
 	*state->ts.file_type = (USH)(bin_freq >(ascii_freq >> 2) ? BINARY : ASCII);
 }
-
-
 
 
 
@@ -6040,8 +5455,6 @@ static void flush_block(TSTATE *state, char *buf, ULG stored_len, DWORD eof)
 
 
 
-
-
 /********************* ct_tally() **********************
 * Saves the match info and tallies the frequency counts.
 *
@@ -6104,8 +5517,6 @@ static unsigned char ct_tally(TSTATE *state, int dist, int lc)
 	// 64K-1 bytes
 	return(state->ts.last_lit == LIT_BUFSIZE - 1 || state->ts.last_dist == DIST_BUFSIZE);
 }
-
-
 
 
 
@@ -6186,9 +5597,6 @@ static void compress_block(TSTATE *state, CT_DATA *ltree, CT_DATA *dtree)
 
 
 
-
-
-
 /*********************** send_bits() **********************
 * Sends a value on a given number of bits.
 *
@@ -6230,8 +5638,6 @@ static BOOL send_bits(TSTATE *state, int value, int length)
 
 
 
-
-
 /********************** bi_reverse() *********************
 * Reverses the first "len" bits of a code.
 *
@@ -6253,8 +5659,6 @@ static unsigned bi_reverse(unsigned code, unsigned char len)
 	} while (--len);
 	return(res);
 }
-
-
 
 
 
@@ -6297,8 +5701,6 @@ static void bi_windup(TSTATE *state)
 	state->bs.bits_sent = (state->bs.bits_sent + 7) & ~7;
 #endif
 }
-
-
 
 
 
@@ -6351,9 +5753,6 @@ static void copy_block(TSTATE *state, char *block, DWORD len, DWORD header)
 
 
 
-
-
-
 /* ===========================================================================
 * Update a hash value with the given input byte
 * IN  assertion: all calls to to UPDATE_HASH are made with consecutive
@@ -6361,8 +5760,6 @@ static void copy_block(TSTATE *state, char *block, DWORD len, DWORD header)
 *    previous key instead of complete recalculation each time.
 */
 #define UPDATE_HASH(h,c) (h = (((h)<<H_SHIFT) ^ (c)) & HASH_MASK)
-
-
 
 
 
@@ -6378,8 +5775,6 @@ static void copy_block(TSTATE *state, char *block, DWORD len, DWORD header)
    (UPDATE_HASH(state->ds.ins_h, state->ds.window[(s) + (MIN_MATCH-1)]), \
     state->ds.prev[(s) & WMASK] = match_head = state->ds.head[state->ds.ins_h], \
     state->ds.head[state->ds.ins_h] = (s))
-
-
 
 
 
@@ -6437,8 +5832,6 @@ static void lm_init(TSTATE *state, DWORD pack_level, USH *flags)
 	state->ds.ins_h = 0;
 	for (j = 0; j < MIN_MATCH - 1; j++) UPDATE_HASH(state->ds.ins_h, state->ds.window[j]);
 }
-
-
 
 
 
@@ -6538,11 +5931,7 @@ static int longest_match(TSTATE *state, unsigned cur_match)
 
 
 
-
-
 #define check_match(state,start, match, length)
-
-
 
 
 
@@ -6582,7 +5971,7 @@ static void fill_window(TSTATE *state)
 		{
 			// By the IN assertion, the window is not empty so we can't confuse
 			// more == 0 with more == 64K on a 16 bit machine
-			CopyMemory(state->ds.window, (char *)state->ds.window + WSIZE, WSIZE);
+			memcpy(state->ds.window, (char *)state->ds.window + WSIZE, WSIZE);
 			state->ds.match_start -= WSIZE;
 			state->ds.strstart -= WSIZE;		// we now have strstart >= MAX_DIST
 
@@ -6633,9 +6022,6 @@ static void fill_window(TSTATE *state)
 		state->ds.lookahead += n;
 	} while (state->ds.lookahead < MIN_LOOKAHEAD);
 }
-
-
-
 
 
 
@@ -6747,7 +6133,6 @@ static void deflate_fast(TSTATE *state)
 }
 
 #endif
-
 
 
 
@@ -6883,14 +6268,6 @@ static void deflate(TSTATE *state)
 
 
 
-
-
-
-
-
-
-
-
 // ========================== Headers ========================
 
 // Writes an extended local header to destination zip. Returns a ZE_ code
@@ -6963,7 +6340,7 @@ static void putlocal(TZIPFILEINFO *z, TZIP *tzip)
 		writeDestShort(tzip, 0x0808);
 		writeDestShort(tzip, z->tim);
 		writeDestShort(tzip, z->tim >> 16);
-		writeDestShort(tzip, 0x0B02);		// was 0xFF02
+		writeDestShort(tzip, 0x0B02);	// OS=NTFS | XFL
 		writeDestination(tzip, z->iname, z->nam + 1);
 	}
 
@@ -7089,7 +6466,7 @@ static void addCentral(TZIP *tzip)
 
 				// Free the TZIPFILEINFO now that we've written it out to the Central directory
 				zfinext = zfi->nxt;
-				GlobalFree(zfi);
+				free(zfi);
 				zfi = zfinext;
 			}
 		}
@@ -7206,16 +6583,6 @@ static void addCentral(TZIP *tzip)
 
 
 
-
-
-
-
-
-
-
-
-
-
 // =============== Source and Destination "file" handling ==============
 
 
@@ -7262,7 +6629,7 @@ static void writeDestShort(TZIP *tzip, DWORD data)
 				}
 			}
 
-			CopyMemory((unsigned char *)tzip->destination + tzip->opos, &bytes[0], 2);
+			memcpy((unsigned char *)tzip->destination + tzip->opos, &bytes[0], 2);
 			tzip->opos += 2;
 		}
 
@@ -7281,8 +6648,6 @@ static void writeDestShort(TZIP *tzip, DWORD data)
 out:
 	return;
 }
-
-
 
 
 
@@ -7313,21 +6678,21 @@ static void writeDestination(TZIP *tzip, const char *buf, DWORD size)
 
 			if (tzip->encbuf && tzip->encbufsize < size)
 			{
-				GlobalFree(tzip->encbuf);
+				free(tzip->encbuf);
 				tzip->encbuf = 0;
 			}
 
 			if (!tzip->encbuf)
 			{
 				tzip->encbufsize = size << 1;
-				if (!(tzip->encbuf = (char *)GlobalAlloc(GMEM_FIXED, tzip->encbufsize)))
+				if (!(tzip->encbuf = (char *)malloc(tzip->encbufsize)))
 				{
 					tzip->lasterr = ZR_NOALLOC;
 					goto out;
 				}
 			}
 
-			CopyMemory(tzip->encbuf, buf, size);
+			memcpy(tzip->encbuf, buf, size);
 			for (i = 0; i < size; i++) tzip->encbuf[i] = zencode(tzip->keys, tzip->encbuf[i]);
 			buf = tzip->encbuf;
 		}
@@ -7343,7 +6708,7 @@ static void writeDestination(TZIP *tzip, const char *buf, DWORD size)
 					goto out;
 				}
 			}
-			CopyMemory((unsigned char *)tzip->destination + tzip->opos, buf, size);
+			memcpy((unsigned char *)tzip->destination + tzip->opos, buf, size);
 			tzip->opos += size;
 		}
 
@@ -7360,8 +6725,6 @@ static void writeDestination(TZIP *tzip, const char *buf, DWORD size)
 
 	}
 }
-
-
 
 
 
@@ -7409,9 +6772,6 @@ static BOOL seekDestination(TZIP *tzip, ULONGLONG pos)
 
 
 
-
-
-
 /****************** srcHandleInfo() *******************
 * Fills in the TZIP with some information about an
 * open source file handle.
@@ -7437,8 +6797,6 @@ static DWORD srcHandleInfo(TZIP *tzip, ULONGLONG len, IZTIMES *times)
 
 	return(ZR_OK);
 }
-
-
 
 
 
@@ -7468,7 +6826,7 @@ static unsigned readFromSource(TZIP *tzip, char *buf, unsigned size)
 		if (tzip->posin >= tzip->lenin) goto bad;	// end of input
 		bytes = (DWORD)(tzip->lenin - tzip->posin);
 		if (bytes > size) bytes = size;
-		CopyMemory(buf, (unsigned char *)tzip->source + tzip->posin, bytes);
+		memcpy(buf, (unsigned char *)tzip->source + tzip->posin, bytes);
 		tzip->posin += bytes;
 	}
 	else
@@ -7484,8 +6842,6 @@ static unsigned readFromSource(TZIP *tzip, char *buf, unsigned size)
 	tzip->crc = crc32(tzip->crc, (UCH *)buf, bytes);
 	return(bytes);
 }
-
-
 
 
 
@@ -7515,8 +6871,6 @@ static DWORD closeSource(TZIP *tzip)
 
 
 
-
-
 /********************* ideflate() *********************
 * Adds the current source to the ZIP file, using the
 * deflate method.
@@ -7532,7 +6886,7 @@ static void ideflate(TZIP *tzip, TZIPFILEINFO *zfi)
 	// TZIP is deleted
 	if ((state = tzip->state)) goto skip;
 
-	if ((tzip->state = state = (TSTATE *)GlobalAlloc(GMEM_FIXED, sizeof(TSTATE))))
+	if ((tzip->state = state = (TSTATE *)malloc(sizeof(TSTATE))))
 	{
 		// Once-only initialization
 		state->tzip = tzip;
@@ -7558,7 +6912,7 @@ static void ideflate(TZIP *tzip, TZIPFILEINFO *zfi)
 		state->ts.bl_desc.max_length = MAX_BL_BITS;
 		state->ts.l_desc.max_code = state->ts.d_desc.max_code = state->ts.bl_desc.max_code = 0;
 
-	skip:	state->level = g->ZipCompressionLevel;
+	skip:	state->level = tzip->level;
 		//		state->seekable = tzip->flags & TZIP_SRCCANSEEK ? 1 : 0;
 
 		//		state->ds.window_size =
@@ -7580,8 +6934,6 @@ static void ideflate(TZIP *tzip, TZIPFILEINFO *zfi)
 	else
 		tzip->lasterr = ZR_NOALLOC;
 }
-
-
 
 
 
@@ -7619,9 +6971,6 @@ static void istore(TZIP *tzip)
 
 
 
-
-
-
 /******************** checkSuffix() *******************
 * Checks if a filename has a ZIP extension.
 */
@@ -7631,7 +6980,7 @@ static BOOL checkSuffix(const char *fn)
 	const char *ext;
 
 	// Locate the extension
-	ext = fn + lstrlenA(fn);
+	ext = fn + strlen(fn);
 	while (ext > fn && *ext != '.') ext--;
 	if (ext != fn || *ext == '.')
 	{
@@ -7641,8 +6990,8 @@ static BOOL checkSuffix(const char *fn)
 		strs = &ZipSuffixes[0];
 		while (*strs)
 		{
-			if (!lstrcmpiA(ext, strs)) return(1);
-			strs += lstrlenA(strs) + 1;
+			if (!_stricmp(ext, strs)) return(1);
+			strs += strlen(strs) + 1;
 		}
 	}
 	return(0);
@@ -7654,42 +7003,24 @@ static BOOL checkSuffix(const char *fn)
 #define ZIP_FILENAME	0x00000002
 #define ZIP_MEMORY		0x00000004
 #define ZIP_FOLDER		0x00000008
-#define ZIP_UNICODE		0x00000010
-#define ZIP_RAW			0x00000020
+#define ZIP_RAW			0x00000010
 
 /******************** hasExtension() *******************
 * Returns 1 if there's an extension on a filename, or
 * 0 if none.
 */
 
-static BOOL hasExtension(const void * pchName, DWORD flags)
+static BOOL hasExtension(const WCHAR * pchName)
 {
-	if (flags & ZIP_UNICODE)
+	const WCHAR *pch;
+
+	pch = pchName + (wcslen(pchName) - 1);
+
+	// Back up to '.'
+	while (*pch != '.')
 	{
-		const WCHAR		*pch;
-
-		pch = (const WCHAR *)pchName + (lstrlenW((WCHAR *)pchName) - 1);
-
-		// Back up to '.'
-		while (*pch != '.')
-		{
-			if (pch <= (const WCHAR *)pchName || *pch == '/' || *pch == '\\') goto none;
-			--pch;
-		}
-	}
-	else
-	{
-		const char		*pch;
-
-		pch = (const char *)pchName + (lstrlenA((char *)pchName) - 1);
-
-		// Back up to '.'
-		while (*pch != '.')
-		{
-			if (pch <= (const char *)pchName || *pch == '/' || *pch == '\\')
-			none:			return(0);
-			--pch;
-		}
+		if (pch <= pchName || *pch == '/' || *pch == '\\') return 0;
+		--pch;
 	}
 
 	return(1);
@@ -7713,7 +7044,6 @@ static BOOL hasExtension(const void * pchName, DWORD flags)
 *			is a directory.
 *
 * flags =	ZIP_HANDLE, ZIP_FILENAME, ZIP_MEMORY, or ZIP_FOLDER.
-*			Also ZIP_UNICODE may be set.
 */
 
 static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG len, DWORD flags)
@@ -7736,16 +7066,13 @@ static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG
 
 	// ==================== Get the source (to compress to the ZIP) ===================
 
-	switch (flags & ~(ZIP_UNICODE | ZIP_RAW))
+	switch (flags & ~ZIP_RAW)
 	{
 		// Zipping a file by name?
 	case ZIP_FILENAME:
 	{
 		if (!src) goto badargs;
-		if (flags & ZIP_UNICODE)
-			tzip->source = CreateFileW((const WCHAR *)src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
-		else
-			tzip->source = CreateFileA((const char *)src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+		tzip->source = CreateFileW((const WCHAR *)src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
 		if (tzip->source == INVALID_HANDLE_VALUE)
 			passex = ZR_NOFILE;
 		else
@@ -7800,7 +7127,7 @@ static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG
 	gettime2:	times.attributes = 0x80000000 | 0x01000000 | 0x00800000;	// just a normal file, readable/writeable
 		// If there's not an extension on the name, assume it's
 		// also executable
-		if (!hasExtension(destname, flags))
+		if (!hasExtension((const WCHAR *)destname))
 			times.attributes = 0x80000000 | 0x01000000 | 0x00800000 | 0x00400000;
 
 	gettime:	if (!(flags & ZIP_RAW))
@@ -7820,8 +7147,19 @@ static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG
 	// A zip "entry" consists of a local header (which includes the file name),
 	// then the compressed data, and possibly an extended local header.
 
-	// We need to allocate a TZIPFILEINFO + sizeof(EB_C_UT_SIZE)
-	if (!(zfi = (TZIPFILEINFO *)GlobalAlloc(GMEM_FIXED, sizeof(TZIPFILEINFO) + EB_C_UT_SIZE + (ZIP_UNICODE ? EB_UTF_SIZE + WideCharToMultiByte(CP_UTF8, 0, (const WCHAR *)destname, -1, NULL, 0, 0, 0) - 1 : 0))))
+	// zip has its own notion of what filenames should look like, so we have to reformat
+	// the name. First of all, ZIP does not support UNICODE names. Must be ANSI
+	auto codepage = tzip->flags & TZIP_GZIP ? CP_ACP : CP_UTF8;
+	auto name_len = WideCharToMultiByte(codepage, 0, (const WCHAR *)destname, -1, NULL, 0, 0, 0);
+	if (!name_len)
+	{
+	badargs:
+		passex = ZR_ARGS;
+		goto badout2;
+	}
+
+	// We need to allocate a TZIPFILEINFO + sizeof(EB_C_UT_SIZE) + sizeof(name)
+	if (!(zfi = (TZIPFILEINFO *)malloc(sizeof(TZIPFILEINFO) + EB_C_UT_SIZE + name_len)))
 	{
 		passex = ZR_NOALLOC;
 		goto badout2;
@@ -7837,26 +7175,10 @@ static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG
 		goto compress;
 	}
 
-	// zip has its own notion of what filenames should look like, so we have to reformat
-	// the name. First of all, ZIP does not support UNICODE names. Must be ANSI
-	if (flags & ZIP_UNICODE)
-	{
-		zfi->nam = WideCharToMultiByte(CP_UTF8, 0, (const WCHAR *)destname, -1, zfi->iname, MAX_PATH, 0, 0);
-		if (zfi->nam)
-			zfi->nam--;
-	}
-	else
-	{
-		lstrcpyA(zfi->iname, (const char *)destname);
-		zfi->nam = lstrlenA((const char *)destname);
-	}
-	if (!zfi->nam)
-	{
-		GlobalFree(zfi);
-	badargs:
-		passex = ZR_ARGS;
-		goto badout2;
-	}
+	WideCharToMultiByte(codepage, 0, (const WCHAR *)destname, -1, zfi->iname, name_len, 0, 0);
+	zfi->nam = name_len - 1;
+	if (!(tzip->flags & TZIP_GZIP))
+		zfi->flg |= 2048;	// 1 << 11
 
 	// Next we need to replace '\' with '/' chars
 	{
@@ -7872,18 +7194,17 @@ static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG
 
 	// Determine whether app wants encryption, and whether we should use DEFLATE or STORE compression method
 	passex = 0;
-	zfi->flg = 8;		// 8 means 'there is an extra header'. Assume for the moment that we need it.
+	zfi->flg |= 8;		// 8 means 'there is an extra header'. Assume for the moment that we need it.
 	method = STORE;
 	zfi->tim = times.timestamp;
 	zfi->atx = times.attributes;
 
 	// Stuff the 'times' struct into zfi->extra
+	char xloc[EB_L_UT_SIZE];
 	{
-		char xloc[EB_L_UT_SIZE + EB_UTF_SIZE + MAX_PATH];
-
 		zfi->extra = xloc;
 		zfi->ext = EB_L_UT_SIZE;
-		zfi->cextra = (char *)zfi + sizeof(TZIPFILEINFO);
+		zfi->cextra = (char *)zfi + sizeof(TZIPFILEINFO) + name_len;
 		zfi->cext = EB_C_UT_SIZE;
 		xloc[0] = 'U';
 		xloc[1] = 'T';
@@ -7902,26 +7223,9 @@ static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG
 		xloc[14] = (char)((times.ctime >> 8) & 0xFF);
 		xloc[15] = (char)((times.ctime >> 16) & 0xFF);
 		xloc[16] = (char)(times.ctime >> 24);
-		CopyMemory(zfi->cextra, zfi->extra, EB_C_UT_SIZE);
+		memcpy(zfi->cextra, zfi->extra, EB_C_UT_SIZE);
 		zfi->cextra[EB_LEN] = EB_UT_LEN(1);
 		zfi->cextra[EB_HEADSIZE] = EB_UT_FL_MTIME;
-		if (flags & ZIP_UNICODE)
-		{
-			zfi->ext = EB_L_UT_SIZE + EB_UTF_SIZE + zfi->nam + 1;
-			zfi->cext = EB_C_UT_SIZE + EB_UTF_SIZE + zfi->nam + 1;
-			xloc[17] = 0x75;
-			xloc[18] = 0x70;
-			xloc[19] = (EB_UTF_SIZE + zfi->nam + 1) & 0xFF;
-			xloc[20] = ((EB_UTF_SIZE + zfi->nam + 1) >> 8) & 0xFF;
-			xloc[21] = 1;
-			ULG crc = crc32(0,(const UCH *) &zfi->iname, zfi->nam);
-			xloc[22] = crc & 0xFF;
-			xloc[23] = (crc >> 8) & 0xFF;
-			xloc[24] = (crc >> 16) & 0xFF;
-			xloc[25] = crc >> 24;
-			CopyMemory(zfi->cextra + EB_C_UT_SIZE, zfi->extra + EB_L_UT_SIZE, EB_UTF_SIZE);
-			CopyMemory(zfi->cextra + EB_C_UT_SIZE + EB_UTF_SIZE, zfi->iname, zfi->nam + 1);
-		}
 	}
 
 	if (tzip->flags & TZIP_OPTION_GZIP)
@@ -7941,7 +7245,7 @@ static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG
 		if (tzip->password)
 		{
 			passex = 12;
-			zfi->flg = 9;	// 8 + 1 = 'password-encrypted', with extra header
+			zfi->flg |= 9;	// 8 + 1 = 'password-encrypted', with extra header
 		}
 
 		// If zipping another ZIP file, then use STORE (since it's already compressed). Otherwise, DEFLATE
@@ -7972,7 +7276,7 @@ static DWORD addSrc(TZIP *tzip, const void *destname, const void *src, ULONGLONG
 	if (tzip->lasterr != ZR_OK)
 	{
 	reterr:	passex = tzip->lasterr;
-	badout:	GlobalFree(zfi);
+	badout:	free(zfi);
 	badout2:
 		if (tzip->flags & TZIP_SRCCLOSEFH)
 			CloseHandle(tzip->source);
@@ -8046,7 +7350,9 @@ compress:
 			writeDestShort(tzip, (DWORD)tzip->totalRead & 0xFFFFFFFF);
 			writeDestShort(tzip, (DWORD)(tzip->totalRead >> 16));
 			if (tzip->lasterr != ZR_OK) goto reterr;
+			tzip->writ += 8;
 		}
+		free(zfi);
 	}
 	else
 	{
@@ -8121,9 +7427,6 @@ compress:
 
 
 
-
-
-
 /*********************** searchDirW() *********************
 * This recursively searches for files to add.
 *
@@ -8176,7 +7479,7 @@ static DWORD searchDirW(TZIP *tzip, WCHAR *path, unsigned long size, unsigned lo
 			else
 			{
 				// Zip this file
-				if ((data->nFileSizeHigh = addSrc(tzip, (path + offset), path, 0, ZIP_FILENAME | ZIP_UNICODE))) goto bad;
+				if ((data->nFileSizeHigh = addSrc(tzip, (path + offset), path, 0, ZIP_FILENAME))) goto bad;
 			}
 
 			// Another file or subdir?
@@ -8189,131 +7492,38 @@ static DWORD searchDirW(TZIP *tzip, WCHAR *path, unsigned long size, unsigned lo
 	return(0);
 }
 
-/*********************** searchDirA() *********************
-* This recursively searches for files to add.
-*
-* path =	The full pathname of the folder to be searched.
-*			Sub-directories within this folder are also searched.
-*			This buffer must be of size MAX_PATH. Any ending '\'
-*			char must be stripped off of the directory name.
-*
-* size =	The length (ie, number of chars in "path", not counting
-*			the final null char).
-*
-* offset = Char offset to the part of "path" that is skipped when
-*			saving the name to the ZIP archive.
-*
-* RETURNS: 1 if continue or 0 to abort.
-*
-* NOTE: "path" may be altered upon return.
-*/
-
-static DWORD searchDirA(TZIP *tzip, char *path, unsigned long size, unsigned long offset, WIN32_FIND_DATAA *data)
-{
-	HANDLE			fh;
-
-	// Append "\*.*" to PathNameBuffer[]. We search all items in this one directory
-	lstrcpyA(&path[size], &AllFilesStrA[0]);
-
-	// Get the first item
-	if ((fh = FindFirstFileA(&path[0], data)) != INVALID_HANDLE_VALUE)
-	{
-		do
-		{
-			unsigned long	len;
-
-			// Append this item's name to the full pathname of this dir
-			len = lstrlenA(&data->cFileName[0]);
-			path[size] = '\\';
-			lstrcpyA(&path[size + 1], &data->cFileName[0]);
-
-			// Is this item itself a subdir? If so, we need to recursively search it
-			if (data->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-			{
-				// Skip the subdirs "." and ".."
-				if (data->cFileName[0] != '.' || (data->cFileName[1] && data->cFileName[1] != '.'))
-				{
-					// Search this one subdir (and *its* subdirs recursively)
-					if ((data->nFileSizeHigh = searchDirA(tzip, path, len + size + 1, offset, data)))
-					bad:					return(data->nFileSizeHigh);
-				}
-			}
-			else
-			{
-				// Zip this file
-				if ((data->nFileSizeHigh = addSrc(tzip, (path + offset), path, 0, ZIP_FILENAME))) goto bad;
-			}
-
-			// Another file or subdir?
-		} while (FindNextFileA(fh, data));
-
-		// Close this dir handle
-		FindClose(fh);
-	}
-
-	return(0);
-}
-
-
-
-
 
 
 // ======================= Callable API ========================
 
-DWORD WINAPI ZipAddFileA(HZIP tzip, const char *destname, const char *fn)
-{
-	return(addSrc((TZIP *)tzip, (void *)destname, (void *)fn, 0, ZIP_FILENAME));
-}
-
 DWORD WINAPI ZipAddFileW(HZIP tzip, const WCHAR *destname, const WCHAR *fn)
 {
-	return(addSrc((TZIP *)tzip, (void *)destname, (void *)fn, 0, ZIP_FILENAME | ZIP_UNICODE));
-}
-
-DWORD WINAPI ZipAddFileRawA(HZIP tzip, const char *fn)
-{
-	return(addSrc((TZIP *)tzip, (void *)&Extra_lbits[0], (void *)fn, 0, ZIP_FILENAME | ZIP_RAW));
+	return(addSrc((TZIP *)tzip, destname, fn, 0, ZIP_FILENAME));
 }
 
 DWORD WINAPI ZipAddFileRawW(HZIP tzip, const WCHAR *fn)
 {
-	return(addSrc((TZIP *)tzip, (void *)&Extra_lbits[0], (void *)fn, 0, ZIP_FILENAME | ZIP_UNICODE | ZIP_RAW));
-}
-
-DWORD WINAPI ZipAddBufferA(HZIP tzip, const char *destname, const void *src, ULONGLONG len)
-{
-	return(addSrc((TZIP *)tzip, (void *)destname, src, len, ZIP_MEMORY));
+	return(addSrc((TZIP *)tzip, (const WCHAR *)&Extra_lbits[0], fn, 0, ZIP_FILENAME | ZIP_RAW));
 }
 
 DWORD WINAPI ZipAddBufferW(HZIP tzip, const WCHAR *destname, const void *src, ULONGLONG len)
 {
-	return(addSrc((TZIP *)tzip, (void *)destname, src, len, ZIP_MEMORY | ZIP_UNICODE));
+	return(addSrc((TZIP *)tzip, destname, (const WCHAR *)src, len, ZIP_MEMORY));
 }
 
 DWORD WINAPI ZipAddBufferRaw(HZIP tzip, const void *src, ULONGLONG len)
 {
-	return(addSrc((TZIP *)tzip, (void *)&Extra_lbits[0], src, len, ZIP_MEMORY | ZIP_RAW));
-}
-
-DWORD WINAPI ZipAddHandleA(HZIP tzip, const char *destname, HANDLE h)
-{
-	return(addSrc((TZIP *)tzip, (void *)destname, h, 0, ZIP_HANDLE));
+	return(addSrc((TZIP *)tzip, (const WCHAR *)&Extra_lbits[0], (const WCHAR *)src, len, ZIP_MEMORY | ZIP_RAW));
 }
 
 DWORD WINAPI ZipAddHandleW(HZIP tzip, const WCHAR *destname, HANDLE h)
 {
-	return(addSrc((TZIP *)tzip, (void *)destname, h, 0, ZIP_HANDLE | ZIP_UNICODE));
+	return(addSrc((TZIP *)tzip, destname, (const WCHAR *)h, 0, ZIP_HANDLE));
 }
 
 DWORD WINAPI ZipAddHandleRaw(HZIP tzip, HANDLE h)
 {
-	return(addSrc((TZIP *)tzip, (void *)&Extra_lbits[0], h, 0, ZIP_HANDLE | ZIP_RAW));
-}
-
-DWORD WINAPI ZipAddPipeA(HZIP tzip, const char *destname, HANDLE h, ULONGLONG len)
-{
-	return(addSrc((TZIP *)tzip, (void *)destname, h, len, ZIP_HANDLE));
+	return(addSrc((TZIP *)tzip, (const WCHAR *)&Extra_lbits[0], (const WCHAR *)h, 0, ZIP_HANDLE | ZIP_RAW));
 }
 
 DWORD WINAPI ZipAddPipeRaw(HZIP tzip, HANDLE h, ULONGLONG len)
@@ -8323,32 +7533,12 @@ DWORD WINAPI ZipAddPipeRaw(HZIP tzip, HANDLE h, ULONGLONG len)
 
 DWORD WINAPI ZipAddPipeW(HZIP tzip, const WCHAR *destname, HANDLE h, ULONGLONG len)
 {
-	return(addSrc((TZIP *)tzip, (void *)destname, h, len, ZIP_HANDLE | ZIP_UNICODE));
-}
-
-DWORD WINAPI ZipAddFolderA(HZIP tzip, const char *destname)
-{
-	return(addSrc((TZIP *)tzip, (void *)destname, 0, 0, ZIP_FOLDER));
+	return(addSrc((TZIP *)tzip, (void *)destname, h, len, ZIP_HANDLE));
 }
 
 DWORD WINAPI ZipAddFolderW(HZIP tzip, const WCHAR *destname)
 {
-	return(addSrc((TZIP *)tzip, (void *)destname, 0, 0, ZIP_FOLDER | ZIP_UNICODE));
-}
-
-static unsigned int replace_slashesA(char *to, const char *from)
-{
-	char	chr;
-	char	*to2;
-
-	to2 = to;
-	do
-	{
-		chr = *(from)++;
-		if (chr == '/') chr = '\\';
-	} while ((*(to2)++ = chr));
-
-	return (unsigned int)((--to2 - to));
+	return(addSrc((TZIP *)tzip, (void *)destname, 0, 0, ZIP_FOLDER));
 }
 
 static unsigned int replace_slashesW(short *to, const short *from)
@@ -8366,20 +7556,6 @@ static unsigned int replace_slashesW(short *to, const short *from)
 	return (unsigned int)((--to2 - to) / sizeof(short));
 }
 
-DWORD WINAPI ZipAddDirA(HZIP tzip, const char *destname, DWORD offset)
-{
-	WIN32_FIND_DATAA	data;
-	char				buffer[MAX_PATH];
-
-	if (IsBadReadPtr(tzip, 1))	return(ZR_ARGS);
-
-	// Copy dir name to buffer[] and trim off any trailing backslash
-	if ((data.nFileSizeHigh = replace_slashesA(&buffer[0], destname)) &&
-		buffer[data.nFileSizeHigh - 1] == '\\') buffer[--data.nFileSizeHigh] = 0;
-	if (offset == (DWORD)-1) offset = data.nFileSizeHigh + 1;
-	return(searchDirA((TZIP *)tzip, (char *)&buffer[0], data.nFileSizeHigh, offset, &data));
-}
-
 DWORD WINAPI ZipAddDirW(HZIP tzip, const WCHAR *destname, DWORD offset)
 {
 	WIN32_FIND_DATAW	data;
@@ -8391,33 +7567,6 @@ DWORD WINAPI ZipAddDirW(HZIP tzip, const WCHAR *destname, DWORD offset)
 		buffer[data.nFileSizeHigh - 1] == '\\') buffer[--data.nFileSizeHigh] = 0;
 	if (offset == (DWORD)-1) offset = data.nFileSizeHigh + 1;
 	return(searchDirW((TZIP *)tzip, (WCHAR *)&buffer[0], data.nFileSizeHigh, offset, &data));
-}
-
-
-
-
-
-
-DWORD WINAPI ZipFormatMessageA(DWORD code, char *buf, DWORD len)
-{
-	const char	*str;
-	char 			*dest;
-
-	str = &ErrorMsgs[0];
-	while (code-- && *str) str += (strlen(str) + 1);
-	if (!(*str)) str = &UnknownErr[0];
-	code = 0;
-	if (len)
-	{
-		dest = buf;
-		do
-		{
-			if (!(dest[code] = str[code])) goto out;
-		} while (++code < len);
-		dest[--code] = 0;
-	}
-out:
-	return(code);
 }
 
 DWORD WINAPI ZipFormatMessageW(DWORD code, WCHAR *buf, DWORD len)
@@ -8444,18 +7593,15 @@ out:
 
 
 
-
-
-
 static void free_tzip(TZIP *tzip)
 {
 	// Free various buffers
-	if (tzip->state) GlobalFree(tzip->state);
-	if (tzip->encbuf) GlobalFree(tzip->encbuf);
-	if (tzip->password) GlobalFree(tzip->password);
+	if (tzip->state) free(tzip->state);
+	if (tzip->encbuf) free(tzip->encbuf);
+	if (tzip->password) free(tzip->password);
 
 	// Free the TZIP itself
-	GlobalFree(tzip);
+	free(tzip);
 }
 
 /********************* ZipClose() **********************
@@ -8500,11 +7646,6 @@ DWORD WINAPI ZipClose(HZIP tzip)
 
 
 
-
-
-
-
-
 /********************* createZip() **********************
 * Does all the real work for the ZipCreate* functions.
 */
@@ -8515,7 +7656,7 @@ static DWORD createZip(HZIP *zipHandle, void *z, ULONGLONG len, DWORD flags, con
 	DWORD	result;
 
 	// Get a TZIP struct
-	if (!(tzip = (TZIP *)GlobalAlloc(GMEM_FIXED, sizeof(TZIP))))
+	if (!(tzip = (TZIP *)malloc(sizeof(TZIP))))
 	{
 		result = ZR_NOALLOC;
 		goto done;
@@ -8523,15 +7664,16 @@ static DWORD createZip(HZIP *zipHandle, void *z, ULONGLONG len, DWORD flags, con
 
 	// Clear out all fields except the temporary buffer at the end
 	ZeroMemory(tzip, sizeof(TZIP) - 16384);
+	tzip->level = g->ZipCompressionLevel;
 
 	// If password is passed, make a copy of it
 	if (pwd && *pwd)
 	{
-		if (!(tzip->password = (char *)GlobalAlloc(GMEM_FIXED, (lstrlenA(pwd) + 1)))) goto badalloc;
-		lstrcpyA(tzip->password, pwd);
+		if (!(tzip->password = (char *)malloc((strlen(pwd) + 1)))) goto badalloc;
+		strcpy(tzip->password, pwd);
 	}
 
-	switch (flags & ~ZIP_UNICODE)
+	switch (flags)
 	{
 		// Passed a file handle?
 	case ZIP_HANDLE:
@@ -8555,10 +7697,7 @@ static DWORD createZip(HZIP *zipHandle, void *z, ULONGLONG len, DWORD flags, con
 	case ZIP_FILENAME:
 	{
 		// Open the file and store the handle
-		if (flags & ZIP_UNICODE)
-			tzip->destination = CreateFileW((const WCHAR *)z, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
-		else
-			tzip->destination = CreateFileA((const char *)z, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+		tzip->destination = CreateFileW((const WCHAR *)z, GENERIC_WRITE, 0, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
 		if (tzip->destination == INVALID_HANDLE_VALUE)
 		{
 			result = ZR_NOFILE;
@@ -8629,25 +7768,15 @@ DWORD WINAPI ZipCreateHandle(HZIP *zipHandle, HANDLE h, const char *password)
 	return(createZip(zipHandle, h, 0, ZIP_HANDLE, password));
 }
 
-DWORD WINAPI ZipCreateFileA(HZIP *zipHandle, const char *fn, const char *password)
-{
-	return(createZip(zipHandle, (void *)fn, 0, ZIP_FILENAME, password));
-}
-
 DWORD WINAPI ZipCreateFileW(HZIP *zipHandle, const WCHAR *fn, const char *password)
 {
-	return(createZip(zipHandle, (void *)fn, 0, ZIP_FILENAME | ZIP_UNICODE, password));
+	return(createZip(zipHandle, (void *)fn, 0, ZIP_FILENAME, password));
 }
 
 DWORD WINAPI ZipCreateBuffer(HZIP *zipHandle, void *z, ULONGLONG len, const char *password)
 {
 	return(createZip(zipHandle, z, len, ZIP_MEMORY, password));
 }
-
-
-
-
-
 
 
 
@@ -8708,8 +7837,6 @@ DWORD WINAPI ZipGetMemory(HZIP tzip, void **pbuf, ULONGLONG *plen, HANDLE *base)
 
 
 
-
-
 /*********************** ZipResetMemory() ***********************
 * Called by an application to reset a memory-mapped HZIP for
 * compressing a new ZIP file within it.
@@ -8740,8 +7867,6 @@ DWORD WINAPI ZipResetMemory(HZIP tzip)
 	((TZIP *)tzip)->state->ts.static_dtree[0].dl.len = 0;
 	return(ZR_OK);
 }
-
-
 
 
 

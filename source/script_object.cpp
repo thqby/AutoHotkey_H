@@ -3482,7 +3482,6 @@ ObjectMember Promise::sMembers[] =
 	Object_Method(Catch, 1, 1)
 };
 
-#undef GetObject
 ObjectMember Worker::sMembers[] =
 {
 	Object_Method(__New, 1, 3),
@@ -3491,7 +3490,6 @@ ObjectMember Worker::sMembers[] =
 	Object_Method(AsyncCall, 1, MAXP_VARIADIC),
 	Object_Method(Exec, 1, 2),
 	Object_Method(ExitApp, 0, 0),
-	Object_Method(GetObject, 1, 2),
 	Object_Method(Pause, 1, 1),
 	Object_Property_get(Ready),
 	Object_Method(Reload, 0, 0),

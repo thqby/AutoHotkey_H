@@ -163,721 +163,653 @@ BIF_DECL(BIF_Cast)
 
 BIF_DECL(BIF_CryptAES)
 {
-	TCHAR* pwd;
-	size_t ptr = 0, pwlen, size = 0;
-	bool encrypt;
+	TCHAR *pwd;
+	size_t ptr = 0, size = 0;
+	BOOL encrypt;
 	DWORD sid;
 	LPVOID data;
-	if (auto obj = TokenToObject(*aParam[0])) {
-		if (aParamCount > 4)
-			_o_throw(ERR_PARAM_COUNT_INVALID);
+	if (auto obj = TokenToObject(*aParam[0]))
+	{
 		GetBufferObjectPtr(aResultToken, obj, ptr, size);
 		if (aResultToken.Exited())
 			return;
-		pwd = TokenToString(*aParam[1]);
-		pwlen = _tcslen(pwd);
-		encrypt = ParamIndexToOptionalBOOL(2, true);
-		sid = ParamIndexToOptionalInt(3, 256);
+		if (ParamIndexIsOmitted(1))
+			_o_throw_param(1);
 	}
 	else {
+		if (ParamIndexIsOmitted(2))
+			_o_throw_param(2);
 		if (TokenIsPureNumeric(*aParam[0]))
 			ptr = (size_t)ParamIndexToInt64(0);
 		else
 			ptr = (size_t)ParamIndexToString(0);
 		size = (size_t)ParamIndexToInt64(1);
-		pwd = TokenToString(*aParam[2]);
-		pwlen = _tcslen(pwd);
-		encrypt = ParamIndexToOptionalBOOL(3, true);
-		sid = ParamIndexToOptionalInt(4, 256);
+		aParam++, aParam--;
 	}
-	if (!ptr || !size)
+	if (ptr < 65536 || !size)
 		_o_throw_value(ERR_INVALID_VALUE);
+	pwd = TokenToString(*aParam[1]);
+	encrypt = ParamIndexToOptionalBOOL(2, TRUE);
+	sid = ParamIndexToOptionalInt(3, 256);
 	if (!(data = malloc(size + 16)))
 		_o_throw_oom;
-	CopyMemory(data, (const void*)ptr, size);
+	memcpy(data, (const void *)ptr, size);
 	if (size_t newsize = CryptAES(data, (DWORD)size, pwd, encrypt, sid))
-		aResultToken.Return(BufferObject::Create(data, newsize));
-	else
+		_o_return(BufferObject::Create(data, newsize));
+	free(data);
 		_o_throw(ERR_FAILED);
 }
 
 BIF_DECL(BIF_ResourceLoadLibrary)
 {
-	aResultToken.symbol = PURE_INTEGER;
-	aResultToken.value_int64 = 0;
-	if (TokenIsEmptyString(*aParam[0])) {
-		g_script->RuntimeError(ERR_PARAM1_MUST_NOT_BE_BLANK);
-		aResultToken.SetExitResult(FAIL);
-		return;
-	}
-	HMEMORYMODULE module = NULL;
-	TextMem::Buffer textbuf;
+	auto resname = ParamIndexToString(0);
+	auto inst = g_hInstance;
 	HRSRC hRes;
-	HGLOBAL hResData = NULL;
+	void *data, *buf = nullptr;
+	DWORD size;
+	if (!*resname)
+		_o_throw_value(ERR_PARAM1_INVALID);
 
-	hRes = FindResource(NULL, ParamIndexToString(0), RT_RCDATA);
+	if (!(hRes = FindResource(g_hInstance, ParamIndexToString(0), RT_RCDATA)))
+		hRes = FindResource(inst = NULL, ParamIndexToString(0), RT_RCDATA);
 
 	if (!(hRes
-		&& (textbuf.mLength = SizeofResource(NULL, hRes))
-		&& (hResData = LoadResource(NULL, hRes))
-		&& (textbuf.mBuffer = LockResource(hResData))))
-		return;
-	DWORD aSizeDeCompressed = NULL;
-	if (*(unsigned int*)textbuf.mBuffer == 0x04034b50)
-	{
-		LPVOID aDataBuf;
-		aSizeDeCompressed = DecompressBuffer(textbuf.mBuffer, aDataBuf, textbuf.mLength);
-		if (aSizeDeCompressed)
-		{
-			module = MemoryLoadLibrary(aDataBuf, aSizeDeCompressed);
-			g_memset(aDataBuf, 0, aSizeDeCompressed);
-			free(aDataBuf);
-		}
-	}
-	if (!aSizeDeCompressed)
-		module = MemoryLoadLibrary(textbuf.mBuffer, textbuf.mLength);
+		&& (size = SizeofResource(inst, hRes))
+		&& (data = LockResource(LoadResource(inst, hRes)))))
+		_o_throw_win32();
+	if (*(unsigned int *)data == 0x04034b50)
+		if (auto aSizeDeCompressed = DecompressBuffer(data, buf, size))
+			data = buf, size = aSizeDeCompressed;
 
-	aResultToken.value_int64 = (UINT_PTR)module;
+	aResultToken.SetValue((UINT_PTR)MemoryLoadLibrary(data, size));
+	free(buf);
 }
 
 BIF_DECL(BIF_MemoryCallEntryPoint)
 {
-	aResultToken.SetValue(0);
-	if (TokenIsNumeric(*aParam[0]))
-		aResultToken.value_int64 = (__int64)MemoryCallEntryPoint((HMEMORYMODULE)TokenToInt64(*aParam[0]), aParamCount > 1 ? TokenToString(*aParam[1]) : _T(""));
+	auto mod = (HMEMORYMODULE)TokenToInt64(*aParam[0]);
+	if (!mod)
+		_o_throw_value(ERR_PARAM1_INVALID);
+	_o_return((UINT_PTR)MemoryCallEntryPoint(mod, ParamIndexToOptionalStringDef(1, _T(""))));
+}
+
+static void FileRead(ResultToken &aResultToken, LPTSTR aPath, void *&aData, size_t &aSize)
+{
+	HANDLE hfile = CreateFile(aPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING
+		, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	if (hfile == INVALID_HANDLE_VALUE)
+		_o_throw_win32(g->LastError = GetLastError());
+	aSize = (size_t)GetFileSize64(hfile);
+	if (aSize == ULLONG_MAX) // GetFileSize64() failed.
+	{
+		g->LastError = GetLastError();
+		CloseHandle(hfile);
+		_o_throw_win32(g->LastError);
+	}
+	if (!(aData = malloc(aSize)))
+	{
+		CloseHandle(hfile);
+		return (void)aResultToken.MemoryError();
+	}
+	DWORD err = 0;
+	if (!ReadFile(hfile, aData, (DWORD)aSize, (LPDWORD)&aSize, NULL))
+		err = GetLastError();
+	CloseHandle(hfile);
+	if (!err)
+		return;
+	free(aData);
+	_o_throw_win32(err);
 }
 
 BIF_DECL(BIF_MemoryLoadLibrary)
 {
-	HMEMORYMODULE module = NULL;
-	void *data, *tofree = NULL;
+	void *data, *buf = nullptr;
 	size_t size = 0;
-	aResultToken.SetValue(0);
-	if (TokenIsEmptyString(*aParam[0]))
-		return;
-	else if (!TokenIsNumeric(*aParam[0]))
+	if (auto obj = TokenToObject(*aParam[0]))
 	{
-		FILE* fp = _tfopen(TokenToString(*aParam[0]), _T("rb"));
-		if (fp == NULL)
+		GetBufferObjectPtr(aResultToken, obj, (size_t&)data, size);
+		if (aResultToken.Exited())
 			return;
-
-		fseek(fp, 0, SEEK_END);
-		size = ftell(fp);
-		data = tofree = malloc(size);
-		fseek(fp, 0, SEEK_SET);
-		fread(data, 1, size, fp);
-		fclose(fp);
+	}
+	else if (TokenIsPureNumeric(*aParam[0]))
+	{
+		data = (void *)TokenToInt64(*aParam[0]);
+		size = (size_t)TokenToInt64(*aParam[1]);
 	}
 	else
-		data = (void*)TokenToInt64(*aParam[0]);
-	if (data)
-		module = MemoryLoadLibraryEx(data, size ? size : (size_t)ParamIndexToOptionalInt64(1, 0), MemoryDefaultAlloc, MemoryDefaultFree,
-			(CustomLoadLibraryFunc)(aParamCount > 2 ? (HCUSTOMMODULE)TokenToInt64(*aParam[2]) : MemoryDefaultLoadLibrary),
-			(CustomGetProcAddressFunc)(aParamCount > 3 ? (HCUSTOMMODULE)TokenToInt64(*aParam[3]) : MemoryDefaultGetProcAddress),
-			(CustomFreeLibraryFunc)(aParamCount > 4 ? (HCUSTOMMODULE)TokenToInt64(*aParam[4]) : MemoryDefaultFreeLibrary), NULL);
-	aResultToken.value_int64 = (UINT_PTR)module;
-	free(tofree);
+	{
+		auto path = TokenToString(*aParam[0]);
+		if (!*path)
+			_o_throw_value(ERR_PARAM1_INVALID);
+		FileRead(aResultToken, path, data, size);
+		if (aResultToken.Exited())
+			return;
+		buf = data;
+	}
+	if (!data)
+		_o_throw_value(ERR_PARAM1_INVALID);
+	aResultToken.SetValue((UINT_PTR)MemoryLoadLibraryEx(data, size,
+		MemoryDefaultAlloc, MemoryDefaultFree,
+		(CustomLoadLibraryFunc)ParamIndexToOptionalIntPtr(2, (UINT_PTR)MemoryDefaultLoadLibrary),
+		(CustomGetProcAddressFunc)ParamIndexToOptionalIntPtr(3, (UINT_PTR)MemoryDefaultGetProcAddress),
+		(CustomFreeLibraryFunc)ParamIndexToOptionalIntPtr(4, (UINT_PTR)MemoryDefaultFreeLibrary),
+		NULL
+	));
+	free(buf);
 }
 
 BIF_DECL(BIF_MemoryGetProcAddress)
 {
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 0;
-	if (!TokenToInt64(*aParam[0]))
-		return;
-	//if (!aParam[0]->deref->marker)
-		//return;
-	TCHAR* FuncName = TokenToString(*aParam[1]);
+	auto mod = (HMEMORYMODULE)TokenToInt64(*aParam[0]);
+	auto procname = TokenToString(*aParam[1]);
+	char *name = nullptr, *tofree = nullptr;
+	if (!mod)
+		_o_throw_value(ERR_PARAM1_INVALID);
+	if (*procname)
+	{
 #ifdef _UNICODE
-	char* buf = (char*)_alloca(_tcslen(FuncName) + sizeof(char*));
-	wcstombs(buf, FuncName, _tcslen(FuncName));
-	buf[_tcslen(FuncName)] = '\0';
-#endif
-
-	aResultToken.value_int64 = (__int64)MemoryGetProcAddress((HMEMORYMODULE)TokenToInt64(*aParam[0])
-#ifdef _UNICODE
-		, buf);
+		name = tofree = CStringCharFromWChar(procname).DetachBuffer();
 #else
-		, FuncName);
+		name = procname;
 #endif
+	}
+	else
+	{
+		if (TokenIsPureNumeric(*aParam[1]) == SYM_INTEGER)
+			if (HIWORD(name = (char *)TokenToInt64(*aParam[1])))
+				name = nullptr;
+		if (!name)
+			_o_throw_value(ERR_PARAM2_INVALID);
+	}
+	aResultToken.SetValue((__int64)MemoryGetProcAddress(mod, name));
 }
 
 BIF_DECL(BIF_MemoryFreeLibrary)
 {
-	aResultToken.SetValue(_T(""));
-	if (!TokenToInt64(*aParam[0]))
-		return;
-	MemoryFreeLibrary((HMEMORYMODULE)TokenToInt64(*aParam[0]));
-	aResultToken.SetValue(1);
+	auto mod = (HMEMORYMODULE)TokenToInt64(*aParam[0]);
+	if (!mod)
+		_o_throw_value(ERR_PARAM1_INVALID);
+	MemoryFreeLibrary(mod);
 }
 
 BIF_DECL(BIF_MemoryFindResource)
 {
-	aResultToken.SetValue(_T(""));
-	if (!TokenToInt64(*aParam[0]))
-		return;
-	HMEMORYRSRC resource = NULL;
-	if (ParamIndexIsOmitted(3)) // FindResource
-		resource = MemoryFindResource((HMEMORYMODULE)TokenToInt64(*aParam[0]), TokenIsNumeric(*aParam[1]) ? (LPCTSTR)TokenToInt64(*aParam[1]) : TokenToString(*aParam[1]), TokenIsNumeric(*aParam[2]) ? (LPCTSTR)TokenToInt64(*aParam[2]) : TokenToString(*aParam[2]));
-	else // FindResourceEx
-		resource = MemoryFindResourceEx((HMEMORYMODULE)TokenToInt64(*aParam[0]), TokenIsNumeric(*aParam[1]) ? (LPCTSTR)TokenToInt64(*aParam[1]) : TokenToString(*aParam[1]), TokenIsNumeric(*aParam[2]) ? (LPCTSTR)TokenToInt64(*aParam[2]) : TokenToString(*aParam[2]), (WORD)TokenToInt64(*aParam[3]));
-	if (resource)
+	auto mod = (HMEMORYMODULE)TokenToInt64(*aParam[0]);
+	if (!mod)
+		_o_throw_value(ERR_PARAM1_INVALID);
+	LPCTSTR param[2] = { 0 };
+	for (int i = 1; i < 3; i++)
 	{
-		aResultToken.SetValue((__int64)resource);
+		auto &token = *aParam[i];
+		LPCTSTR t = nullptr;
+		if (TokenIsPureNumeric(token) == SYM_INTEGER)
+		{
+			if (!IS_INTRESOURCE(t = (LPCTSTR)TokenToInt64(token)))
+				t = nullptr;
+		}
+		else if (!*(t = TokenToString(token)))
+			t = nullptr;
+		if (!(param[i - 1] = t))
+			_o_throw_value(ERR_PARAM_INVALID);
 	}
+	HMEMORYRSRC hres = MemoryFindResourceEx(mod, param[0], param[1],
+		(WORD)ParamIndexToOptionalInt(3, MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL)));
+	aResultToken.SetValue((__int64)hres);
 }
 
 BIF_DECL(BIF_MemorySizeOfResource)
 {
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 0;
-	if (!TokenToInt64(*aParam[0]))
-		return;
-	aResultToken.value_int64 = MemorySizeOfResource((HMEMORYMODULE)TokenToInt64(*aParam[0]), (HMEMORYRSRC)TokenToInt64(*aParam[1]));
+	auto mod = (HMEMORYMODULE)TokenToInt64(*aParam[0]);
+	if (!mod)
+		_o_throw_value(ERR_PARAM1_INVALID);
+	auto hres = (HMEMORYRSRC)TokenToInt64(*aParam[1]);
+	if (!hres)
+		_o_throw_value(ERR_PARAM2_INVALID);
+	_o_return(MemorySizeOfResource(mod, hres));
 }
 
 BIF_DECL(BIF_MemoryLoadResource)
 {
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 0;
-	if (!TokenToInt64(*aParam[0]))
-		return;
-	aResultToken.value_int64 = (__int64)MemoryLoadResource((HMEMORYMODULE)TokenToInt64(*aParam[0]), (HMEMORYRSRC)TokenToInt64(*aParam[1]));
+	auto mod = (HMEMORYMODULE)TokenToInt64(*aParam[0]);
+	if (!mod)
+		_o_throw_value(ERR_PARAM1_INVALID);
+	auto hres = (HMEMORYRSRC)TokenToInt64(*aParam[1]);
+	if (!hres)
+		_o_throw_value(ERR_PARAM2_INVALID);
+	_o_return((UINT_PTR)MemoryLoadResource(mod, hres));
 }
 
 BIF_DECL(BIF_MemoryLoadString)
 {
-	LPTSTR result = MemoryLoadStringEx((HMEMORYMODULE)TokenToInt64(*aParam[0]), (UINT)TokenToInt64(*aParam[1]), ParamIndexIsOmitted(2) ? 0 : (WORD)TokenToInt64(*aParam[2]));
-	if (result)
-		aResultToken.SetValue(result);
-	else
-		aResultToken.SetValue(_T(""));
+	auto mod = (HMEMORYMODULE)TokenToInt64(*aParam[0]);
+	if (!mod)
+		_o_throw_value(ERR_PARAM1_INVALID);
+	auto str = MemoryLoadStringEx(mod, (UINT)TokenToInt64(*aParam[1]), (WORD)ParamIndexToOptionalInt(2, 0));
+	if (str)
+		aResultToken.AcceptMem(str, _tcslen(str));
 }
 
 BIF_DECL(BIF_Swap)
 {
-	Var* a = aParam[0]->var, * b = aParam[1]->var;
-	if (aParam[0]->symbol != SYM_VAR || aParam[1]->symbol != SYM_VAR || a->IsReadOnly() || b->IsReadOnly())
-		_f_throw_value(ERR_INVALID_ARG_TYPE);
-	swap(*a, *b);
-	swap(a->mName, b->mName);
-	swap(a->mType, b->mType);
-	swap(a->mScope, b->mScope);
-	_f_return(true);
+	if (aParam[0]->symbol != SYM_VAR || aParam[1]->symbol != SYM_VAR)
+		_o_throw_value(ERR_INVALID_ARG_TYPE);
+	Var &a = *aParam[0]->var->ResolveAlias(), &b = *aParam[1]->var->ResolveAlias();
+	swap(a, b);
+	swap(a.mName, b.mName);
+	swap(a.mType, b.mType);
+	swap(a.mScope, b.mScope);
 }
 
+static void ZipError(ResultToken &aResultToken, DWORD aErrCode)
+{
+	TCHAR buf[100];
+	ZipFormatMessage(aErrCode, buf, _countof(buf));
+	_o_throw(buf);
+}
+
+#define _o_throw_zip(code)	return ZipError(aResultToken, code)
 BIF_DECL(BIF_UnZip)
 {
-	IObject* buffer_obj;
-	size_t aBytes = 0;
-	DWORD aErrCode;
-	HZIP huz;
-	TCHAR	aMsg[100];
-	char aPassword[1024] = { 0 };
-	if (TokenIsPureNumeric(*aParam[0]))
+	IObject *obj;
+	size_t	ptr = 0, size;
+	DWORD	err;
+	HZIP	huz;
+	LPTSTR	path = nullptr;
+	if (obj = TokenToObject(*aParam[0]))
+	{
+		GetBufferObjectPtr(aResultToken, obj, ptr, size);
+		if (aResultToken.Exited())
+			return;
+		if (ptr < 65536 || !size)
+			_o_throw_value(ERR_PARAM1_INVALID);
+	}
+	else if (TokenIsPureNumeric(*aParam[0]))
 	{
 		if (!TokenIsNumeric(*aParam[1]))
+			_o_throw_param(1, _T("Integer"));
+		if (ptr = (size_t)TokenToInt64(*aParam[0]))
+		{
+			size = (size_t)TokenToInt64(*aParam[1]);
+			if (ptr < 65536)
+				_o_throw_value(ERR_PARAM1_INVALID);
+			if (!size)
 			_o_throw_value(ERR_PARAM2_INVALID);
-		else if (aParamCount < 3)
-			_o_throw(ERR_PARAM3_REQUIRED);
-		else if (!ParamIndexIsOmittedOrEmpty(5))
-			WideCharToMultiByte(CP_ACP, 0, TokenToString(*aParam[5]), -1, aPassword, 1024, 0, 0);
-		if (aErrCode = UnzipOpenBuffer(&huz, (void*)TokenToInt64(*aParam[0]), (DWORD)TokenToInt64(*aParam[1]), aPassword))
-			goto error;
+		}
 		aParam++;
 		aParamCount--;
 	}
-	else {
-		if (aParamCount > 5)
-			_o_throw(ERR_PARAM_COUNT_INVALID);
-		else if (!ParamIndexIsOmittedOrEmpty(4))
-			WideCharToMultiByte(CP_ACP, 0, TokenToString(*aParam[4]), -1, aPassword, 1024, 0, 0);
-		if (buffer_obj = TokenToObject(**aParam))
-		{
-			size_t ptr;
-			GetBufferObjectPtr(aResultToken, buffer_obj, ptr, aBytes);
-			if (aResultToken.Exited())
-				return;
-			if (aErrCode = UnzipOpenBuffer(&huz, (void*)ptr, aBytes, aPassword))
+	else
+		path = TokenToString(*aParam[0]);
+	if (ParamIndexIsOmitted(1))
+		_o_throw_param(!path && !obj ? 2 : 1);
+
+	auto codepage = (UINT)ParamIndexToOptionalInt(5, 0);
+	CStringCharFromTChar pw(ParamIndexToOptionalString(4));
+	if (path)
+		err = UnzipOpenFileW(&huz, path, pw, codepage);
+	else
+		err = UnzipOpenBuffer(&huz, (void *)ptr, (ULONGLONG)size, pw, codepage);
+	if (err)
 				goto error;
-		}
-		else if (aErrCode = UnzipOpenFile(&huz, TokenToString(*aParam[0]), aPassword))
-			goto error;
-	}
-	UnzipSetBaseDir(huz, _T(""));
-	ZIPENTRY	ze;
 
+	ZIPENTRY ze;
+	LPTSTR aDir = TokenToString(*aParam[1], NULL, &size);
 	TCHAR aTargetDir[MAX_PATH] = { 0 };
-	SIZE_T aDirLen = 0;
-	LPTSTR aDir = TokenToString(*aParam[1]);
-	_tcscpy(aTargetDir, aDir);
-	aDirLen = _tcslen(aDir);
-	if (aDirLen && aTargetDir[aDirLen - 1] != '\\')
-		aTargetDir[aDirLen++] = '\\';
-	LPTSTR aTargetName;
-
-	if (aParamCount > 2 && TokenIsPureNumeric(*aParam[2]))
+	if (size > MAX_PATH - 2)
 	{
-		ze.Index = (ULONGLONG)TokenToInt64(*aParam[2]);
-		if ((aErrCode = UnzipGetItem(huz, &ze)))
+		UnzipClose(huz);
+		_o_throw(_T("Path too long."));
+	}
+	_tcscpy(aTargetDir, aDir);
+	if (size && aTargetDir[size - 1] != '\\')
+		aTargetDir[size++] = '\\';
+
+	if (ParamIndexIsOmitted(2))
+	{
+	extractall:
+		ULONGLONG	numitems;
+		ze.Index = (ULONGLONG)-1;
+		if (err = UnzipGetItem(huz, &ze))
 			goto errorclose;
-		_tcscpy(aTargetDir + aDirLen, !ParamIndexIsOmittedOrEmpty(3) ? TokenToString(*aParam[3]) : ze.Name + 1);
-		if (aErrCode = UnzipItemToFile(huz, aTargetDir, &ze))
-			goto errorclose;
+		numitems = ze.Index;
+		for (ze.Index = 0; ze.Index < numitems; ze.Index++)
+		{
+			if ((err = UnzipGetItem(huz, &ze)))
+				goto errorclose;
+			_tcscpy(aTargetDir + size, ze.Name + 1);
+			if (err = UnzipItemToFile(huz, aTargetDir, &ze))
+				goto errorclose;
+		}
 	}
 	else
 	{
-		ULONGLONG	numitems;
-
-		// Find out how many items are in the archive.
-		ze.Index = (ULONGLONG)-1;
-		if ((aErrCode = UnzipGetItem(huz, &ze)))
-			goto errorclose;
-		numitems = ze.Index;
-
-		LPTSTR aOnlyOneItem = ParamIndexIsOmittedOrEmpty(2) ? NULL : TokenToString(*aParam[2]);
-		aTargetName = !aOnlyOneItem || ParamIndexIsOmittedOrEmpty(3) ? NULL : TokenToString(*aParam[3]);
-		// Unzip item(s), using the name stored (in the zip) for that item.
-		for (ze.Index = 0; ze.Index < numitems; ze.Index++)
+		if (TokenIsPureNumeric(*aParam[2]))
 		{
-			if ((aErrCode = UnzipGetItem(huz, &ze)))
-				goto errorclose;
-			if (aOnlyOneItem && _tcscmp(aOnlyOneItem, ze.Name + 1))
-				continue;
-			_tcscpy(aTargetDir + aDirLen, aTargetName ? aTargetName : ze.Name + 1);
-			if (aErrCode = UnzipItemToFile(huz, aTargetDir, &ze))
-				goto errorclose;
-			if (aOnlyOneItem)
-				break;
+			ze.Index = (ULONGLONG)TokenToInt64(*aParam[2]);
+			err = UnzipGetItem(huz, &ze);
 		}
+		else
+		{
+			auto item = TokenToString(*aParam[2]);
+			if (!*item)
+				goto extractall;
+			if (_tcslen(item) > MAX_PATH - 2)
+			{
+				UnzipClose(huz);
+				_o_throw(_T("Path too long."));
+			}
+			_tcscpy(ze.Name, item);
+			err = UnzipFindItem(huz, &ze, 1);
+		}
+		if (err) goto errorclose;
+		_tcscpy(aTargetDir + size, !ParamIndexIsOmittedOrEmpty(3) ? TokenToString(*aParam[3]) : ze.Name + 1);
+		if (err = UnzipItemToFile(huz, aTargetDir, &ze))
+			goto errorclose;
 	}
-	// Done unzipping files, so close the ZIP archive.
 	UnzipClose(huz);
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 1;
 	return;
 errorclose:
 	UnzipClose(huz);
 error:
-	UnzipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-	_o_throw(aMsg);
+	_o_throw_zip(err);
 }
 
 BIF_DECL(BIF_UnZipBuffer)
 {
-	DWORD aErrCode;
-	HZIP huz;
-	TCHAR	aMsg[100];
-	char aPassword[1024] = { 0 };
-	IObject* buffer_obj;
-	unsigned char* aBuffer = NULL;
-	size_t  aBytes = 0;
-	if (TokenIsNumeric(**aParam))
+	IObject *obj;
+	size_t	ptr = 0, size;
+	DWORD	err;
+	HZIP	huz;
+	LPTSTR	path = nullptr;
+	if (obj = TokenToObject(*aParam[0]))
+	{
+		GetBufferObjectPtr(aResultToken, obj, ptr, size);
+		if (aResultToken.Exited())
+			return;
+		if (ptr < 65536 || !size)
+			_o_throw_value(ERR_PARAM1_INVALID);
+	}
+	else if (TokenIsPureNumeric(*aParam[0]))
 	{
 		if (!TokenIsNumeric(*aParam[1]))
-			_o_throw_value(ERR_PARAM2_INVALID);
-		aBuffer = (unsigned char*)TokenToInt64(**aParam);
-		aBytes = (size_t)TokenToInt64(*aParam[1]);
+			_o_throw_param(1, _T("Integer"));
+		if (ptr = (size_t)TokenToInt64(*aParam[0]))
+		{
+			size = (size_t)TokenToInt64(*aParam[1]);
+			if (ptr < 65536)
+				_o_throw_value(ERR_PARAM1_INVALID);
+			if (!size)
+				_o_throw_value(ERR_PARAM2_INVALID);
+		}
 		aParam++;
 		aParamCount--;
 	}
-	else if (buffer_obj = TokenToObject(**aParam))
-	{
-		size_t ptr;
-		GetBufferObjectPtr(aResultToken, buffer_obj, ptr, aBytes);
-		if (aResultToken.Exited())
-			return;
-		aBuffer = (unsigned char*)ptr;
-	}
-	if (aParamCount > 3)
-		_o_throw(ERR_PARAM_COUNT_INVALID);
-	if (!ParamIndexIsOmittedOrEmpty(2))
-		WideCharToMultiByte(CP_ACP, 0, TokenToString(*aParam[2]), -1, aPassword, 1024, 0, 0);
+	else
+		path = TokenToString(*aParam[0]);
+	if (ParamIndexIsOmittedOrEmpty(1))
+		_o_throw_param(!path && !obj ? 2 : 1);
 
-	if (aBuffer)
-	{
-		if (aErrCode = UnzipOpenBuffer(&huz, aBuffer, aBytes, aPassword))
-			goto error;
-	}
-	else if (aErrCode = UnzipOpenFile(&huz, TokenToString(*aParam[0]), aPassword))
-	{
+	auto codepage = (UINT)ParamIndexToOptionalInt(3, 0);
+	CStringCharFromTChar pw(ParamIndexToOptionalString(2));
+	if (path)
+		err = UnzipOpenFileW(&huz, path, pw, codepage);
+	else
+		err = UnzipOpenBuffer(&huz, (void *)ptr, (ULONGLONG)size, pw, codepage);
+	if (err)
 		goto error;
-	}
-	UnzipSetBaseDir(huz, _T(""));
 
 	ZIPENTRY	ze;
-
 	if (TokenIsPureNumeric(*aParam[1]))
 	{
 		ze.Index = (ULONGLONG)TokenToInt64(*aParam[1]);
-		if ((aErrCode = UnzipGetItem(huz, &ze)))
-			goto errorclose;
-		aBuffer = (unsigned char*)malloc((size_t)ze.UncompressedSize);
-		if (!aBuffer)
+		err = UnzipGetItem(huz, &ze);
+	}
+	else
+	{
+		auto item = TokenToString(*aParam[1]);
+		if (_tcslen(item) > MAX_PATH - 2)
 		{
 			UnzipClose(huz);
-			_o_throw_oom;
+			_o_throw(_T("Path too long."));
 		}
-		if (aErrCode = UnzipItemToBuffer(huz, aBuffer, ze.UncompressedSize, &ze))
-		{
-			free(aBuffer);
-			goto errorclose;
-		}
-		IObject* aObject = BufferObject::Create(aBuffer, (size_t)ze.UncompressedSize);
-		dynamic_cast<BufferObject*>(aObject)->SetBase(BufferObject::sPrototype);
-		aResultToken.SetValue(aObject);
+		_tcscpy(ze.Name, item);
+		err = UnzipFindItem(huz, &ze, 1);
+	}
+	if (err) goto errorclose;
+	auto buf = malloc((size_t)ze.UncompressedSize);
+	if (!buf)
+	{
 		UnzipClose(huz);
-		return;
+		_o_throw_oom;
 	}
-	else {
-		ULONGLONG	numitems;
-		// Find out how many items are in the archive.
-		ze.Index = (ULONGLONG)-1;
-		if ((aErrCode = UnzipGetItem(huz, &ze)))
-			goto errorclose;
-		numitems = ze.Index;
-		LPTSTR aSource = TokenToString(*aParam[1]);
-		// Unzip item(s), using the name stored (in the zip) for that item.
-		for (ze.Index = 0; ze.Index < numitems; ze.Index++)
-		{
-			if ((aErrCode = UnzipGetItem(huz, &ze)))
-				goto errorclose;
-			if (_tcscmp(aSource, ze.Name + 1))
-				continue;
-			aBuffer = (unsigned char*)malloc((size_t)ze.UncompressedSize);
-			if (!aBuffer)
-			{
-				UnzipClose(huz);
-				_o_throw_oom;
-			}
-			if (aErrCode = UnzipItemToBuffer(huz, aBuffer, ze.UncompressedSize, &ze))
-			{
-				free(aBuffer);
-				goto errorclose;
-			}
-			IObject* aObject = BufferObject::Create(aBuffer, (size_t)ze.UncompressedSize);
-			dynamic_cast<BufferObject*>(aObject)->SetBase(BufferObject::sPrototype);
-			aResultToken.SetValue(aObject);
-			UnzipClose(huz);
-			return;
-		}
+	if (err = UnzipItemToBuffer(huz, buf, ze.UncompressedSize, &ze))
+	{
+		free(buf);
+		goto errorclose;
 	}
-
-	// Item not found, so close the ZIP archive.
 	UnzipClose(huz);
-	aResultToken.SetValue(_T(""));
-	return;
+	_o_return(BufferObject::Create(buf, (size_t)ze.UncompressedSize));
 errorclose:
 	UnzipClose(huz);
 error:
-	UnzipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-	_o_throw(aMsg);
+	_o_throw_zip(err);
 }
 
 BIF_DECL(BIF_UnZipRawMemory)
 {
-	IObject* buffer_obj;
-	size_t max_bytes = SIZE_MAX;
-	size_t sz = 0;
-	LPVOID aBuffer;
-	LPVOID aDataBuf = NULL;
+	size_t ptr, size;
+	LPTSTR pwd;
+	LPVOID buf;
 
-	if (TokenIsNumeric(**aParam))
+	if (auto obj = TokenToObject(*aParam[0]))
 	{
-		if (aParamCount == 1)
-			_o_throw(ERR_PARAM_COUNT_INVALID);
-		else if (!TokenIsNumeric(*aParam[1]))
-			_o_throw_param(1, _T("Integer"));
-		aBuffer = (LPVOID)TokenToInt64(**aParam);
-		sz = DecompressBuffer(aBuffer, aDataBuf, (DWORD)TokenToInt64(*aParam[1]), ParamIndexIsOmittedOrEmpty(2) ? NULL : TokenToString(*aParam[2]));
-	}
-	else if (buffer_obj = TokenToObject(**aParam)) {
-		if (aParamCount > 2)
-			_o_throw(ERR_PARAM_COUNT_INVALID);
-		size_t ptr;
-		GetBufferObjectPtr(aResultToken, buffer_obj, ptr, max_bytes);
-		if (!aResultToken.Exited())
-			sz = DecompressBuffer(aBuffer = (LPVOID)ptr, aDataBuf, (DWORD)max_bytes, ParamIndexIsOmittedOrEmpty(1) ? NULL : TokenToString(*aParam[1]));
-	}
-	if (sz)
-	{	// in case this is a string add 2 bytes for terminating character, BufferObject will report the actual size
-		IObject* aObject = BufferObject::Create(aDataBuf, sz);
-		((BufferObject*)aObject)->SetBase(BufferObject::sPrototype);
-		aResultToken.SetValue(aObject);
+		GetBufferObjectPtr(aResultToken, obj, ptr, size);
+		if (aResultToken.Exited())
+			return;
+		pwd = ParamIndexIsOmittedOrEmpty(1) ? NULL : TokenToString(*aParam[1]);
 	}
 	else
-		aResultToken.SetValue(_T(""));
+	{
+		if (ParamIndexIsOmitted(1))
+			_o_throw_param(1);
+		ptr = (size_t)TokenToInt64(*aParam[0]);
+		size = (size_t)TokenToInt64(*aParam[1]);
+		pwd = ParamIndexIsOmittedOrEmpty(2) ? NULL : TokenToString(*aParam[2]);
+	}
+	if (ptr < 65536 || !size)
+		_o_throw_value(ERR_PARAM_INVALID);
+	if (size = DecompressBuffer((void *)ptr, buf, (DWORD)size, pwd))
+		_o_return(BufferObject::Create(buf, size));
+	_o_throw(ERR_FAILED);
 }
 
 BIF_DECL(BIF_ZipAddBuffer)
 {
-	IObject* buffer_obj;
-	size_t max_bytes = 0;
-	DWORD aErrCode;
-	const void* aSource;
-	LPTSTR aDestination = NULL;
-
-	if (buffer_obj = TokenToObject(*aParam[1]))
+	size_t ptr, size;
+	LPTSTR dest;
+	if (auto obj = TokenToObject(*aParam[1]))
 	{
-		size_t ptr;
-		GetBufferObjectPtr(aResultToken, buffer_obj, ptr, max_bytes);
+		GetBufferObjectPtr(aResultToken, obj, (size_t&)ptr, size);
 		if (aResultToken.Exited())
 			return;
-		aSource = (const void*)ptr;
-		if (ParamIndexIsOmittedOrEmpty(2))
-			_o_throw_value(ERR_PARAM3_INVALID);
-		aDestination = TokenToString(*aParam[2]);
+		dest = ParamIndexToOptionalString(2);
 	}
 	else {
-		if (ParamIndexIsOmittedOrEmpty(3) || !*(aDestination = TokenToString(*aParam[3])))
-			_o_throw(aParamCount < 4 ? ERR_PARAM_REQUIRED : ERR_PARAM4_INVALID);
-		aSource = (const void*)TokenToInt64(*aParam[1]);
-		max_bytes = (size_t)TokenToInt64(*aParam[2]);
+		ptr = (size_t)TokenToInt64(*aParam[1]);
+		size = (size_t)TokenToInt64(*aParam[2]);
+		dest = ParamIndexToOptionalString(3);
 	}
-	if (!TokenToInt64(*aParam[0]))
-		_o_throw_value(ERR_PARAM1_INVALID);
-	else if (aErrCode = ZipAddBuffer((HZIP)TokenToInt64(*aParam[0]), aDestination, aSource, max_bytes))
-	{
-		TCHAR	aMsg[100];
-		ZipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-		_o_throw(aMsg);
-	}
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 1;
+	if (ptr < 65536 || !size)
+		_o_throw_value(ERR_INVALID_VALUE);
+	auto hzip = (HZIP)TokenToInt64(*aParam[0]);
+	if (auto aErrCode = ZipAddBuffer(hzip, dest, (const void *)ptr, (ULONGLONG)size))
+		_o_throw_zip(aErrCode);
 }
 
 BIF_DECL(BIF_ZipAddFile)
 {
-	DWORD aErrCode;
-	LPTSTR aSource = TokenToString(*aParam[1]);
-	LPTSTR aDestination = ParamIndexIsOmittedOrEmpty(2) ? NULL : TokenToString(*aParam[2]);
-	if (!TokenToInt64(*aParam[0]))
-		_o_throw_value(ERR_PARAM1_INVALID);
-	if (aErrCode = ZipAddFile((HZIP)TokenToInt64(*aParam[0]), aDestination, aSource))
-	{
-		TCHAR	aMsg[100];
-		ZipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-		_o_throw(aMsg);
-	}
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 1;
+	if (auto aErrCode = ZipAddFile((HZIP)TokenToInt64(*aParam[0]),
+		ParamIndexIsOmittedOrEmpty(2) ? NULL : TokenToString(*aParam[2]),
+		TokenToString(*aParam[1])))
+		_o_throw_zip(aErrCode);
 }
 
 BIF_DECL(BIF_ZipAddFolder)
 {
-	DWORD aErrCode;
-	if (!TokenToInt64(*aParam[0]))
-		_o_throw_value(ERR_PARAM1_INVALID);
-	if (aErrCode = ZipAddFolder((HZIP)TokenToInt64(*aParam[0]), TokenToString(*aParam[1])))
-	{
-		TCHAR	aMsg[100];
-		ZipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-		_o_throw(aMsg);
-	}
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 1;
+	if (auto aErrCode = ZipAddFolder((HZIP)TokenToInt64(*aParam[0]), TokenToString(*aParam[1])))
+		_o_throw_zip(aErrCode);
 }
 
 BIF_DECL(BIF_ZipCloseBuffer)
 {
-	DWORD aErrCode;
-	TCHAR	aMsg[100];
-	unsigned char* aBuffer;
-	ULONGLONG		aLen;
-	HANDLE			aBase;
-	if (aErrCode = ZipGetMemory((HZIP)TokenToInt64(*aParam[0]), (void**)&aBuffer, &aLen, &aBase))
-	{
-		ZipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-		_o_throw(aMsg);
-	}
+	void		*aBuffer;
+	ULONGLONG	aLen;
+	HANDLE		aBase;
+	if (auto aErrCode = ZipGetMemory((HZIP)TokenToInt64(*aParam[0]), &aBuffer, &aLen, &aBase))
+		_o_throw_zip(aErrCode);
 	LPVOID aData = malloc((size_t)aLen);
-	if (!aData)
-		_o_throw_oom;
-	memcpy(aData, aBuffer, (size_t)aLen);
-	IObject* aObject = BufferObject::Create(aData, (size_t)aLen);
-	dynamic_cast<BufferObject*>(aObject)->SetBase(BufferObject::sPrototype);
-	aResultToken.SetValue(aObject);
+	if (aData)
+		memcpy(aData, aBuffer, (size_t)aLen);
 	// Free the memory now that we're done with it.
 	UnmapViewOfFile(aBuffer);
 	CloseHandle(aBase);
+	if (aData)
+		_o_return(BufferObject::Create(aData, (size_t)aLen));
+	_o_throw_oom;
 }
 
 BIF_DECL(BIF_ZipCloseFile)
 {
-	DWORD aErrCode;
-	TCHAR	aMsg[100];
-	if (aErrCode = ZipClose((HZIP)TokenToInt64(*aParam[0])))
-	{
-		ZipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-		_o_throw(aMsg);
-	}
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 1;
+	if (auto aErrCode = ZipClose((HZIP)TokenToInt64(*aParam[0])))
+		_o_throw_zip(aErrCode);
 }
 
 BIF_DECL(BIF_ZipCreateBuffer)
 {
-	DWORD aErrCode;
 	HZIP hz;
-	TCHAR	aMsg[100];
-	CStringA aPassword = ParamIndexIsOmittedOrEmpty(1) ? NULL : CStringCharFromTChar(TokenToString(*aParam[1]));
-	if (aErrCode = ZipCreateBuffer(&hz, 0, (DWORD)TokenToInt64(*aParam[0]), aPassword))
-	{
-		ZipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-		_o_throw(aMsg);
-	}
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = (__int64)hz;
+	if (auto aErrCode = ZipCreateBuffer(&hz, 0, (ULONGLONG)TokenToInt64(*aParam[0]), CStringCharFromTChar(ParamIndexToOptionalString(1))))
+		_o_throw_zip(aErrCode);
+	_o_return((__int64)hz);
 }
 
 BIF_DECL(BIF_ZipCreateFile)
 {
-	DWORD aErrCode;
 	HZIP hz;
-	TCHAR	aMsg[100];
-	CStringA aPassword = ParamIndexIsOmittedOrEmpty(1) ? NULL : CStringCharFromTChar(TokenToString(*aParam[1]));
-	if (aErrCode = ZipCreateFile(&hz, TokenToString(*aParam[0]), aPassword))
-	{
-		ZipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-		_o_throw(aMsg);
-	}
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = (__int64)hz;
+	if (auto aErrCode = ZipCreateFile(&hz, TokenToString(*aParam[0]), CStringCharFromTChar(ParamIndexToOptionalString(1))))
+		_o_throw_zip(aErrCode);
+	_o_return((__int64)hz);
 }
 
 BIF_DECL(BIF_ZipInfo)
 {
-	DWORD aErrCode;
-	HZIP huz;
-	TCHAR	aMsg[100];
-
-	ResultToken Result, this_token, aValue;
-	ExprTokenType* params[] = { &aValue };
-
-	if (TokenIsPureNumeric(*aParam[0]))
+	IObject *obj;
+	size_t	ptr = 0, size;
+	DWORD	err;
+	HZIP	huz;
+	LPTSTR	path = nullptr;
+	ExprTokenType aValue;
+	if (obj = TokenToObject(*aParam[0]))
 	{
-		if (aParamCount < 2)
-			_o_throw(ERR_PARAM2_REQUIRED);
-		else if (!TokenIsNumeric(*aParam[1]))
-			_o_throw_param(1, _T("Integer"));
-		if (aErrCode = UnzipOpenBuffer(&huz, (void*)TokenToInt64(*aParam[0]), (DWORD)TokenToInt64(*aParam[1]), NULL))
-			goto error;
-	}
-	else if (auto buffer_obj = TokenToObject(*aParam[0])) {
-		size_t ptr, aBytes;
-		GetBufferObjectPtr(aResultToken, buffer_obj, ptr, aBytes);
+		GetBufferObjectPtr(aResultToken, obj, ptr, size);
 		if (aResultToken.Exited())
 			return;
-		if (aErrCode = UnzipOpenBuffer(&huz, (void*)ptr, aBytes, NULL))
-			goto error;
+		if (ptr < 65536 || !size)
+			_o_throw_value(ERR_PARAM1_INVALID);
 	}
-	else if (aErrCode = UnzipOpenFile(&huz, TokenToString(*aParam[0]), NULL))
+	else if (TokenIsPureNumeric(*aParam[0]))
+	{
+		if (!TokenIsNumeric(*aParam[1]))
+			_o_throw_param(1, _T("Integer"));
+		if (ptr = (size_t)TokenToInt64(*aParam[0]))
+		{
+			size = (size_t)TokenToInt64(*aParam[1]);
+			if (ptr < 65536)
+				_o_throw_value(ERR_PARAM1_INVALID);
+			if (!size)
+				_o_throw_value(ERR_PARAM2_INVALID);
+		}
+		aParam++;
+		aParamCount--;
+	}
+	else
+		path = TokenToString(*aParam[0]);
+	auto codepage = (UINT)ParamIndexToOptionalInt(1, 0);
+	if (path)
+		err = UnzipOpenFileW(&huz, path, NULL, codepage);
+	else
+		err = UnzipOpenBuffer(&huz, (void *)ptr, (ULONGLONG)size, NULL, codepage);
+	if (err)
 		goto error;
-	UnzipSetBaseDir(huz, _T(""));
 
 	ZIPENTRY	ze;
 	ULONGLONG	numitems;
-
-	Array* aObject = Array::Create();
-
-	// Find out how many items are in the archive.
+	Array *arr = Array::Create();
+	auto buf = aResultToken.buf;
 	ze.Index = (ULONGLONG)-1;
-	if ((aErrCode = UnzipGetItem(huz, &ze)))
+	if ((err = UnzipGetItem(huz, &ze)))
 		goto errorclose;
 	numitems = ze.Index;
 
-	TCHAR aTimeBuf[MAX_INTEGER_LENGTH];
 	// Get info for all item(s).
 	for (ze.Index = 0; ze.Index < numitems; ze.Index++)
 	{
-		if ((aErrCode = UnzipGetItem(huz, &ze)))
+		if ((err = UnzipGetItem(huz, &ze)))
 			goto errorclose;
-		Object* aThisObject = Object::Create();
-		aValue.symbol = SYM_STRING;
-		aValue.marker_length = -1;
-		aValue.marker = ze.Name;
-		Result.InitResult(_T(""));
-		aThisObject->Invoke(Result, IT_SET, _T("Name"), this_token, params, 1);
-
-		aValue.marker = FileTimeToYYYYMMDD(aTimeBuf, ze.CreateTime, true);
-		aThisObject->Invoke(Result, IT_SET, _T("CreateTime"), this_token, params, 1);
-
-		aValue.marker = FileTimeToYYYYMMDD(aTimeBuf, ze.ModifyTime, true);
-		aThisObject->Invoke(Result, IT_SET, _T("ModifyTime"), this_token, params, 1);
-
-		aValue.marker = FileTimeToYYYYMMDD(aTimeBuf, ze.AccessTime, true);
-		aThisObject->Invoke(Result, IT_SET, _T("AccessTime"), this_token, params, 1);
-
-		aValue.marker = FileAttribToStr(aTimeBuf, ze.Attributes);
-		aThisObject->Invoke(Result, IT_SET, _T("Attributes"), this_token, params, 1);
-
-		aValue.symbol = SYM_INTEGER;
-		aValue.value_int64 = ze.CompressedSize;
-		aThisObject->Invoke(Result, IT_SET, _T("CompressedSize"), this_token, params, 1);
-
-		aValue.value_int64 = ze.UncompressedSize;
-		aThisObject->Invoke(Result, IT_SET, _T("UncompressedSize"), this_token, params, 1);
-
-		aValue.symbol = SYM_OBJECT;
-		aValue.object = aThisObject;
-		aObject->Append(*params[0]);
-		aThisObject->Release();
+		Object *obj = Object::Create();
+		obj->SetOwnProp(_T("AccessTime"), FileTimeToYYYYMMDD(buf, ze.AccessTime, true));
+		obj->SetOwnProp(_T("Attributes"), FileAttribToStr(buf, ze.Attributes));
+		obj->SetOwnProp(_T("CompressedSize"), ze.CompressedSize);
+		obj->SetOwnProp(_T("CreateTime"), FileTimeToYYYYMMDD(buf, ze.CreateTime, true));
+		obj->SetOwnProp(_T("ModifyTime"), FileTimeToYYYYMMDD(buf, ze.ModifyTime, true));
+		obj->SetOwnProp(_T("Name"), ze.Name);
+		obj->SetOwnProp(_T("UncompressedSize"), ze.UncompressedSize);
+		aValue.SetValue(obj);
+		arr->Append(aValue);
+		obj->Release();
 	}
 
 	// Done unzipping files, so close the ZIP archive.
 	UnzipClose(huz);
-	aResultToken.symbol = SYM_OBJECT;
-	aResultToken.object = aObject;
-	return;
+	_o_return(arr);
 errorclose:
 	UnzipClose(huz);
-	aObject->Release();
+	arr->Release();
 error:
-	UnzipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-	_o_throw(aMsg);
+	_o_throw_zip(err);
 }
 
 BIF_DECL(BIF_ZipOptions)
 {
-	DWORD aErrCode;
-	TCHAR	aMsg[100];
-	if (aErrCode = ZipOptions((HZIP)TokenToInt64(*aParam[0]), (DWORD)TokenToInt64(*aParam[1])))
-	{
-		ZipFormatMessage(aErrCode, aMsg, _countof(aMsg));
-		_o_throw(aMsg);
-	}
-	aResultToken.symbol = SYM_INTEGER;
-	aResultToken.value_int64 = 1;
+	if (auto aErrCode = ZipOptions((HZIP)TokenToInt64(*aParam[0]), (DWORD)TokenToInt64(*aParam[1])))
+		_o_throw_zip(aErrCode);
 }
 
 BIF_DECL(BIF_ZipRawMemory)
 {
-	IObject* buffer_obj;
-	size_t  max_bytes = SIZE_MAX;
-	LPVOID aDataBuf = NULL;
-	size_t sz = NULL;
+	size_t  ptr, size;
+	LPVOID buf;
+	LPTSTR pwd;
 
-	if (buffer_obj = TokenToObject(**aParam))
+	if (auto obj = TokenToObject(**aParam))
 	{
-		if (aParamCount > 2)
-			_o_throw(ERR_PARAM_COUNT_INVALID);
-		size_t ptr;
-		GetBufferObjectPtr(aResultToken, buffer_obj, ptr, max_bytes);
+		GetBufferObjectPtr(aResultToken, obj, ptr, size);
 		if (aResultToken.Exited())
-			_o_throw_value(ERR_PARAM2_INVALID);
-		sz = CompressBuffer((BYTE*)ptr, aDataBuf, (DWORD)max_bytes, ParamIndexIsOmittedOrEmpty(1) ? NULL : TokenToString(*aParam[1]));
+			return;
+		pwd = ParamIndexIsOmittedOrEmpty(1) ? NULL : TokenToString(*aParam[1]);
 	}
 	else
-		sz = CompressBuffer((BYTE*)TokenToInt64(*aParam[0]), aDataBuf, (DWORD)TokenToInt64(*aParam[1]), ParamIndexIsOmittedOrEmpty(2) ? NULL : TokenToString(*aParam[2]));
-	if (sz)
 	{
-		auto aObject = BufferObject::Create(aDataBuf, sz);
-		aObject->SetBase(BufferObject::sPrototype);
-		aResultToken.SetValue(aObject);
+		ptr = (size_t)TokenToInt64(*aParam[0]);
+		size = (DWORD)TokenToInt64(*aParam[1]);
+		pwd = ParamIndexIsOmittedOrEmpty(2) ? NULL : TokenToString(*aParam[2]);
 	}
-	else
-		_f_throw_oom;
+	if (ptr < 65536 || !size)
+		_o_throw_value(ERR_INVALID_VALUE);
+	if (size = CompressBuffer((BYTE *)ptr, buf, (DWORD)size, pwd))
+		_o_return(BufferObject::Create(buf, size));
+	_o_throw_oom;
 }
+#undef _o_throw_zip
 
 
 
@@ -2818,32 +2750,32 @@ ResultType DynaToken::Invoke(IObject_Invoke_PARAMS_DECL)
 
 
 
-thread_local IObject* JSON::_true;
-thread_local IObject* JSON::_false;
-thread_local IObject* JSON::_null;
+thread_local IObject *JSON::_true;
+thread_local IObject *JSON::_false;
+thread_local IObject *JSON::_null;
 
-void JSON::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount)
+void JSON::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
 	JSON js;
 	switch (aID)
 	{
 	case M_Parse:
-		_f_return_retval(js.Parse(aResultToken, aParam, aParamCount));
+		_o_return_retval(js.Parse(aResultToken, aParam, aParamCount));
 	case M_Stringify:
-		_f_return_retval(js.Stringify(aResultToken, aParam, aParamCount));
+		_o_return_retval(js.Stringify(aResultToken, aParam, aParamCount));
 	case P_True:
 		JSON::_true->AddRef();
-		_f_return(JSON::_true);
+		_o_return(JSON::_true);
 	case P_False:
 		JSON::_false->AddRef();
-		_f_return(JSON::_false);
+		_o_return(JSON::_false);
 	case P_Null:
 		JSON::_null->AddRef();
-		_f_return(JSON::_null);
+		_o_return(JSON::_null);
 	}
 }
 
-void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamCount)
+void JSON::Parse(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
 {
 	ExprTokenType val{}, _true(JSON::_true), _false(JSON::_false), _null(JSON::_null), _miss;
 	size_t keylen, len, commas = 0;
@@ -2865,7 +2797,7 @@ void JSON::Parse(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamC
 	cur = top;
 	b = beg = TokenIsPureNumeric(*aParam[0]) ? (LPTSTR)TokenToInt64(*aParam[0]) : TokenToString(*aParam[0]);
 	if (b < (void*)65536)
-		_o_throw_param(0);
+		_o_throw_value(ERR_PARAM1_INVALID);
 	if (!ParamIndexToOptionalBOOL(1, TRUE))
 		_true.SetValue(1), _false.SetValue(0), _null.SetValue(_T(""), 0);
 	valbuf.SetCapacity(0x1000), keybuf.SetCapacity(0x1000);
@@ -3158,20 +3090,29 @@ ret:
 	if (key) key[keylen] = endc;
 }
 
-void JSON::Stringify(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamCount)
+void JSON::Stringify(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
 {
-	if (IObject* obj = TokenToObject(*aParam[0])) {
+	if (IObject *obj = TokenToObject(*aParam[0])) {
 		if (!ParamIndexIsOmitted(1)) {
-			if (TokenIsNumeric(*aParam[1])) {
-				auto sz = TokenToInt64(*aParam[1]);
+			ExprTokenType val = *aParam[1];
+			if (auto opts = dynamic_cast<Object *>(TokenToObject(val))) {
+				if (opts->GetOwnProp(val, _T("depth")))
+					depth = (UINT)TokenToInt64(val), indent = _T("\t"), indent_len = 1;
+				if (!opts->GetOwnProp(val, _T("indent")))
+					val.symbol = SYM_MISSING;
+			}
+			if (val.symbol != SYM_MISSING) {
+				if (TokenIsNumeric(val)) {
+					auto sz = TokenToInt64(val);
 				if (sz > 0) {
 					indent = (LPTSTR)_alloca(sizeof(TCHAR) * ((size_t)sz + 1));
 					tmemset(indent, ' ', (size_t)sz);
 					indent[indent_len = (UINT)sz] = '\0';
 				}
 			}
-			else if (!TokenIsEmptyString(*aParam[1]))
-				indent = TokenToString(*aParam[1]), indent_len = (UINT)_tcslen(indent);
+				else if (!TokenIsEmptyString(val))
+					indent = TokenToString(val), indent_len = (UINT)_tcslen(indent);
+			}
 		}
 		objcolon = indent ? _T("\": ") : _T("\":");
 		deep = 0;
@@ -3223,46 +3164,47 @@ void JSON::append(LPTSTR s) {
 		str.append(b, sz);
 }
 
-void JSON::appendObj(IObject* obj, bool invoke_tojson) {
-	if (dynamic_cast<EnumBase*>(obj))
+const IID IID_IObjectComCompatible;
+void JSON::appendObj(IObject *obj, bool invoke_tojson) {
+	if (dynamic_cast<EnumBase *>(obj))
 		return append(obj, true);
 	ResultToken result;
-	if (dynamic_cast<Map*>(obj))
-		append(static_cast<Map*>(obj));
-	else if (dynamic_cast<Array*>(obj))
-		append(static_cast<Array*>(obj));
-	else if (dynamic_cast<Object*>(obj)) {
-		if (static_cast<Object*>(obj)->HasMethod(_T("__Enum")))
-			append(obj);
-		else
-			append(static_cast<Object*>(obj));
-	}
+	if (auto m = dynamic_cast<Map *>(obj))
+		append(m);
+	else if (auto a = dynamic_cast<Array *>(obj))
+		append(a);
+	else if (auto o = dynamic_cast<Object *>(obj))
+		o->HasMethod(_T("__Enum")) ? append(obj) : append(o);
 	else {
-		ComObject* aComObj = dynamic_cast<ComObject*>(obj);
-		if (!aComObj || (aComObj->mVarType == VT_NULL || aComObj->mVarType == VT_EMPTY))
+		auto comobj = dynamic_cast<ComObject *>(obj);
+		if (!comobj || (comobj->mVarType == VT_NULL || comobj->mVarType == VT_EMPTY))
 			str += _T("null");
-		else if (aComObj->mVarType == VT_BOOL)
-			str += aComObj->mVal64 == VARIANT_FALSE ? _T("false") : _T("true");
-		else if (aComObj->mVarType == VT_DISPATCH || (aComObj->mVarType & VT_ARRAY)) {
-			LPOLESTR s[] = { L"",L"" };
-			DISPID id[2] = { (LONG)g_ProcessId };
-			if (invoke_tojson && (aComObj->mVarType != VT_DISPATCH || SUCCEEDED(aComObj->mDispatch->GetIDsOfNames(IID_NULL, s, 2, LOCALE_USER_DEFAULT, id)))) {
-				ExprTokenType t_this((__int64)this);
-				ExprTokenType* param[] = { &t_this };
-				auto prev_excpt = g->ExcptMode;
-				auto l = str.size();
-				g->ExcptMode = EXCPTMODE_CATCH;
-				t_this.symbol = SYM_PTR;
-				result.InitResult(_T(""));
-				if (obj->Invoke(result, IT_CALL, _T("ToJSON"), ExprTokenType(obj), param, 1) == OK && result.Result() == OK && l < str.size()) {
+		else if (comobj->mVarType == VT_BOOL)
+			str += comobj->mVal64 == VARIANT_FALSE ? _T("false") : _T("true");
+		else if (comobj->mVarType == VT_DISPATCH || (comobj->mVarType & VT_ARRAY)) {
+			if (invoke_tojson) {
+				if (comobj->mVarType == VT_DISPATCH)
+					if (SUCCEEDED(comobj->mDispatch->QueryInterface(IID_IObjectComCompatible, (void **)&obj)))
+						obj->Release();
+					else invoke_tojson = false;
+				if (invoke_tojson) {
+					ExprTokenType t_this((__int64)this);
+					ExprTokenType *param[] = { &t_this };
+					auto prev_excpt = g->ExcptMode;
+					auto l = str.size();
+					g->ExcptMode = EXCPTMODE_CATCH;
+					t_this.symbol = SYM_PTR;
+					result.InitResult(_T(""));
+					if (obj->Invoke(result, IT_CALL, _T("ToJSON"), ExprTokenType(obj), param, 1) == OK && result.Result() == OK && l < str.size()) {
+						result.Free();
+						g->ExcptMode = prev_excpt;
+						return;
+					}
 					result.Free();
 					g->ExcptMode = prev_excpt;
-					return;
+					if (g->ThrownToken)
+						g_script->FreeExceptionToken(g->ThrownToken);
 				}
-				result.Free();
-				g->ExcptMode = prev_excpt;
-				if (g->ThrownToken)
-					g_script->FreeExceptionToken(g->ThrownToken);
 			}
 			append(obj);
 		}
@@ -3271,7 +3213,7 @@ void JSON::appendObj(IObject* obj, bool invoke_tojson) {
 	}
 }
 
-void JSON::append(Variant& field, Object* obj) {
+bool JSON::append(Variant &field, Object *obj) {
 	TCHAR numbuf[MAX_NUMBER_LENGTH];
 	switch (field.symbol)
 	{
@@ -3292,103 +3234,79 @@ void JSON::append(Variant& field, Object* obj) {
 		str += numbuf;
 		break;
 	case SYM_DYNAMIC:
-		if (!obj || ((Object*)obj)->IsClassPrototype() || field.prop->MaxParams > 0 || !field.prop->Getter()) {
-			str += _T("null");
-			break;
-		}
-		else {
+		if (obj && field.prop->Getter() && field.prop->MaxParams <= 0 && !((Object *)obj)->IsClassPrototype()) {
 			ResultToken result_token;
 			ExprTokenType getter(field.prop->Getter());
 			ExprTokenType object(obj);
-			auto* param = &object;
+			auto param = &object;
 			result_token.InitResult(numbuf);
 			auto result = getter.object->Invoke(result_token, IT_CALL, nullptr, getter, &param, 1);
-			if (result == FAIL || result == EARLY_EXIT) {
-				str += _T("null");
-				break;
-			}
-			if (result_token.mem_to_free)
-			{
-				ASSERT(result_token.symbol == SYM_STRING && result_token.mem_to_free == result_token.marker);
-				str.append(result_token.mem_to_free, result_token.marker_length);
-				free(result_token.mem_to_free), result_token.mem_to_free = nullptr;
-			}
-			else {
+			if (!(result == FAIL || result == EARLY_EXIT)) {
 				switch (result_token.symbol)
 				{
 				case SYM_OBJECT:
 					appendObj(result_token.object);
 					result_token.object->Release();
-					break;
+					return true;
 				case SYM_STRING:
 					str.append(result_token.marker, result_token.marker_length);
-					break;
+					free(result_token.mem_to_free), result_token.mem_to_free = nullptr;
+					return true;
 				case SYM_FLOAT:
 					FTOA(result_token.value_double, numbuf, MAX_NUMBER_LENGTH);
 					str += numbuf;
-					break;
+					return true;
 				case SYM_INTEGER:
 					ITOA64(result_token.value_int64, numbuf);
 					str += numbuf;
-					break;
+					return true;
 				}
 			}
 		}
-		break;
-	default:
-		str += _T("null");
-		break;
+	default: return false;
 	}
+	return true;
 }
 
-void JSON::append(Object* obj) {
-	auto& mFields = obj->mFields;
-	auto len = mFields.Length();
+void JSON::append(Object *obj) {
+	auto &mFields = obj->mFields;
 	str.append('{'), ++deep;
-	if (len) {
+	for (index_t i = 0; i < mFields.Length(); i++) {
+		FieldType &field = mFields[i];
+		auto sz = str.size();
 		append(deep), str.append('"');
-		FieldType& field = mFields[0];
 		append(field.name);
 		str += objcolon;
-		append(field, obj);
-		for (index_t i = 1; i < len; i++) {
-			FieldType& field = mFields[i];
-			str.append(','), append(deep), str.append('"');
-			append(field.name);
-			str += objcolon;
-			append(field, obj);
+		if (append(field, obj))
+			str.append(',');
+		else str.size() = sz;
 		}
-		append(--deep), str.append('}');
-	}
-	else
-		--deep, str.append('}');
+	--deep;
+	if (str.back() == ',')
+		--str.size(), append(deep);
+	str.append('}');
 }
 
-void JSON::append(Array* obj) {
-	auto& mItem = obj->mItem;
-	auto mLength = obj->mLength;
+void JSON::append(Array *obj) {
+	auto &mItem = obj->mItem;
+	auto mLength = obj->Length();
 	str.append('['), ++deep;
-	if (obj->mLength) {
-		append(deep), append(mItem[0]);
-		for (index_t i = 1; i < mLength; i++) {
-			if (str.back() != ',')
-				str.append(',');
-			append(deep), append(mItem[i]);
-		}
-		append(--deep), str.append(']');
-	}
-	else
-		--deep, str.append(']');
+	for (index_t i = 0; i < mLength; i++)
+		append(deep), append(mItem[i]), str.append(',');
+	--deep;
+	if (str.back()  == ',')
+		--str.size(), append(deep);
+	str.append(']');
 }
 
-void JSON::append(Map* obj) {
+void JSON::append(Map *obj) {
 	TCHAR numbuf[MAX_NUMBER_LENGTH];
 	auto mItem = obj->mItem;
 	auto mCount = obj->mCount;
 	auto IsUnsorted = obj->IsUnsorted();
 	str.append('{'), ++deep;
 	for (index_t i = 0; i < mCount; i++) {
-		Map::Pair& pair = mItem[i];
+		Map::Pair &pair = mItem[i];
 		append(deep), str.append('"');
 		switch (IsUnsorted ? (SymbolType)obj->mKeyTypes[i] : i < obj->mKeyOffsetObject ? SYM_INTEGER : i < obj->mKeyOffsetString ? SYM_OBJECT : SYM_STRING)
 		{
@@ -3407,16 +3325,16 @@ void JSON::append(Map* obj) {
 		append(pair);
 		str.append(',');
 	}
+	--deep;
 	if (str.back() == ',')
-		str.pop_back(), append(--deep), str.append('}');
-	else
-		--deep, str.append('}');
+		--str.size(), append(deep);
+	str.append('}');
 }
 
-void JSON::append(Var& vval) {
+void JSON::append(Var &vval) {
 	append(deep);
 	if (vval.IsObject())
-		appendObj(vval.mObject), vval.ReleaseObject();
+		appendObj(vval.mObject);
 	else if (vval.IsPureNumeric())
 		append(vval.Contents());
 	else
@@ -3424,7 +3342,7 @@ void JSON::append(Var& vval) {
 	str.append(',');
 }
 
-void JSON::append(Var& vkey, Var& vval) {
+void JSON::append(Var &vkey, Var &vval) {
 	append(deep), str.append('"');
 	if (vkey.IsObject()) {
 		TCHAR numbuf[MAX_NUMBER_SIZE];
@@ -3436,7 +3354,7 @@ void JSON::append(Var& vkey, Var& vval) {
 		append(vkey.Contents());
 	str += objcolon;
 	if (vval.IsObject())
-		appendObj(vval.mObject), vval.ReleaseObject();
+		appendObj(vval.mObject);
 	else if (vval.IsPureNumeric())
 		append(vval.Contents());
 	else
@@ -3444,11 +3362,11 @@ void JSON::append(Var& vkey, Var& vval) {
 	str.append(',');
 }
 
-void JSON::append(IObject* obj, bool is_enum_base) {
-	IObject* enumerator = NULL;
+void JSON::append(IObject *obj, bool is_enum_base) {
+	IObject *enumerator = NULL;
 	ResultToken result_token;
 	ExprTokenType params[3], enum_token(obj);
-	ExprTokenType* param[] = { params,params + 1,params + 2 };
+	ExprTokenType *param[] = { params,params + 1,params + 2 };
 	TCHAR buf[MAX_NUMBER_LENGTH];
 	result_token.InitResult(buf);
 	ResultType result;
@@ -3606,9 +3524,11 @@ void Promise::Init(ExprTokenType* aParam[], int aParamCount) {
 void callPromise(Promise* aPromise, HWND replyHwnd);
 void Promise::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount)
 {
-	Object* callback = dynamic_cast<Object*>(TokenToObject(*aParam[0]));
-	if (!callback || !callback->HasMethod(_T("Call")))
-		_f_throw_value(ERR_INVALID_FUNCTOR);
+	Object *callback = dynamic_cast<Object *>(TokenToObject(*aParam[0]));
+	if (!callback)
+		_o_throw(ERR_INVALID_FUNCTOR);
+	if (!ValidateFunctor(callback, 1, aResultToken))
+		return;
 	EnterCriticalSection(&mCritical);
 	callback->AddRef();
 	if (aID == M_Then) {
@@ -3880,64 +3800,6 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 		if (!PostMessage(mHwnd, WM_COMMAND, ID_FILE_RELOADSCRIPT, 0))
 			_f_return(0);
 		_f_return(1);
-	case M_GetObject:
-		if (auto obj = ParamIndexToObject(0)) {
-			int tosafe = ParamIndexToOptionalBOOL(1, TRUE);
-			auto comobj = dynamic_cast<ComObject*>(obj);
-			IUnknown* punk = nullptr;
-			bool isdisp = true;
-			VarRef* ref = dynamic_cast<VarRef*>(obj);
-			Object* base = obj->Base();
-			HRESULT result = S_OK;
-			for (auto t = base->Base(); t; t = t->Base()) base = t;
-			if (base == Object::sAnyPrototype) {
-				LPOLESTR s[] = { L"",L"" };
-				DISPID id[2] = { (LONG)g_ProcessId };
-				if (comobj && comobj->mVarType == VT_DISPATCH) {
-					if (SUCCEEDED(result = comobj->mDispatch->GetIDsOfNames(IID_NULL, s, 2, LOCALE_USER_DEFAULT, id))) {
-						if (!tosafe)
-							obj = *(IObject**)id;
-						else if (ref = dynamic_cast<VarRef*>(*(IObject**)id))
-							_f_return(ref->GetRef());
-					}
-					else if (result == RPC_E_WRONG_THREAD)
-						_f_throw_win32(result);
-				}
-				obj->AddRef();
-			}
-			else if (comobj) {
-				if (comobj->mVarType & VT_ARRAY)
-					punk = obj;
-				else if (comobj->mVarType == VT_DISPATCH || comobj->mVarType == VT_UNKNOWN)
-					punk = comobj->mUnknown, isdisp = comobj->mVarType == VT_DISPATCH;
-				else obj->AddRef();
-			}
-			else if (ref) {
-				if (!tosafe || base == Object::sAnyPrototype)
-					obj->AddRef();
-				else
-					_f_return(ref->GetRef());
-			}
-			else if (tosafe)
-				punk = obj;
-			else obj->AddRef();
-			if (punk) {
-				int index;
-				for (index = 0; index < MAX_AHK_THREADS; index++)
-					if (base == g_ahkThreads[index].AnyPrototype)
-						break;
-				if (index < MAX_AHK_THREADS) {
-					auto stream = (LPSTREAM)SendMessage(g_ahkThreads[index].Hwnd, AHK_THREADVAR, (WPARAM)punk, isdisp ? 1 : 0);
-					if (!stream || !(obj = UnMarshalObjectFromStream(stream)))
-						_f_throw_win32();
-				}
-				else
-					_f_throw_value(ERR_INVALID_VALUE);
-			}
-			_f_return(obj);
-		}
-		else
-			_f_throw_param(0, _T("Object"));
 	case P_Ready:
 		_f_return(script ? script->mIsReadyToExecute : 0);
 	case P_ThreadID:

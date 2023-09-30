@@ -1087,6 +1087,7 @@ private:
 	LPTSTR indent = nullptr;
 	UINT indent_len = 0;
 	UINT deep = 0;
+	UINT depth = -1;
 	TString str;
 	void append(Array* obj);
 	void append(Object* obj);
@@ -1094,9 +1095,12 @@ private:
 	void append(Var& vval);
 	void append(Var& vkey, Var& vval);
 	void append(LPTSTR s);
-	void append(Variant& field, Object* obj = nullptr);
+	bool append(Variant& field, Object* obj = nullptr);
 	void append(UINT deep) {
-		if (indent) {
+		if (!indent)
+			return;
+		auto c = str.back();
+		if (deep - (c == '[' || c == '{' ? 1 : 0) < depth) {
 			str.append('\n');
 			str.append(indent, indent_len, deep);
 		}
@@ -1173,7 +1177,6 @@ public:
 		M_AsyncCall,
 		M_Exec,
 		M_ExitApp,
-		M_GetObject,
 		M_Pause,
 		P_Ready,
 		M_Reload,
