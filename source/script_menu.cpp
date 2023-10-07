@@ -1200,34 +1200,7 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 	// 1) Doing so for GUI context menus seems to prevent mouse clicks in the menu or elsewhere in the window.
 	// 2) It would probably have other side effects for other uses of popup menus.
 	HWND fore_win = GetForegroundWindow();
-	bool change_fore;
-	if (change_fore = (!fore_win || GetWindowThreadProcessId(fore_win, NULL) != g_MainThreadID))
-	{
-		// Always bring main window to foreground right before TrackPopupMenu(), even if window is hidden.
-		// UPDATE: This is a problem because SetForegroundWindowEx() will restore the window if it's hidden,
-		// but restoring also shows the window if it's hidden.  Could re-hide it... but the question here
-		// is can a minimized window be the foreground window?  If not, how to explain why
-		// SetForegroundWindow() always seems to work for the purpose of the tray menu?
-		//if (aForceToForeground)
-		//{
-		//	// Seems best to avoid using the script's current setting of #WinActivateForce.  Instead, always
-		//	// try the gentle approach first since it is unlikely that displaying a menu will cause the
-		//	// "flashing task bar button" problem?
-		//	bool original_setting = g_WinActivateForce;
-		//	g_WinActivateForce = false;
-		//	SetForegroundWindowEx(g_hWnd);
-		//	g_WinActivateForce = original_setting;
-		//}
-		//else
-		if (!SetForegroundWindow(g_hWnd))
-		{
-			// The below fixes the problem where the menu cannot be canceled by clicking outside of
-			// it (due to the main window not being active).  That usually happens the first time the
-			// menu is displayed after the script launches.  0 is not enough sleep time, but 10 is:
-			SLEEP_WITHOUT_INTERRUPTION(10);
-			SetForegroundWindow(g_hWnd);  // 2nd time always seems to work for this particular window.
-		}
-	}
+	bool change_fore = !fore_win || GetWindowThreadProcessId(fore_win, NULL) != g_MainThreadID;
 	if (g_MenuIsTempModeless)
 	{
 		// First end the previous menu, whose thread was interrupted to display this menu.
@@ -1264,9 +1237,7 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 		// Allowing an active GUI window to own the menu ensures the menu appears on top even if the GUI
 		// is topmost, without making g_hWnd topmost.
 		own_by_fore = !change_fore && GuiType::FindGui(fore_win);
-		temp_topmost = !own_by_fore
-			&& (GetWindowLong(fore_win, GWL_EXSTYLE) & WS_EX_TOPMOST)
-			&& !(GetWindowLong(g_hWnd, GWL_EXSTYLE) & WS_EX_TOPMOST);
+		temp_topmost = !own_by_fore && !(GetWindowLong(g_hWnd, GWL_EXSTYLE) & WS_EX_TOPMOST);
 		if (temp_topmost)
 			SetWindowPos(g_hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 	}

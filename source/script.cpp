@@ -2139,7 +2139,7 @@ ResultType Script::OpenIncludedFile(TextStream *&ts, LPCTSTR aFileSpec, bool aAl
 	// Set the working directory so that any #Include directives are relative to the directory
 	// containing this file by default.  Call SetWorkingDir() vs. SetCurrentDirectory() so that it
 	// succeeds even for a root drive like C: that lacks a backslash (see SetWorkingDir() for details).
-	if (source_file_index && mKind != ScriptKindResource)
+	if (source_file_index)
 	{
 		LPTSTR terminate_here = _tcsrchr(full_path, '\\');
 		if (terminate_here > full_path)
