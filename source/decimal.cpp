@@ -5,6 +5,7 @@
 #include "decimal.h"
 #include "var.h"
 #include "script.h"
+#include <cmath>
 
 #ifdef _WIN64
 #pragma comment(lib, "source/lib_mpir/Win64/mpir.lib")

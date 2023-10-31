@@ -184,7 +184,7 @@ BIF_DECL(BIF_CryptAES)
 		else
 			ptr = (size_t)ParamIndexToString(0);
 		size = (size_t)ParamIndexToInt64(1);
-		aParam++, aParam--;
+		aParam++, aParamCount--;
 	}
 	if (ptr < 65536 || !size)
 		_o_throw_value(ERR_INVALID_VALUE);
