@@ -13,7 +13,7 @@ EXPORT(LPTSTR) ahkGetVar(LPTSTR name, int getVar = 0, DWORD aThreadID = 0);
 EXPORT(int) ahkAssign(LPTSTR name, LPTSTR value, DWORD aThreadID = 0);
 EXPORT(int) ahkExec(LPTSTR script, DWORD aThreadID = 0);
 EXPORT(int) ahkLabel(LPTSTR aLabelName, int nowait = 0, DWORD aThreadID = 0);
-EXPORT(int) ahkPause(LPTSTR aChangeTo, DWORD aThreadID = 0);
+EXPORT(int) ahkPause(int aNewState, DWORD aThreadID = 0);
 EXPORT(int) ahkPostFunction(LPTSTR func, LPTSTR param1 = NULL, LPTSTR param2 = NULL, LPTSTR param3 = NULL, LPTSTR param4 = NULL, LPTSTR param5 = NULL, LPTSTR param6 = NULL, LPTSTR param7 = NULL, LPTSTR param8 = NULL, LPTSTR param9 = NULL, LPTSTR param10 = NULL, DWORD aThreadID = 0);
 EXPORT(int) ahkReady(DWORD aThreadID = 0);
 DWORD NewThread(LPTSTR aScript, LPTSTR aCmdLine, LPTSTR aTitle, void(*callback)(void *param), void *param);

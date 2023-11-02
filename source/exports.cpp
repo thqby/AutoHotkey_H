@@ -132,25 +132,26 @@ EXPORT(int) ahkReady(DWORD aThreadID) // HotKeyIt check if dll is ready to execu
 	return (int)(atls.Enter(aThreadID) && g_script && !g_Reloading && g_script->mIsReadyToExecute);
 }
 
-EXPORT(int) ahkPause(LPTSTR aChangeTo, DWORD aThreadID) //Change pause state of a running script
+EXPORT(int) ahkPause(int aNewState, DWORD aThreadID) //Change pause state of a running script
 {
 #pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
-		if (!g->IsPaused && ((size_t)aChangeTo == 1 || *aChangeTo == '1' || ((*aChangeTo == 'O' || *aChangeTo == 'o') && (*(aChangeTo + 1) == 'N' || *(aChangeTo + 1) == 'n'))))
-		{
-			Hotkey::ResetRunAgainAfterFinished();
-			g->IsPaused = true;
-			++g_nPausedThreads; // For this purpose the idle thread is counted as a paused thread.
-			g_script->UpdateTrayIcon();
-		}
-		else if (g->IsPaused)
-		{
-			g->IsPaused = false;
-			--g_nPausedThreads; // For this purpose the idle thread is counted as a paused thread.
-			g_script->UpdateTrayIcon();
-		}
-		return (UINT_PTR)g->IsPaused;
+		auto &IsPaused = g->IsPaused;
+		auto hwnd = g_hWnd;
+		if (aNewState == -1)
+			aNewState = !IsPaused;
+		if (!!aNewState == IsPaused)
+			return (int)IsPaused;
+		if (IsPaused)
+			--g_nPausedThreads;
+		else
+			++g_nPausedThreads;
+		IsPaused = !IsPaused;
+		g_script->UpdateTrayIcon();
+		if (!IsPaused)
+			atls.~AutoTLS(), SendMessage(hwnd, WM_COMMNOTIFY, 0, 0);
+		return (int)IsPaused;
 	}
 	return 0;
 }

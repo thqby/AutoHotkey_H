@@ -3795,7 +3795,7 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 		CloseHandle(mThread), mThread = NULL;
 		_f_return_retval;
 	case M_Pause:
-		_f_return(ahkPause(ParamIndexToString(0), mThreadID));
+		_f_return(ahkPause(ParamIndexToBOOL(0), mThreadID));
 	case M_Reload:
 		if (!PostMessage(mHwnd, WM_COMMAND, ID_FILE_RELOADSCRIPT, 0))
 			_f_return(0);
