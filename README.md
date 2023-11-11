@@ -108,6 +108,13 @@ class JSON {
 
 class Worker {
   /**
+   * Enumerates ahk threads.
+   * @return {([&threadid,] &workerobj)=>void} An enumerator which will return items contained threadid and workerobj.
+   * @since v2.0.10
+   */
+  static __Enum(NumberOfVars?) => Enumerator
+
+  /**
    * Creates a real AutoHotkey thread or associates an existing AutoHotkey thread in the current process and returns an object that communicates with it.
    * @param ScriptOrThreadID When ScriptOrThreadID is a script, create an AutoHotkey thread;
    * When ScriptOrThreadID is a threadid of created thread, it is associated with it;

@@ -1186,6 +1186,7 @@ public:
 	static ObjectMember sMembers[];
 	thread_local static Object* sPrototype;
 	void Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount);
+	ResultType GetEnumItem(UINT &aIndex, Var *aVal, Var *aReserved, int aVarCount);
 
 private:
 	HWND mHwnd;

@@ -3630,6 +3630,37 @@ bool Worker::New(LPTSTR aScript, LPTSTR aCmd, LPTSTR aTitle)
 	return false;
 }
 
+ResultType Worker::GetEnumItem(UINT &aIndex, Var *aVal, Var *aReserved, int aVarCount)
+{
+	for (; aIndex < MAX_AHK_THREADS; ++aIndex)
+	{
+		if (!g_ahkThreads[aIndex].Hwnd || !g_ahkThreads[aIndex].ThreadID)
+			continue;
+		if (aVarCount > 1)
+		{
+			if (aVal)
+				aVal->Assign((__int64)g_ahkThreads[aIndex].ThreadID);
+			aVal = aReserved;
+		}
+		if (aVal)
+		{
+			auto obj = Worker::Create();
+			if (obj->New(g_ahkThreads[aIndex].ThreadID))
+			{
+				aVal->Assign(obj);
+				obj->Release();
+			}
+			else
+			{
+				obj->Release();
+				continue;
+			}
+		}
+		return CONDITION_TRUE;
+	}
+	return CONDITION_FALSE;
+}
+
 void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount)
 {
 	if (aID == M___New) {

@@ -3622,6 +3622,16 @@ void Object::CreateRootPrototypes()
 #ifdef ENABLE_DLLCALL
 	DynaToken::sPrototype = Object::CreatePrototype(_T("DynaCall"), Object::sPrototype, DynaToken::sMembers, _countof(DynaToken::sMembers));
 #endif
+	if (auto var = g_script->FindGlobalVar(_T("Worker")))
+	{
+		auto fn = new BuiltInFunc(_T("Worker.__Enum"),
+			[](BIF_DECL_PARAMS) {
+				_o_return(new IndexEnumerator(sPrototype, 0,
+				static_cast<IndexEnumerator::Callback>(&Worker::GetEnumItem)));
+			}, 1, 2, false);
+		((Object *)var->ToObject())->DefineMethod(_T("__Enum"), fn);
+		fn->Release();
+	}
 	if (auto var = g_script->FindOrAddVar(_T("JSON"), 4, VAR_DECLARE_GLOBAL)) {
 		auto obj = new Object();
 		auto proto = Object::CreatePrototype(_T("JSON"), Object::sPrototype, JSON::sMembers, _countof(JSON::sMembers));
