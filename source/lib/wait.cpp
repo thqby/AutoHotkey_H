@@ -58,7 +58,7 @@ typedef bool (*WaitCompletedPredicate)(void *);
 
 static bool Wait(int aTimeout, void *aParam, WaitCompletedPredicate aWaitCompleted)
 {
-	Line *waiting_line = g_script.mCurrLine;
+	Line *waiting_line = g_script->mCurrLine;
 
 	for (DWORD start_time = GetTickCount();;) // start_time is initialized unconditionally for use with ListLines.
 	{
@@ -67,7 +67,11 @@ static bool Wait(int aTimeout, void *aParam, WaitCompletedPredicate aWaitComplet
 
 		// Must cast to int or any negative result will be lost due to DWORD type:
 		if (aTimeout < 0 || (aTimeout - (int)(GetTickCount() - start_time)) > SLEEP_INTERVAL_HALF)
+		{
+			if ((char)g->IsPaused == -1)	// ahk_h: Used to terminate a thread
+				return false;
 			MsgSleepWithListLines(INTERVAL_UNSPECIFIED, waiting_line, start_time);
+		}
 		else // Done waiting (timed out).
 			return false;
 	}
@@ -322,7 +326,7 @@ bif_impl FResult WinWaitNotActive(ExprTokenType *aWinTitle, optl<StrArg> aWinTex
 // a function implemented via MdFunc to assign to the output var directly.
 BIF_DECL(BIF_RunWait)
 {
-	Line *waiting_line = g_script.mCurrLine;
+	Line *waiting_line = g_script->mCurrLine;
 	DWORD start_time = GetTickCount();
 
 	_f_param_string_opt(arg1, 0);
@@ -333,7 +337,7 @@ BIF_DECL(BIF_RunWait)
 		output_var->Assign();
 
 	HANDLE running_process;
-	if (!g_script.ActionExec(arg1, NULL, arg2, true, arg3, &running_process, true, true))
+	if (!g_script->ActionExec(arg1, NULL, arg2, true, arg3, &running_process, true, true))
 		_f_return_FAIL;
 	
 	// For the output var to be useful, it must be assigned before we wait:
@@ -350,6 +354,8 @@ BIF_DECL(BIF_RunWait)
 		// STILL_ACTIVE is also valid exit code.
 		if (MsgWaitForMultipleObjects(1, &running_process, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0)
 			break;
+		if ((char)g->IsPaused == -1)	// ahk_h: Used to terminate a thread
+			return (void)aResultToken.SetResult(EARLY_RETURN);
 		MsgSleepWithListLines(-1, waiting_line, start_time);
 	}
 

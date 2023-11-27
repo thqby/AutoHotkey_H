@@ -194,7 +194,7 @@ HWND SetForegroundWindowEx(HWND aTargetWindow)
 			is_attached_fore_to_target = AttachThreadInput(fore_thread, target_thread, TRUE) != 0;
 	}
 
-	static bool sTriedKeyUp = false;
+	thread_local static bool sTriedKeyUp = false;
 
 	// The log showed that it never seemed to need more than two tries.  But there's
 	// not much harm in trying a few extra times.  The number of tries needed might
@@ -399,7 +399,7 @@ HWND WinClose(HWND aWnd, int aTimeToWaitForClose, bool aKillIfHung)
 	// 1ms for a Window to be logically destroyed even if it hasn't physically been
 	// removed from the screen?) prior to returning the CPU to our thread:
 	DWORD start_time = GetTickCount(); // Before doing any MsgSleeps, set this.
-    //MsgSleep(0); // Always do one small one, see above comments.
+	//MsgSleep(0); // Always do one small one, see above comments.
 	// UPDATE: It seems better just to always do one unspecified-interval sleep
 	// rather than MsgSleep(0), which often returns immediately, probably having
 	// no effect.
@@ -907,7 +907,7 @@ int MsgBox(LPCTSTR aText, UINT uType, LPCTSTR aTitle, double aTimeout, HWND aOwn
 	if (!aText) // In case the caller explicitly called it with a NULL, overriding the default.
 		aText = (uType & 0xF) ? _T("") : _T("Press OK to continue."); // Use default text only if OK is the only button.
 	if (!aTitle) // Caller omitted it or explicitly requested the default.
-		aTitle = g_script.DefaultDialogTitle();
+		aTitle = g_script->DefaultDialogTitle();
 
 	// It doesn't feel safe to modify the contents of the caller's aText and aTitle,
 	// even if the caller were to tell us it is modifiable.  This is because the text
@@ -1399,6 +1399,8 @@ ResultType WindowSearch::SetCriteria(ScriptThreadSettings &aSettings, LPCTSTR aT
 				cp += 3, next_criterion = CRITERION_PATH;
 			else if (!_tcsnicmp(cp, _T("class"), 5))
 				cp += 5, next_criterion = CRITERION_CLASS;
+			else if (!_tcsnicmp(cp, _T("parent"), 6))
+				cp += 6, next_criterion = CRITERION_PARENT;
 			else
 				continue;
 			next_value = cp;
@@ -1413,6 +1415,15 @@ ResultType WindowSearch::SetCriteria(ScriptThreadSettings &aSettings, LPCTSTR aT
 			if (mCriterionHwnd != HWND_BROADCAST && !IsWindow(mCriterionHwnd)) // Checked here once rather than each call to IsMatch().
 			{
 				mCriterionHwnd = NULL;
+				return FAIL; // Inform caller of invalid criteria.  No need to do anything else further below.
+			}
+			break;
+		case CRITERION_PARENT:
+			mCriterionParentHwnd = (HWND)ATOU64(start);
+			// Note that this can validly be the HWND of a parent window; i.e. ahk_parent %ParentWindowHwnd% is supported.
+			if (mCriterionParentHwnd != HWND_BROADCAST && !IsWindow(mCriterionParentHwnd)) // Checked here once rather than each call to IsMatch().
+			{
+				mCriterionParentHwnd = NULL;
 				return FAIL; // Inform caller of invalid criteria.  No need to do anything else further below.
 			}
 			break;
@@ -1478,7 +1489,7 @@ ResultType WindowSearch::SetCriteria(ScriptThreadSettings &aSettings, LPCTSTR aT
 				mCriterionTitleLength = end ? value_length : _tcslen(value);
 				break;
 			case CRITERION_GROUP:
-				if (   !(mCriterionGroup = g_script.FindGroup(value))   )
+				if (   !(mCriterionGroup = g_script->FindGroup(value))   )
 					return FAIL; // No such group: Inform caller of invalid criteria.  No need to do anything else further below.
 				break;
 			case CRITERION_PATH:
@@ -1541,6 +1552,8 @@ void WindowSearch::UpdateCandidateAttributes()
 	}
 	if (mCriteria & CRITERION_CLASS)
 		GetClassName(mCandidateParent, mCandidateClass, _countof(mCandidateClass)); // Limit to WINDOW_CLASS_SIZE in this case since that's the maximum that can be searched.
+	if (mCriteria & CRITERION_PARENT)
+		mCandidateParentHwnd = GetParent(mCandidateParent);
 	// Nothing to do for these:
 	//CRITERION_GROUP:    Can't be pre-processed at this stage.
 	//CRITERION_ID:       It is mCandidateParent, which has already been set by SetCandidate().
@@ -1629,6 +1642,8 @@ HWND WindowSearch::IsMatch(bool aInvert)
 	// mCriterionHwnd should already be filled in, though it might be an explicitly specified zero.
 	// Note: IsWindow(mCriterionHwnd) was already called by SetCriteria().
 	if ((mCriteria & CRITERION_ID) && mCandidateParent != mCriterionHwnd) // Doesn't match the required HWND.
+		return NULL;
+	if ((mCriteria & CRITERION_PARENT) && mCandidateParentHwnd != mCriterionParentHwnd) // Parent window doesn't match the reqired Hwnd
 		return NULL;
 	//else it's a match so far, but continue onward in case there are other criteria.
 

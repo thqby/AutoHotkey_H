@@ -30,9 +30,9 @@ freely, without restriction.
 #include <wspiapi.h> // for getaddrinfo()
 #include <stdarg.h>
 
-Debugger g_Debugger;
-CStringA g_DebuggerHost;
-CStringA g_DebuggerPort;
+thread_local Debugger *g_Debugger;
+thread_local CStringA g_DebuggerHost;
+thread_local CStringA g_DebuggerPort;
 
 LPCTSTR g_AutoExecuteThreadDesc = _T("Auto-execute"); // This is used to reduce code size (allow comparing address vs. string).
 
@@ -51,7 +51,7 @@ Debugger::CommandDef Debugger::sCommands[] =
 	{"detach", &detach},
 
 	{"status", &status},
-	
+
 	{"stack_get", &stack_get},
 	{"stack_depth", &stack_depth},
 	{"context_get", &context_get},
@@ -60,10 +60,10 @@ Debugger::CommandDef Debugger::sCommands[] =
 	{"property_get", &property_get},
 	{"property_set", &property_set},
 	{"property_value", &property_value},
-	
+
 	{"feature_get", &feature_get},
 	{"feature_set", &feature_set},
-	
+
 	{"breakpoint_set", &breakpoint_set},
 	{"breakpoint_get", &breakpoint_get},
 	{"breakpoint_update", &breakpoint_update},
@@ -74,7 +74,7 @@ Debugger::CommandDef Debugger::sCommands[] =
 	{"stderr", &redirect_stderr},
 
 	{"typemap_get", &typemap_get},
-	
+
 	{"source", &source},
 };
 
@@ -107,7 +107,7 @@ inline bool BreakpointLineIsSlippery(Line *aLine)
 Line *Debugger::FindFirstLineForBreakpoint(int file_index, UINT line_no)
 {
 	Line *found_line = nullptr;
-	for (Line *line = g_script.mFirstLine; line; line = line->mNextLine)
+	for (Line *line = g_script->mFirstLine; line; line = line->mNextLine)
 	{
 		if (line->mFileIndex == file_index && line->mLineNumber >= line_no)
 		{
@@ -153,7 +153,7 @@ int Debugger::PreExecLine(Line *aLine)
 	// small amount of complexity in stack_get (which is only called by request of the debugger client):
 	//	mStack.mTop->line = aLine;
 	mCurrLine = aLine;
-	
+
 	// Check for a breakpoint on the current line:
 	Breakpoint *bp = aLine->mBreakpoint;
 	if (bp && bp->state == BS_Enabled)
@@ -179,7 +179,7 @@ int Debugger::PreExecLine(Line *aLine)
 	{
 		return Break();
 	}
-	
+
 	// Check if a command was sent asynchronously (while the script was running).
 	// Such commands may also be detected via the AHK_CHECK_DEBUGGER message,
 	// but if the program is checking for messages infrequently or not at all,
@@ -189,7 +189,7 @@ int Debugger::PreExecLine(Line *aLine)
 		// A command was sent asynchronously.
 		return ProcessCommands();
 	}
-	
+
 	return DEBUGGER_E_OK;
 }
 
@@ -307,7 +307,7 @@ int Debugger::ProcessCommands(LPCSTR aBreakReason)
 			// Split args into arg vector.
 			err = ParseArgs(args, argv, arg_count, transaction_id);
 		}
-		
+
 		if (!err)
 		{
 			for (int i = 0; ; ++i)
@@ -354,7 +354,7 @@ int Debugger::ProcessCommands(LPCSTR aBreakReason)
 			if (err = SendErrorResponse(command, transaction_id, err))
 				break; // Already called FatalError().
 		}
-		
+
 		// Remove this command and its args from the buffer.
 		// (There may be additional commands following it.)
 		if (mCommandBuf.mDataUsed) // i.e. it hasn't been cleared as a result of disconnecting.
@@ -398,7 +398,7 @@ int Debugger::ParseArgs(char *aArgs, char **aArgV, int &aArgCount, char *&aTrans
 		char arg_char = *aArgs;
 		if (!arg_char)
 			return DEBUGGER_E_PARSE_ERROR;
-		
+
 		if (aArgs[1] == ' ' && aArgs[2] != '-')
 		{
 			// Move the arg letter onto the space.
@@ -406,7 +406,7 @@ int Debugger::ParseArgs(char *aArgs, char **aArgV, int &aArgCount, char *&aTrans
 		}
 		// Store a pointer to the arg letter, followed immediately by its value.
 		aArgV[aArgCount++] = aArgs;
-		
+
 		if (arg_char == 'i')
 		{
 			// Handle transaction_id here to simplify many other sections.
@@ -445,7 +445,7 @@ int Debugger::ParseArgs(char *aArgs, char **aArgV, int &aArgCount, char *&aTrans
 				break;
 			*next_arg = '\0'; // Terminate this arg.
 		}
-		
+
 		// Point aArgs to the next arg's hyphen.
 		aArgs = next_arg + 1;
 	}
@@ -500,7 +500,7 @@ DEBUGGER_COMMAND(Debugger::feature_get)
 	} else if (!strcmp(feature_name, "encoding"))
 		setting = "UTF-8";
 	else if (!strcmp(feature_name, "protocol_version")
-			|| !strcmp(feature_name, "supports_async"))
+		|| !strcmp(feature_name, "supports_async"))
 		setting = "1";
 	// Not supported: data_encoding - assume base64.
 	// Not supported: breakpoint_languages - assume only %language_name% is supported.
@@ -606,14 +606,14 @@ int Debugger::run_step(char **aArgV, int aArgCount, char *aTransactionId, char *
 {
 	if (aArgCount)
 		return DEBUGGER_E_INVALID_OPTIONS;
-	
+
 	if (mInternalState != DIS_Break)
 		return DEBUGGER_E_COMMAND_UNAVAIL;
 
 	mInternalState = aNewState;
 	mContinuationDepth = mStack.Depth();
 	mContinuationTransactionId = aTransactionId;
-	
+
 	// Response will be sent when the debugger breaks.
 	return DEBUGGER_E_CONTINUE;
 }
@@ -631,9 +631,9 @@ DEBUGGER_COMMAND(Debugger::stop)
 {
 	mContinuationTransactionId = aTransactionId;
 
-	// Call g_script.TerminateApp instead of g_script.ExitApp to bypass OnExit function.
-	g_script.TerminateApp(EXIT_EXIT, 0); // This also causes this->Exit() to be called.
-	
+	// Call g_script->TerminateApp instead of g_script->ExitApp to bypass OnExit function.
+	g_script->TerminateApp(EXIT_EXIT, 0); // This also causes this->Exit() to be called.
+
 	// Should never be reached, but must be here to avoid a compile error:
 	return DEBUGGER_E_INTERNAL_ERROR;
 }
@@ -649,7 +649,7 @@ DEBUGGER_COMMAND(Debugger::detach)
 DEBUGGER_COMMAND(Debugger::breakpoint_set)
 {
 	char arg, *value;
-	
+
 	char *type = NULL, state = BS_Enabled, *filename = NULL;
 	LineNumberType lineno = 0;
 	bool temporary = false;
@@ -684,7 +684,7 @@ DEBUGGER_COMMAND(Debugger::breakpoint_set)
 		case 'r': // temporary = 0 | 1
 			temporary = (*value != '0');
 			break;
-			
+
 		case 'x': // exception
 			if (!stricmp(value, "Any")) // Require this or nothing, for now.
 				break;
@@ -779,7 +779,7 @@ DEBUGGER_COMMAND(Debugger::breakpoint_get)
 	int breakpoint_id = atoi(ArgValue(aArgV, 0));
 
 	Line *line;
-	for (line = g_script.mFirstLine; line; line = line->mNextLine)
+	for (line = g_script->mFirstLine; line; line = line->mNextLine)
 	{
 		if (line->mBreakpoint && line->mBreakpoint->id == breakpoint_id)
 		{
@@ -804,7 +804,7 @@ DEBUGGER_COMMAND(Debugger::breakpoint_get)
 DEBUGGER_COMMAND(Debugger::breakpoint_update)
 {
 	char arg, *value;
-	
+
 	int breakpoint_id = 0; // Breakpoint IDs begin at 1.
 	LineNumberType lineno = 0;
 	char state = -1;
@@ -846,7 +846,7 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 		return DEBUGGER_E_INVALID_OPTIONS;
 
 	Line *line;
-	for (line = g_script.mFirstLine; line; line = line->mNextLine)
+	for (line = g_script->mFirstLine; line; line = line->mNextLine)
 	{
 		Breakpoint *bp = line->mBreakpoint;
 
@@ -890,7 +890,7 @@ DEBUGGER_COMMAND(Debugger::breakpoint_remove)
 	int breakpoint_id = atoi(ArgValue(aArgV, 0));
 
 	Line *line;
-	for (line = g_script.mFirstLine; line; line = line->mNextLine)
+	for (line = g_script->mFirstLine; line; line = line->mNextLine)
 	{
 		if (line->mBreakpoint && line->mBreakpoint->id == breakpoint_id)
 		{
@@ -914,12 +914,12 @@ DEBUGGER_COMMAND(Debugger::breakpoint_list)
 {
 	if (aArgCount)
 		return DEBUGGER_E_INVALID_OPTIONS;
-	
+
 	mResponseBuf.WriteF("<response command=\"breakpoint_list\" transaction_id=\"%e\">", aTransactionId);
 	
 	int last_id = -1;
 	Line *line;
-	for (line = g_script.mFirstLine; line; line = line->mNextLine)
+	for (line = g_script->mFirstLine; line; line = line->mNextLine)
 	{
 		if (line->mBreakpoint && last_id != line->mBreakpoint->id)
 		{
@@ -962,7 +962,7 @@ DEBUGGER_COMMAND(Debugger::stack_get)
 	}
 
 	mResponseBuf.WriteF("<response command=\"stack_get\" transaction_id=\"%e\">", aTransactionId);
-	
+
 	int level = 0;
 	DbgStack::Entry *se;
 	for (se = mStack.mTop; se >= mStack.mBottom; --se)
@@ -1055,11 +1055,11 @@ DEBUGGER_COMMAND(Debugger::context_get)
 	// Non-static variables are expected to be used more often, so are listed first.
 	VarList *var_lists[2] = { nullptr, nullptr };
 	VarBkp *bkp = NULL, *bkp_end = NULL;
-	
+
 	if (context_id == PC_Local)
 		mStack.GetLocalVars(depth, var_lists[0], var_lists[1], bkp, bkp_end);
 	else if (context_id == PC_Global)
-		var_lists[0] = g_script.GlobalVars();
+		var_lists[0] = g_script->GlobalVars();
 	else
 		return DEBUGGER_E_INVALID_CONTEXT;
 
@@ -1078,6 +1078,29 @@ DEBUGGER_COMMAND(Debugger::context_get)
 			if (  (err = GetPropertyInfo(*bkp, prop))
 				|| (err = WritePropertyXml(prop, bkp->mVar->mName))  )
 				break;
+	if (context_id == PC_Global) {
+		Var **vars = var_lists[0]->mItem;
+		int var_count = var_lists[0]->mCount;
+		char *constants[] = { "Class", "Function" };
+		Buffer buf;
+		auto &indexes = buf.mData;
+		indexes = (char*)malloc(var_count);
+		if (!indexes)
+			return DEBUGGER_E_INTERNAL_ERROR;
+		memset(indexes, 0, var_count);
+		for (char j = 0; j < 2; j++) {
+			mResponseBuf.WriteF("<property name=\"%s Variables\" type=\"object\" classname=\"%s\">", constants[j], constants[j]);
+			for (int i = 0; i < var_count; ++i) {
+				if (indexes[i] != j)
+					continue;
+				if (indexes[i] || (vars[i]->mType == VAR_CONSTANT && !(indexes[i] = dynamic_cast<Func*>(vars[i]->ToObject()) != nullptr)))
+					if ((err = GetPropertyInfo(*vars[i], prop))
+						|| (err = WritePropertyXml(prop, vars[i]->mName)))
+						return err;
+			}
+			mResponseBuf.Write("</property>");
+		}
+	}
 	for (int j = 0; j < _countof(var_lists); ++j)
 	{
 		if (!var_lists[j])
@@ -1085,7 +1108,7 @@ DEBUGGER_COMMAND(Debugger::context_get)
 		Var **vars = var_lists[j]->mItem;
 		int var_count = var_lists[j]->mCount;
 		for (int i = 0; i < var_count; ++i)
-			if (vars[i]->mType != VAR_CONSTANT || context_id != PC_Local) // Exclude closures.
+			if (vars[i]->mType != VAR_CONSTANT) // Exclude closures.
 				if (  (err = GetPropertyInfo(*vars[i], prop))
 					|| (err = WritePropertyXml(prop, vars[i]->mName))  )
 					break;
@@ -1100,13 +1123,13 @@ DEBUGGER_COMMAND(Debugger::typemap_get)
 {
 	if (aArgCount)
 		return DEBUGGER_E_INVALID_OPTIONS;
-	
+
 	return mResponseBuf.WriteF(
 		"<response command=\"typemap_get\" transaction_id=\"%e\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">"
-			"<map type=\"string\" name=\"string\" xsi:type=\"xsd:string\"/>"
-			"<map type=\"int\" name=\"integer\" xsi:type=\"xsd:long\"/>"
-			"<map type=\"float\" name=\"float\" xsi:type=\"xsd:double\"/>"
-			"<map type=\"object\" name=\"object\"/>"
+		"<map type=\"string\" name=\"string\" xsi:type=\"xsd:string\"/>"
+		"<map type=\"int\" name=\"integer\" xsi:type=\"xsd:long\"/>"
+		"<map type=\"float\" name=\"float\" xsi:type=\"xsd:double\"/>"
+		"<map type=\"object\" name=\"object\"/>"
 		"</response>"
 		, aTransactionId);
 }
@@ -1268,7 +1291,7 @@ void Debugger::PropertyWriter::WriteEnumItems(IObject *aEnumerable, int aStart, 
 			mObject = enumerator;
 		BeginProperty(nullptr, "object", 1, cookie);
 	}
-	
+
 	if (mProp.max_depth)
 	{
 		auto vkey = new VarRef(), vval = new VarRef();
@@ -1316,6 +1339,14 @@ int Debugger::WritePropertyXml(PropertyInfo &aProp)
 	case SYM_FLOAT: type = "float"; break;
 
 	case SYM_OBJECT:
+#ifdef ENABLE_DECIMAL
+		if (auto obj = Decimal::ToDecimal(aProp.value.object)) {
+			obj->Invoke(aProp.value, Decimal::M_ToString, IT_CALL, nullptr, 0);
+			obj->Release();
+			type = "float";
+			break;
+		}
+#endif // ENABLE_DECIMAL
 		// Recursively dump object.
 		return WritePropertyXml(aProp, aProp.value.object);
 
@@ -1378,7 +1409,7 @@ int Debugger::WritePropertyData(LPCTSTR aData, size_t aDataSize, int aMaxEncoded
 // the end of the property's size attribute followed by the base64-encoded data.
 {
 	int err;
-	
+
 #ifdef UNICODE
 	LPCWSTR utf16_value = aData;
 	size_t total_utf16_size = aDataSize;
@@ -1393,7 +1424,7 @@ int Debugger::WritePropertyData(LPCTSTR aData, size_t aDataSize, int aMaxEncoded
 	if (!total_utf16_size && aDataSize) // Conversion failed (too large?)
 		return DEBUGGER_E_INTERNAL_ERROR;
 #endif
-	
+
 	// The spec says: "The IDE should not read more data than the length defined in the packet
 	// header.  The IDE can determine if there is more data by using the property data length
 	// information."  This has two implications:
@@ -1405,7 +1436,7 @@ int Debugger::WritePropertyData(LPCTSTR aData, size_t aDataSize, int aMaxEncoded
 	// According to the spec, -m 0 should mean "unlimited".
 	if (!aMaxEncodedSize)
 		aMaxEncodedSize = INT_MAX;
-	
+
 	// Calculate:
 	//  - the total size in terms of UTF-8 bytes (even if that exceeds INT_MAX).
 	size_t total_utf8_size = 0;
@@ -1417,7 +1448,7 @@ int Debugger::WritePropertyData(LPCTSTR aData, size_t aDataSize, int aMaxEncoded
 	for (size_t i = 0; i < total_utf16_size; ++i)
 	{
 		wchar_t wc = utf16_value[i];
-		
+
 		int char_size;
 		if (wc <= 0x007F)
 			char_size = 1;
@@ -1427,7 +1458,7 @@ int Debugger::WritePropertyData(LPCTSTR aData, size_t aDataSize, int aMaxEncoded
 			char_size = 4;
 		else
 			char_size = 3;
-		
+
 		total_utf8_size += char_size;
 
 		if (total_utf8_size > (size_t)aMaxEncodedSize)
@@ -1442,14 +1473,14 @@ int Debugger::WritePropertyData(LPCTSTR aData, size_t aDataSize, int aMaxEncoded
 	}
 	if (utf8_size == -1) // Data was not limited by aMaxEncodedSize.
 		utf8_size = (int)total_utf8_size;
-	
+
 	// Calculate maximum length of base64-encoded data.
 	int space_needed = DEBUGGER_BASE64_ENCODED_SIZE(utf8_size);
-	
+
 	// Reserve enough space for the data's length, "> and encoded data.
 	if (err = mResponseBuf.ExpandIfNecessary(mResponseBuf.mDataUsed + space_needed + MAX_INTEGER_LENGTH + 2))
 		return err;
-	
+
 	// Complete the size attribute by writing the total size, in terms of UTF-8 bytes.
 	if (err = mResponseBuf.WriteF("%u\">", total_utf8_size))
 		return err;
@@ -1471,7 +1502,7 @@ int Debugger::WritePropertyData(ExprTokenType &aValue, int aMaxEncodedSize)
 	TCHAR number_buf[MAX_NUMBER_SIZE];
 
 	value = TokenToString(aValue, number_buf, &value_length);
-	
+
 	return WritePropertyData(value, value_length, aMaxEncodedSize);
 }
 
@@ -1552,9 +1583,9 @@ int Debugger::ParsePropertyName(LPCSTR aFullName, int aDepth, int aVarScope, Exp
 			if (vars) // Use this first to support aDepth.
 				var = vars->Find(name, &insert_pos);
 			if (!var) // Use FindVar to support built-ins and globals.
-				var = g_script.FindVar(name, name_length, aVarScope, &vars, &insert_pos);
+				var = g_script->FindVar(name, name_length, aVarScope, &vars, &insert_pos);
 			if (!var && aSetValue) // Avoid creating empty variables.
-				var = g_script.AddVar(name, name_length, vars, insert_pos
+				var = g_script->AddVar(name, name_length, vars, insert_pos
 					, search_local ? VAR_LOCAL : VAR_GLOBAL);
 		}
 
@@ -1732,9 +1763,12 @@ int Debugger::ParsePropertyName(LPCSTR aFullName, int aDepth, int aVarScope, Exp
 		if (set_this)
 			param[param_count++] = set_this;
 		int flags = (set_this ? IT_SET : IT_GET);
+		int excp = g->ExcptMode;
+		g->ExcptMode |= EXCPTMODE_CATCH;
 		auto result = iobj->Invoke(aResult.value, flags, name, t_this, param, param_count);
+		g->ExcptMode = excp;
 		if (g->ThrownToken)
-			g_script.FreeExceptionToken(g->ThrownToken);
+			g_script->FreeExceptionToken(g->ThrownToken);
 
 		if (this_override)
 		{
@@ -1744,7 +1778,7 @@ int Debugger::ParsePropertyName(LPCSTR aFullName, int aDepth, int aVarScope, Exp
 			iobj = this_override;
 			this_override = nullptr;
 		}
-		
+
 		if (result == INVOKE_NOT_HANDLED)
 			break;
 		if (!result)
@@ -1845,10 +1879,10 @@ int Debugger::property_get_or_value(char **aArgV, int aArgCount, char *aTransact
 		//
 		// As a work-around (until this is resolved by the plugin's author),
 		// we return a property with an empty value and the 'undefined' type.
-		
+
 		return mResponseBuf.WriteF(
 			"<response command=\"property_get\" transaction_id=\"%e\">"
-				"<property name=\"%e\" fullname=\"%e\" type=\"undefined\" facet=\"\" size=\"0\" children=\"0\"/>"
+			"<property name=\"%e\" fullname=\"%e\" type=\"undefined\" facet=\"\" size=\"0\" children=\"0\"/>"
 			"</response>"
 			, aTransactionId, name, name);
 	}
@@ -1943,7 +1977,7 @@ DEBUGGER_COMMAND(Debugger::property_set)
 	// "Data must be encoded using base64." : https://xdebug.org/docs-dbgp.php
 	// Fixed in v1.1.24.03 to expect base64 even for integer/float:
 	int value_length = (int)Base64Decode(new_value, new_value);
-	
+
 	CString val_buf;
 	ExprTokenType val;
 	if (!strcmp(type, "integer"))
@@ -2056,12 +2090,39 @@ DEBUGGER_COMMAND(Debugger::source)
 	{
 		if (!_tcsicmp(filename_t, Line::sSourceFile[file_index]))
 		{
-			TextFile tf;
-			if (!tf.Open(filename_t, DEFAULT_READ_FLAGS, g_DefaultScriptCodepage))
-				return DEBUGGER_E_CAN_NOT_OPEN_FILE;
-			
+			TextStream *ts = nullptr;
+			LPCTSTR file = filename_t;
+			if (*file == '*' && (file = RegExMatch((LPTSTR)file, 
+#ifdef _WIN64
+				_T("\\?[\\dA-F]{16}#\\d+")
+#else
+				_T("\\?[\\dA-F]{8}#\\d+")
+#endif // _WIN64
+			))) {
+				const unsigned int n = sizeof(void*) * 2;
+				TCHAR buf[20] = { '0','x',0 };
+				_tcsnccpy(buf + 2, file + 1, n);
+				auto size = (DWORD)ATOU64(file + 2 + n);
+				auto p = (LPVOID)ATOU64(buf);
+				if (!p || !size)
+					return DEBUGGER_E_CAN_NOT_OPEN_FILE;
+				TextMem::Buffer textbuf(p, size, false);
+				ts = new TextMem;
+				ts->Open(textbuf, DEFAULT_READ_FLAGS | TextStream::DETECT_UTF8
+#ifdef UNICODE
+					, CP_UTF16
+#endif
+				);
+			}
+			else {
+				ts = new TextFile;
+				if (!ts->Open(filename_t, DEFAULT_READ_FLAGS, g_DefaultScriptCodepage)) {
+					delete ts;
+					return DEBUGGER_E_CAN_NOT_OPEN_FILE;
+				}
+			}
 			mResponseBuf.WriteF("<response command=\"source\" success=\"1\" transaction_id=\"%e\" encoding=\"base64\">"
-								, aTransactionId);
+				, aTransactionId);
 
 			CStringA utf8_buf;
 			TCHAR line_buf[LINE_SIZE + 2]; // May contain up to two characters of the previous line to simplify base64-encoding.
@@ -2069,14 +2130,14 @@ DEBUGGER_COMMAND(Debugger::source)
 			int line_remainder = 0;
 
 			LineNumberType current_line = 0;
-			
-			while (-1 != (line_length = tf.ReadLine(line_buf + line_remainder, LINE_SIZE)))
+
+			while (-1 != (line_length = ts->ReadLine(line_buf + line_remainder, LINE_SIZE)))
 			{
 				if (++current_line >= begin_line)
 				{
 					if (current_line > end_line)
 						break; // done.
-					
+
 					// Encode in multiples of 3 characters to avoid inserting padding characters.
 					line_length += line_remainder; // Include remainder of previous line.
 					line_remainder = line_length % 3;
@@ -2088,7 +2149,10 @@ DEBUGGER_COMMAND(Debugger::source)
 						StringTCharToUTF8(line_buf, utf8_buf, line_length);
 						// Base64-encode and write this line and its trailing newline character into the response buffer.
 						if (mResponseBuf.WriteEncodeBase64(utf8_buf.GetString(), utf8_buf.GetLength()) != DEBUGGER_E_OK)
+						{
+							delete ts;
 							goto break_outer_loop; // fail.
+						}
 					}
 					//else not enough data to encode in this iteration.
 
@@ -2111,7 +2175,7 @@ DEBUGGER_COMMAND(Debugger::source)
 			if (!current_line || current_line < begin_line)
 				break; // fail.
 			// else if (current_line < end_line) -- just return what we can.
-
+			delete ts;
 			return mResponseBuf.Write("</response>");
 		}
 	}
@@ -2191,7 +2255,7 @@ int Debugger::SendErrorResponse(char *aCommandName, char *aTransactionId, int aE
 {
 	mResponseBuf.WriteF("<response command=\"%s\" transaction_id=\"%e"
 		, aCommandName, aTransactionId);
-	
+
 	if (aExtraAttributes)
 		mResponseBuf.WriteF("\" %s>", aExtraAttributes);
 	else
@@ -2205,7 +2269,7 @@ int Debugger::SendErrorResponse(char *aCommandName, char *aTransactionId, int aE
 int Debugger::SendStandardResponse(char *aCommandName, char *aTransactionId)
 {
 	mResponseBuf.WriteF("<response command=\"%s\" transaction_id=\"%e\"/>"
-						, aCommandName, aTransactionId);
+		, aCommandName, aTransactionId);
 
 	return SendResponse();
 }
@@ -2226,7 +2290,7 @@ int Debugger::SendContinuationResponse(LPCSTR aCommand, LPCSTR aStatus, LPCSTR a
 	}
 
 	mResponseBuf.WriteF("<response command=\"%s\" status=\"%s\" reason=\"%s\" transaction_id=\"%e\"/>"
-						, aCommand, aStatus, aReason, (LPCSTR)mContinuationTransactionId);
+		, aCommand, aStatus, aReason, (LPCSTR)mContinuationTransactionId);
 
 	return SendResponse();
 }
@@ -2279,7 +2343,7 @@ int Debugger::SendResponse()
 	ASSERT(!mResponseBuf.mFailed);
 
 	char response_header[DEBUGGER_RESPONSE_OVERHEAD];
-	
+
 	// Each message is prepended with a stringified integer representing the length of the XML data packet.
 	Exp32or64(_itoa,_i64toa)(mResponseBuf.mDataUsed + DEBUGGER_XML_TAG_SIZE, response_header, 10);
 
@@ -2291,12 +2355,12 @@ int Debugger::SendResponse()
 
 	// Send the response header.
 	if (  SOCKET_ERROR == send(mSocket, response_header, (int)(buf - response_header), 0)
-	   // Messages sent by the debugger engine must always be NULL terminated.
-	   // Failure to write the last byte should be extremely rare, so no attempt
-	   // is made to recover from that condition.
-	   || DEBUGGER_E_OK != mResponseBuf.Write("\0", 1)
-	   // Send the message body.
-	   || SOCKET_ERROR == send(mSocket, mResponseBuf.mData, (int)mResponseBuf.mDataUsed, 0)  )
+		// Messages sent by the debugger engine must always be NULL terminated.
+		// Failure to write the last byte should be extremely rare, so no attempt
+		// is made to recover from that condition.
+		|| DEBUGGER_E_OK != mResponseBuf.Write("\0", 1)
+		// Send the message body.
+		|| SOCKET_ERROR == send(mSocket, mResponseBuf.mData, (int)mResponseBuf.mDataUsed, 0)  )
 	{
 		// Unrecoverable error: disconnect the debugger.
 		return FatalError();
@@ -2315,23 +2379,23 @@ int Debugger::Connect(const char *aAddress, const char *aPort)
 	int err;
 	WSADATA wsadata;
 	SOCKET s;
-	
+
 	if (WSAStartup(MAKEWORD(2,2), &wsadata))
 		return FatalError();
-	
+
 	s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
 	if (s != INVALID_SOCKET)
 	{
 		addrinfo hints = {0};
 		addrinfo *res;
-		
+
 		hints.ai_family = AF_INET;
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_protocol = IPPROTO_TCP;
 
 		err = getaddrinfo(aAddress, aPort, &hints, &res);
-		
+
 		if (err == 0)
 		{
 			for (;;)
@@ -2339,19 +2403,19 @@ int Debugger::Connect(const char *aAddress, const char *aPort)
 				err = connect(s, res->ai_addr, (int)res->ai_addrlen);
 				if (err == 0)
 					break;
-				switch (MessageBox(g_hWnd, DEBUGGER_ERR_FAILEDTOCONNECT, g_script.mFileSpec, MB_ABORTRETRYIGNORE | MB_ICONSTOP | MB_SETFOREGROUND | MB_APPLMODAL))
+				switch (MessageBox(g_hWnd, DEBUGGER_ERR_FAILEDTOCONNECT, g_script->mFileSpec, MB_ABORTRETRYIGNORE | MB_ICONSTOP | MB_SETFOREGROUND | MB_APPLMODAL))
 				{
 				case IDABORT:
-					g_script.ExitApp(EXIT_CLOSE);
+					g_script->ExitApp(EXIT_CLOSE);
 					// If it didn't exit (due to OnExit), fall through to the next case:
 				case IDIGNORE:
 					closesocket(s);
 					return DEBUGGER_E_INTERNAL_ERROR;
 				}
 			}
-			
+
 			freeaddrinfo(res);
-			
+
 			if (err == 0)
 			{
 				mSocket = s;
@@ -2365,14 +2429,14 @@ int Debugger::Connect(const char *aAddress, const char *aPort)
 				// Write init message.
 				mResponseBuf.WriteF("<init appid=\"" AHK_NAME "\" ide_key=\"%e\" session=\"%e\" thread=\"%u\" parent=\"\" language=\"" DEBUGGER_LANG_NAME
 					"\" protocol_version=\"1.0\" fileuri=\"%r\"/>"
-					, ide_key.GetString(), session.GetString(), GetCurrentThreadId(), g_script.mFileSpec);
+					, ide_key.GetString(), session.GetString(), GetCurrentThreadId(), g_script->mFileSpec);
 
 				if (SendResponse() == DEBUGGER_E_OK)
 				{
 					// mCurrLine isn't updated unless the debugger is connected, so set it now.
-					// g_script.mCurrLine should always be non-NULL after the script is loaded,
+					// g_script->mCurrLine should always be non-NULL after the script is loaded,
 					// even if no threads are active.
-					mCurrLine = g_script.mCurrLine;
+					mCurrLine = g_script->mCurrLine;
 					return DEBUGGER_E_OK;
 				}
 
@@ -2426,12 +2490,12 @@ void Debugger::Exit(ExitReasons aExitReason, char *aCommandName)
 
 int Debugger::FatalError(LPCTSTR aMessage)
 {
-	g_Debugger.Disconnect();
+	g_Debugger->Disconnect();
 
-	if (IDNO == MessageBox(g_hWnd, aMessage, g_script.mFileSpec, MB_YESNO | MB_ICONSTOP | MB_SETFOREGROUND | MB_APPLMODAL))
+	if (IDNO == MessageBox(g_hWnd, aMessage, g_script->mFileSpec, MB_YESNO | MB_ICONSTOP | MB_SETFOREGROUND | MB_APPLMODAL))
 	{
 		// This might not exit, depending on OnExit:
-		g_script.ExitApp(EXIT_CLOSE);
+		g_script->ExitApp(EXIT_CLOSE);
 	}
 	return DEBUGGER_E_INTERNAL_ERROR;
 }
@@ -2561,7 +2625,7 @@ int Debugger::Buffer::WriteF(const char *aFormat, ...)
 	const char *format_ptr, *s, *param_ptr, *entity;
 	char number_buf[MAX_INTEGER_SIZE];
 	va_list vl;
-	
+
 	for (len = 0, i = 0; i < 2; ++i)
 	{
 		va_start(vl, aFormat);
@@ -2681,8 +2745,17 @@ int Debugger::Buffer::EstimateFileURILength(LPCTSTR aPath)
 // Caller has already verified there is enough space in the buffer.
 void Debugger::Buffer::WriteFileURI(LPCTSTR aPath)
 {
-	memcpy(mData + mDataUsed, "file:///", 8);
-	mDataUsed += 8;
+	if (*aPath == '*')
+	{
+		memcpy(mData + mDataUsed, "dbgp:", 5);
+		mDataUsed += 5;
+		aPath++;
+	}
+	else
+	{
+		memcpy(mData + mDataUsed, "file:///", 8);
+		mDataUsed += 8;
+	}
 
 	CStringUTF8FromTChar path8(aPath);
 
@@ -2720,7 +2793,7 @@ int Debugger::Buffer::WriteEncodeBase64(const char *aInput, size_t aInputSize, b
 		}
 		//else caller has already ensured there is enough space and wants to be absolutely sure mData isn't reallocated.
 		ASSERT(mDataUsed + aInputSize < mDataSize);
-		
+
 		if (aInput)
 			mDataUsed += Debugger::Base64Encode(mData + mDataUsed, aInput, aInputSize);
 		//else caller wanted to reserve some buffer space, probably to read the raw data into.
@@ -2748,6 +2821,12 @@ void Debugger::DecodeURI(char *aUri)
 	{
 		end -= 7;
 		memmove(aUri, aUri + 7, end - aUri);
+	}
+	else if (!strnicmp(aUri, "dbgp:", 5))
+	{
+		*aUri++ = '*';
+		end -= 4;
+		memmove(aUri, aUri + 4, end - aUri);
 	}
 
 	char *dst, *src;
@@ -2825,15 +2904,15 @@ DbgStack::Entry *DbgStack::Push()
 		Expand();
 	if (mTop >= mBottom)
 	{
-		// Whenever this entry != mTop, Entry::line is used instead of g_Debugger.mCurrLine,
+		// Whenever this entry != mTop, Entry::line is used instead of g_Debugger->mCurrLine,
 		// which means that it needs to point to the last executed line at that depth. The
 		// following fixes a bug where the line number of this entry appears to revert to
 		// the first line of the function or sub whenever the debugger steps into another
 		// function or sub.  Entry::line is also used by Object::Error__New even when the
 		// debugger is disconnected, which has two consequences:
-		//  - g_script.mCurrLine must be used in place of g_Debugger.mCurrLine.
+		//  - g_script->mCurrLine must be used in place of g_Debugger->mCurrLine.
 		//  - Changing PreExecLine() to update mStack.mTop->line won't help.
-		mTop->line = g_script.mCurrLine;
+		mTop->line = g_script->mCurrLine;
 	}
 	return ++mTop;
 }
@@ -2843,7 +2922,7 @@ void DbgStack::Pop()
 	ASSERT(mTop >= mBottom);
 	--mTop;
 	if (mTop >= mBottom)
-		g_script.mCurrLine = g_Debugger.mCurrLine = mTop->line;
+		g_script->mCurrLine = g_Debugger->mCurrLine = mTop->line;
 }
 
 void DbgStack::Push(LPCTSTR aDesc)
@@ -2853,7 +2932,7 @@ void DbgStack::Push(LPCTSTR aDesc)
 	s.desc = aDesc;
 	s.type = SE_Thread;
 }
-	
+
 void DbgStack::Push(NativeFunc *aFunc)
 {
 	Entry &s = *Push();
@@ -2885,7 +2964,7 @@ LPCTSTR DbgStack::Entry::Name()
 }
 
 
-void DbgStack::GetLocalVars(int aDepth,  VarList *&aVars, VarList *&aStaticVars, VarBkp *&aBkp, VarBkp *&aBkpEnd)
+void DbgStack::GetLocalVars(int aDepth, VarList *&aVars, VarList *&aStaticVars, VarBkp *&aBkp, VarBkp *&aBkpEnd)
 {
 	DbgStack::Entry *se = mTop - aDepth;
 	for (;;)
@@ -2962,7 +3041,7 @@ void Debugger::PropertyWriter::WriteDynamicProperty(LPTSTR aName)
 	if (!result)
 	{
 		if (g->ThrownToken)
-			g_script.FreeExceptionToken(g->ThrownToken);
+			g_script->FreeExceptionToken(g->ThrownToken);
 		result_token.SetValue(_T("<error>"), 7);
 	}
 	mDbg.AppendPropertyName(mProp.fullname, mNameLength, CStringUTF8FromTChar(aName));
@@ -3010,7 +3089,7 @@ void Debugger::PropertyWriter::BeginProperty(LPCSTR aName, LPCSTR aType, int aNu
 	{
 		LPTSTR classname = mObject->Type();
 		mError = mDbg.mResponseBuf.WriteF("<property name=\"%e\" fullname=\"%e\" type=\"%s\" facet=\"%s\" classname=\"%s\" address=\"%p\" size=\"0\" page=\"%i\" pagesize=\"%i\" children=\"%i\" numchildren=\"%i\">"
-					, mProp.name, mProp.fullname.GetString(), aType, mProp.facet, U4T(classname), mObject, mProp.page, mProp.pagesize, aNumChildren > 0, aNumChildren);
+			, mProp.name, mProp.fullname.GetString(), aType, mProp.facet, U4T(classname), mObject, mProp.page, mProp.pagesize, aNumChildren > 0, aNumChildren);
 		return;
 	}
 
@@ -3023,13 +3102,13 @@ void Debugger::PropertyWriter::BeginProperty(LPCSTR aName, LPCSTR aType, int aNu
 	LPCSTR name = mProp.fullname.GetString() + mNameLength;
 	if (*name == '.')
 		name++;
-	
+
 	// Save length of outer property name and update mNameLength.
 	aCookie = (DebugCookie)mNameLength;
 	mNameLength = mProp.fullname.GetLength();
 
 	mError = mDbg.mResponseBuf.WriteF("<property name=\"%e\" fullname=\"%e\" type=\"%s\" size=\"0\" page=\"0\" pagesize=\"%i\" children=\"%i\" numchildren=\"%i\">"
-				, name, mProp.fullname.GetString(), aType, mProp.pagesize, aNumChildren > 0, aNumChildren);
+		, name, mProp.fullname.GetString(), aType, mProp.pagesize, aNumChildren > 0, aNumChildren);
 }
 
 
@@ -3045,7 +3124,7 @@ void Debugger::PropertyWriter::EndProperty(DebugCookie aCookie)
 		mNameLength = (size_t)aCookie; // Restore to the value it had before BeginProperty().
 		mProp.fullname.Truncate(mNameLength);
 	}
-	
+
 	mError = mDbg.mResponseBuf.Write("</property>");
 }
 
@@ -3053,11 +3132,13 @@ void Debugger::PropertyWriter::EndProperty(DebugCookie aCookie)
 void GetScriptStack(LPTSTR aBuf, int aBufSize, DbgStack::Entry *aTop)
 {
 	*aBuf = '\0';
+	if (!g_script->mIsReadyToExecute)
+		return;
 	aBufSize -= 12;
 	auto aBuf_orig = aBuf;
-	for (auto se = aTop ? aTop : g_Debugger.mStack.mTop - 1; se >= g_Debugger.mStack.mBottom; --se)
+	for (auto se = aTop ? aTop : g_Debugger->mStack.mTop - 1; se >= g_Debugger->mStack.mBottom; --se)
 	{
-		auto &line = se->line ? *se->line : *g_script.mCurrLine;
+		auto &line = se->line ? *se->line : *g_script->mCurrLine;
 		auto line_start = aBuf;
 		if (se->type != DbgStack::SE_Thread || se->desc == g_AutoExecuteThreadDesc)
 		{
@@ -3076,7 +3157,7 @@ void GetScriptStack(LPTSTR aBuf, int aBufSize, DbgStack::Entry *aTop)
 		{
 			aBuf = line_start;
 			aBufSize += 12;
-			sntprintf(aBuf, BUF_SPACE_REMAINING, _T("... %i more"), int(se - g_Debugger.mStack.mBottom) + 1);
+			sntprintf(aBuf, BUF_SPACE_REMAINING, _T("... %i more"), int(se - g_Debugger->mStack.mBottom) + 1);
 			break;
 		}
 	}

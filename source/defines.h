@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -34,14 +34,14 @@ GNU General Public License for more details.
 #include "ahkversion.h"
 #define AHK_WEBSITE "https://autohotkey.com"
 
-#ifdef AUTOHOTKEYSC
-#define SCRIPT_RESOURCE_NAME _T(">AUTOHOTKEY SCRIPT<")
-#else
+//#ifdef AUTOHOTKEYSC
+//#define SCRIPT_RESOURCE_NAME _T(">AUTOHOTKEY SCRIPT<")
+//#else
 #define SCRIPT_RESOURCE_SPEC _T("*#1")
 #define SCRIPT_RESOURCE_NAME MAKEINTRESOURCE(1)
 #define SCRIPT_PRESOURCE_SPEC _T("*#2")
 #define SCRIPT_PRESOURCE_NAME MAKEINTRESOURCE(2)
-#endif
+//#endif
 
 // Window class names: Changing these may result in new versions not being able to detect any old instances
 // that may be running (such as the use of FindWindow() in WinMain()).  It may also have other unwanted
@@ -232,6 +232,8 @@ enum SymbolType // For use with ExpandExpression() and IsNumeric().
 	, SYM_COUNT    // Must be last because it's the total symbol count for everything above.
 	, SYM_INVALID = SYM_COUNT // Some callers may rely on YIELDS_AN_OPERAND(SYM_INVALID)==false.
 	, SYM_TYPED_FIELD
+	, SYM_PTR      // VT_UINT_PTR
+	, SYM_STREAM   // Marshal IUnknown* in Stream
 };
 
 // This should include all operators which can produce SYM_VAR for a subsequent assignment:
@@ -320,6 +322,7 @@ struct DECLSPEC_NOVTABLE IDebugProperties
 
 #define BIMF_UNSET_ARG_1	8 // Flag used by BuiltInMethod.
 
+#define IF_IGNORE_DEFAULT   0x000008
 #define IF_BYPASS_METAFUNC	0x000010 // Skip invocation of meta-functions, such as when calling __Init or __Delete.
 #define IF_SUBSTITUTE_THIS	0x000020 // Target is a substitute object (i.e. ValueBase()), so refer to "aThisToken" instead of "this".
 #define IF_SUPER			0x000040 // super.something invocation.
@@ -639,12 +642,13 @@ enum enum_act {
 , ACT_RETURN
 , ACT_TRY, ACT_CATCH, ACT_FINALLY // Keep TRY, CATCH and FINALLY together and in this order for range checks.
 , ACT_SWITCH, ACT_CASE // Keep ACT_TRY..ACT_CASE together for ACT_EXPANDS_ITS_OWN_ARGS.
+, ACT_INITEXEC	// #InitExec expr
 // ================================================================================
 // All others are not included in g_act, and are only used for misc. purposes:
 , ACT_MOUSEMOVE, ACT_MOUSECLICK, ACT_MOUSECLICKDRAG // Used by PerformMouse().
 // ================================================================================
 // Aliases used for range checks:
-, ACT_FIRST_NAMED_ACTION = ACT_STATIC, ACT_LAST_NAMED_ACTION = ACT_CASE
+, ACT_FIRST_NAMED_ACTION = ACT_STATIC, ACT_LAST_NAMED_ACTION = ACT_INITEXEC
 , ACT_FIRST_JUMP = ACT_BREAK, ACT_LAST_JUMP = ACT_GOTO // Actions which accept a label name.
 };
 
@@ -711,10 +715,10 @@ typedef UCHAR HookType;
 #define HOOK_MOUSE 0x02
 #define HOOK_FAIL  0xFF
 
-#define EXTERN_G extern global_struct *g
+#define EXTERN_G thread_local extern global_struct *g
 #define EXTERN_OSVER extern OS_Version g_os
-#define EXTERN_CLIPBOARD extern Clipboard g_clip
-#define EXTERN_SCRIPT extern Script g_script
+#define EXTERN_CLIPBOARD thread_local extern Clipboard *g_clip
+#define EXTERN_SCRIPT thread_local extern Script *g_script
 #define CLIPBOARD_CONTAINS_ONLY_FILES (!IsClipboardFormatAvailable(CF_NATIVETEXT) && IsClipboardFormatAvailable(CF_HDROP))
 
 
@@ -755,17 +759,17 @@ typedef UCHAR HookType;
 // Therefore, must update tick_now again (its value is used by macro and possibly by its caller)
 // to avoid having to Peek() immediately after the next iteration.
 // ...
-// The code might bench faster when "g_script.mLastPeekTime = tick_now" is a separate operation rather
+// The code might bench faster when "g_script->mLastPeekTime = tick_now" is a separate operation rather
 // than combined in a chained assignment statement.
 #define LONG_OPERATION_UPDATE \
 {\
 	tick_now = GetTickCount();\
-	if (tick_now - g_script.mLastPeekTime > ::g->PeekFrequency)\
+	if (tick_now - g_script->mLastPeekTime > ::g->PeekFrequency)\
 	{\
 		if (PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE))\
 			MsgSleep(-1);\
 		tick_now = GetTickCount();\
-		g_script.mLastPeekTime = tick_now;\
+		g_script->mLastPeekTime = tick_now;\
 	}\
 }
 
@@ -773,12 +777,12 @@ typedef UCHAR HookType;
 #define LONG_OPERATION_UPDATE_FOR_SENDKEYS \
 {\
 	tick_now = GetTickCount();\
-	if (tick_now - g_script.mLastPeekTime > ::g->PeekFrequency)\
+	if (tick_now - g_script->mLastPeekTime > ::g->PeekFrequency)\
 	{\
 		if (PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE))\
 			SLEEP_WITHOUT_INTERRUPTION(-1) \
 		tick_now = GetTickCount();\
-		g_script.mLastPeekTime = tick_now;\
+		g_script->mLastPeekTime = tick_now;\
 	}\
 }
 
@@ -908,7 +912,7 @@ struct ScriptThreadState
 	DWORD LastError; // The result of GetLastError() after the most recent DllCall or Run.
 	int Priority;  // This thread's priority relative to others.
 	int UninterruptedLineCount; // Stored as a g-struct attribute in case OnExit func interrupts it while uninterruptible.
-	int UninterruptibleDuration; // Must be int to preserve negative values found in g_script.mUninterruptibleTime.
+	int UninterruptibleDuration; // Must be int to preserve negative values found in g_script->mUninterruptibleTime.
 	DWORD ThreadStartTime;
 
 	bool IsPaused;
@@ -1069,5 +1073,81 @@ UNICODE_CHECK inline size_t CHECK_SIZEOF(size_t n) { return n; }
 #else
 #define UNICODE_CHECK
 #endif
+
+
+struct TString
+{
+private:
+	TCHAR *_p = NULL;
+	size_t _len = 0;
+	size_t capacity = 0;
+	bool Realloc(size_t aNewSize) {
+		TCHAR *newp = (TCHAR *)realloc(_p, sizeof(TCHAR) * aNewSize);
+		if (!newp)
+			return false;
+		_p = newp;
+		capacity = aNewSize;
+		return true;
+	}
+	bool EnsureCapacity(size_t aLength) {
+		if (capacity >= aLength)
+			return true;
+		size_t newsize = capacity ? capacity << 1 : aLength;
+		while (newsize < aLength)
+			newsize <<= 1;
+		return Realloc(newsize);
+	}
+public:
+	TString() {}
+	~TString() { if (_p) free(_p); }
+	TCHAR *data() { if (_p) _p[_len] = 0; return _p; }
+	size_t &size() { return _len; }
+	TString &append(ResultToken &token) {
+		if (token.marker_length == -1)
+			token.marker_length = _tcsclen(token.marker);
+		if (!_p && token.mem_to_free) {
+			_p = token.marker;
+			capacity = _len = token.marker_length;
+			token.mem_to_free = nullptr;
+		}
+		else
+			append(token.marker, token.marker_length);
+		return *this;
+	}
+	TString &append(TCHAR ch) {
+		if (EnsureCapacity(_len + 2))
+			_p[_len++] = ch;
+		return *this;
+	}
+	TString &operator+=(LPTSTR str) {
+		size_t len = _tcslen(str);
+		return append(str, len);
+	}
+	TString &append(LPTSTR str, size_t len) {
+		if (EnsureCapacity(_len + len + 1)) {
+			memcpy(_p + _len, str, len * sizeof(TCHAR));
+			_len += len;
+		}
+		return *this;
+	}
+	TString &append(LPTSTR str, size_t len, size_t n) {
+		if (EnsureCapacity(_len + len * n + 1)) {
+			auto p = _p + _len;
+			for (size_t i = 0; i < n; i++)
+				memcpy(p, str, len * sizeof(TCHAR)), p += len;
+			_len += len * n;
+		}
+		return *this;
+	}
+	TCHAR &back() {
+		ASSERT(_len > 0);
+		return _p[_len - 1];
+	}
+	void release() { _p = NULL; _len = capacity = 0; }
+	void pop_back() {
+		if (_len)
+			_len--;
+	}
+};
 
 #endif

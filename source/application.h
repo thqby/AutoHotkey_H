@@ -72,7 +72,7 @@ ResultType IsCycleComplete(int aSleepDuration, DWORD aStartTime, bool aAllowEarl
 // might then have queued messages that would be stuck in the queue (due to the possible absence
 // of the main timer) until the dialog's msg pump ended.
 bool CheckScriptTimers();
-#define CHECK_SCRIPT_TIMERS_IF_NEEDED if (g_script.mTimerEnabledCount && CheckScriptTimers()) return_value = true; // Change the existing value only if it returned true.
+#define CHECK_SCRIPT_TIMERS_IF_NEEDED if (g_script->mTimerEnabledCount && CheckScriptTimers()) return_value = true; // Change the existing value only if it returned true.
 
 void PollJoysticks();
 #define POLL_JOYSTICK_IF_NEEDED if (Hotkey::sJoyHotkeyCount) PollJoysticks();
@@ -84,7 +84,7 @@ void InitNewThread(int aPriority, bool aSkipUninterruptible, bool aIncrementThre
 void ResumeUnderlyingThread();
 BOOL IsInterruptible();
 
-void MsgWaitUnpause();
+bool MsgWaitUnpause();
 
 VOID CALLBACK MsgBoxTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
 VOID CALLBACK InputTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
@@ -94,4 +94,7 @@ void InitMenuPopup(HMENU aMenu);
 void UninitMenuPopup(HMENU aMenu);
 bool MenuIsModeless(HMENU aMenu);
 
+#ifndef CONFIG_DLL
+bool AHKModule();
+#endif
 #endif

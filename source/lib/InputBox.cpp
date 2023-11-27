@@ -75,7 +75,7 @@ ResultType InputBoxParseOptions(LPCTSTR aOptions, InputBoxType &aInputBox)
 bif_impl FResult InputBox(optl<StrArg> aPrompt, optl<StrArg> aTitle, optl<StrArg> aOptions, optl<StrArg> aDefault, IObject *&aRetVal)
 {
 	InputBoxType inputbox;
-	inputbox.title = aTitle.has_value() ? aTitle.value() : g_script.DefaultDialogTitle();
+	inputbox.title = aTitle.has_value() ? aTitle.value() : g_script->DefaultDialogTitle();
 	inputbox.text = aPrompt.value_or_empty();
 	inputbox.default_string = aDefault.value_or_null();
 	inputbox.return_string = nullptr;
@@ -137,7 +137,7 @@ INT_PTR CALLBACK InputBoxProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 	LRESULT msg_reply;
 	if (g_CalledByIsDialogMessageOrDispatch && g_CalledByIsDialogMessageOrDispatch->message == uMsg)
 		g_CalledByIsDialogMessageOrDispatch = nullptr;
-	else if (g_MsgMonitor.Count() && MsgMonitor(hWndDlg, uMsg, wParam, lParam, NULL, msg_reply))
+	else if (g_MsgMonitor->Count() && MsgMonitor(hWndDlg, uMsg, wParam, lParam, NULL, msg_reply))
 		return (BOOL)msg_reply; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
 
 	switch(uMsg)
@@ -215,10 +215,10 @@ INT_PTR CALLBACK InputBoxProc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 		
 		// L17: Use separate big/small icons for best results.
 		LPARAM big_icon, small_icon;
-		if (g_script.mCustomIcon)
+		if (g_script->mCustomIcon)
 		{
-			big_icon = (LPARAM)g_script.mCustomIcon;
-			small_icon = (LPARAM)g_script.mCustomIconSmall; // Should always be non-NULL when mCustomIcon is non-NULL.
+			big_icon = (LPARAM)g_script->mCustomIcon;
+			small_icon = (LPARAM)g_script->mCustomIconSmall; // Should always be non-NULL when mCustomIcon is non-NULL.
 		}
 		else
 		{

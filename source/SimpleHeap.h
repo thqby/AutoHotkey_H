@@ -43,9 +43,9 @@ private:
 	char *mBlock; // This object's memory block.  Although private, its contents are public.
 	char *mFreeMarker;  // Address inside the above block of the first unused byte.
 	size_t mSpaceAvailable;
-	static UINT sBlockCount;
-	static SimpleHeap *sFirst, *sLast;  // The first and last objects in the linked list.
-	static char *sMostRecentlyAllocated; // For use with Delete().
+	//static UINT sBlockCount;
+	thread_local static SimpleHeap *sFirst, *sLast;  // The first and last objects in the linked list.
+	thread_local static char *sMostRecentlyAllocated; // For use with Delete().
 	SimpleHeap *mNextBlock;  // The object after this one in the linked list; NULL if none.
 
 	static SimpleHeap *CreateBlock();
@@ -57,18 +57,18 @@ private:
 public:
 	// Return a block of memory to the caller with aBuf copied into it.  Returns nullptr on failure.
 	static LPTSTR Malloc(LPCTSTR aBuf, size_t aLength = -1);
-	
+
 	// Return a block of memory to the caller with aBuf copied into it.  Terminates app on failure.
 	static LPTSTR Alloc(LPCTSTR aBuf, size_t aLength = -1);
-	
+
 	// Return a block of memory to the caller, or nullptr on failure.
 	static void* Malloc(size_t aSize);
-	
+
 	// Return a block of memory to the caller, or terminate app on failure.
 	static void* Alloc(size_t aSize);
 
 	static void Delete(void *aPtr);
-	//static void DeleteAll();
+	static void DeleteAll();
 
 	static void CriticalFail();
 
@@ -77,6 +77,43 @@ public:
 	{
 		return (T *)Alloc(sizeof(T) * aCount);
 	}
+
+	struct HeapBackUp {
+		SimpleHeap *mLast, *mFirst2;
+		char *mMostRecentlyAllocated, *mFreeMarker;
+		size_t mSpaceAvailable;
+		
+		HeapBackUp(bool detach = false) :mLast(sLast), mMostRecentlyAllocated(sMostRecentlyAllocated)
+		{
+			if (sLast)
+				mFreeMarker = sLast->mFreeMarker, mSpaceAvailable = sLast->mSpaceAvailable;
+			else mFreeMarker = NULL, mSpaceAvailable = 0;
+			if (detach)
+				mFirst2 = sLast = CreateBlock(), sMostRecentlyAllocated = NULL;
+			else mFirst2 = nullptr;
+		}
+
+		void DeleteAfter(SimpleHeap *curr)
+		{
+			SimpleHeap* next;
+			while (curr)
+			{
+				next = curr->mNextBlock;
+				delete curr;
+				curr = next;
+			}
+		}
+
+		void Restore()
+		{
+			if (sLast = mLast)
+			{
+				DeleteAfter(mLast->mNextBlock);
+				sLast->mNextBlock = NULL, sLast->mFreeMarker = mFreeMarker, sLast->mSpaceAvailable = mSpaceAvailable;
+			}
+			sMostRecentlyAllocated = mMostRecentlyAllocated;
+		}
+	};
 };
 
 #endif

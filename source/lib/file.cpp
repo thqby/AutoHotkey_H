@@ -107,7 +107,7 @@ static bool FileCreateDirRecursive(LPTSTR aDirSpec)
 
 
 
-static FResult ConvertFileOptions(LPCTSTR aOptions, UINT &codepage, bool &translate_crlf_to_lf, unsigned __int64 *pmax_bytes_to_load)
+static FResult ConvertFileOptions(LPCTSTR aOptions, UINT &codepage, bool &translate_crlf_to_lf, unsigned __int64 *pmax_bytes_to_load, bool *default_codepage = nullptr)
 {
 	if (aOptions)
 	for (LPCTSTR next, cp = aOptions; cp && *(cp = omit_leading_whitespace(cp)); cp = next)
@@ -143,6 +143,8 @@ static FResult ConvertFileOptions(LPCTSTR aOptions, UINT &codepage, bool &transl
 				name[next - cp] = '\0';
 				cp = name;
 			}
+			if (default_codepage)
+				*default_codepage = false;
 			if (!_tcsicmp(cp, _T("Raw")))
 			{
 				codepage = -1;
@@ -168,11 +170,11 @@ bif_impl FResult FileRead(StrArg aFilespec, optl<StrArg> aOptions, ResultToken &
 		return FR_E_ARG(0); // Seems more helpful than throwing OSError(3).
 
 	// Set default options:
-	bool translate_crlf_to_lf = false;
+	bool translate_crlf_to_lf = false, isdefault = true;
 	unsigned __int64 max_bytes_to_load = ULLONG_MAX; // By default, fail if the file is too large.  See comments near bytes_to_read below.
 	UINT codepage = g->Encoding;
 
-	auto fr = ConvertFileOptions(aOptions.value_or_null(), codepage, translate_crlf_to_lf, &max_bytes_to_load);
+	auto fr = ConvertFileOptions(aOptions.value_or_null(), codepage, translate_crlf_to_lf, &max_bytes_to_load, &isdefault);
 	if (fr != OK)
 		return fr; // It already displayed the error.
 
@@ -357,7 +359,7 @@ bif_impl FResult FileAppend(ExprTokenType &aValue, optl<StrArg> aFilename, optl<
 		size_t ptr;
 		FuncResult rt;
 		GetBufferObjectPtr(rt, aBuf_obj, ptr, aBuf_length);
-		ASSERT(rt.symbol == SYM_INTEGER && !rt.mem_to_free);
+		ASSERT(rt.symbol == SYM_STRING && !rt.mem_to_free);
 		if (rt.Exited())
 			return FR_FAIL;
 		aBuf = (LPTSTR)ptr;
@@ -381,7 +383,7 @@ bif_impl FResult FileAppend(ExprTokenType &aValue, optl<StrArg> aFilename, optl<
 	bool file_was_already_open = ts;
 
 #ifdef CONFIG_DEBUGGER
-	if (*aFilespec == '*' && !aFilespec[1] && !aBuf_obj && g_Debugger.OutputStdOut(aBuf))
+	if (*aFilespec == '*' && !aFilespec[1] && !aBuf_obj && g_Debugger->OutputStdOut(aBuf))
 	{
 		// StdOut has been redirected to the debugger, and this "FileAppend" call has been
 		// fully handled by the call above, so just return.
@@ -528,7 +530,7 @@ static bool FileInstallCopy(LPCTSTR aSource, LPCTSTR aDest, bool aOverwrite)
 	// but resolve both to full paths in case mFileDir != g_WorkingDir.  There is a more thorough way to detect
 	// when two *different* paths refer to the same file, but it doesn't work with different network shares, and
 	// the additional complexity wouldn't be warranted.  Also, the limitations of this method are clearer.
-	SetCurrentDirectory(g_script.mFileDir);
+	SetCurrentDirectory(g_script->mFileDir);
 	GetFullPathName(aSource, _countof(source_path), source_path, NULL);
 	SetCurrentDirectory(g_WorkingDir); // Restore to proper value.
 	if (!lstrcmpi(source_path, dest_path) // Full paths are equal.
@@ -544,7 +546,7 @@ bif_impl FResult FileInstall(StrArg aSource, StrArg aDest, optl<int> aFlag)
 	bool success;
 	bool allow_overwrite = (aFlag.has_value() && *aFlag == 1);
 #ifndef AUTOHOTKEYSC
-	if (g_script.mKind != Script::ScriptKindResource)
+	if (g_script->mKind != Script::ScriptKindResource)
 		success = FileInstallCopy(aSource, aDest, allow_overwrite);
 	else
 #endif

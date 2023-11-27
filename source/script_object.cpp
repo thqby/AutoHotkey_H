@@ -11,6 +11,10 @@
 #include <errno.h> // For ERANGE.
 #include <initializer_list>
 
+#include "script_com.h"
+#ifdef ENABLE_DECIMAL
+#include "decimal.h"
+#endif // ENABLE_DECIMAL
 
 //
 // CallMethod - Invoke a method with no parameters, discarding the result.
@@ -65,7 +69,7 @@ Object *Object::Create()
 	return obj;
 }
 
-Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *apResultToken)
+Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *apResultToken, bool aUnsorted)
 {
 	if (aParamCount & 1)
 	{
@@ -74,6 +78,7 @@ Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *ap
 	}
 
 	Object *obj = Object::Create();
+	if (aUnsorted) obj->mFlags |= UnsortedFlag;
 	if (aParamCount)
 	{
 		if (aParamCount > 8)
@@ -121,11 +126,25 @@ Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *ap
 // Map::SetItems - Add or set items given an array of key/value pairs.
 //
 
-Map *Map::Create(ExprTokenType *aParam[], int aParamCount)
+Map *Map::Create(ExprTokenType *aParam[], int aParamCount, bool aUnsorted)
 {
 	ASSERT(!(aParamCount & 1));
 
 	Map *map = new Map();
+	if (aUnsorted)
+		map->mFlags |= UnsortedFlag;
+	switch (g_MapCaseSense)
+	{
+	case SCS_SENSITIVE:
+		map->mFlags &= ~(MapCaseless | MapUseLocale);
+		break;
+	case SCS_INSENSITIVE_LOCALE:
+		map->mFlags |= (MapCaseless | MapUseLocale);
+		break;
+	case SCS_INSENSITIVE:
+		map->mFlags = (map->mFlags | MapCaseless) & ~MapUseLocale;
+		break;
+	}
 	map->SetBase(Map::sPrototype);
 	if (aParamCount && !map->SetItems(aParam, aParamCount))
 	{
@@ -138,6 +157,41 @@ Map *Map::Create(ExprTokenType *aParam[], int aParamCount)
 
 ResultType Map::SetItems(ExprTokenType *aParam[], int aParamCount)
 {
+	if (aParamCount == 1)
+	{
+		ExprTokenType this_token, aKey, aValue, *params[] = { &aKey, &aValue };
+		Var vkey, vval;
+		IObject *enumerator = nullptr;
+		ResultType result;
+
+		this_token.SetValue(TokenToObject(*aParam[0]));
+		result = GetEnumerator(enumerator, this_token, 2, false);
+		if (!enumerator)
+			return FAIL;
+
+		this_token.symbol = SYM_OBJECT;
+		this_token.object = this;
+		// Prepare parameters for the loop below
+		aKey.SetVarRef(&vkey);
+		aValue.SetVarRef(&vval);
+		for (;;)
+		{
+			// Call enumerator.Next(var1, var2)
+			result = CallEnumerator(enumerator, params, 2, false);
+			if (result == CONDITION_FALSE)
+				break;
+			if (!SetItem(aKey, aValue)) {
+				enumerator->Release();
+				return FAIL; // Out of memory.
+			}
+		}
+		// release enumerator and free vars
+		enumerator->Release();
+		vkey.Free();
+		vval.Free();
+		return OK;
+	}
+
 	ASSERT(!(aParamCount & 1)); // Caller should verify and throw.
 
 	if (!aParamCount)
@@ -178,7 +232,7 @@ Object *Object::CloneTo(Object &obj)
 {
 	// Allocate space in destination object.
 	auto field_count = mFields.Length();
-	if (!obj.SetInternalCapacity(field_count))
+	if (field_count && !obj.SetInternalCapacity(field_count))
 	{
 		obj.Release();
 		return NULL;
@@ -223,6 +277,7 @@ Object *Object::CloneTo(Object &obj)
 
 Map *Map::CloneTo(Map &obj)
 {
+	obj.mFlags = mFlags;
 	Object::CloneTo(obj);
 
 	if (!obj.SetInternalCapacity(mCount))
@@ -234,40 +289,66 @@ Map *Map::CloneTo(Map &obj)
 	int failure_count = 0; // See Object::CloneT() for comments.
 	index_t i;
 
-	obj.mFlags = mFlags;
 	obj.mCount = mCount;
-	obj.mKeyOffsetObject = mKeyOffsetObject;
-	obj.mKeyOffsetString = mKeyOffsetString;
-	if (obj.mKeyOffsetObject < 0) // Currently might always evaluate to false.
-	{
-		obj.mKeyOffsetObject = 0; // aStartOffset excluded all integer and some or all object keys.
-		if (obj.mKeyOffsetString < 0)
-			obj.mKeyOffsetString = 0; // aStartOffset also excluded some string keys.
+	if (!IsUnsorted()) {
+		obj.mKeyOffsetObject = mKeyOffsetObject;
+		obj.mKeyOffsetString = mKeyOffsetString;
+		if (obj.mKeyOffsetObject < 0) // Currently might always evaluate to false.
+		{
+			obj.mKeyOffsetObject = 0; // aStartOffset excluded all integer and some or all object keys.
+			if (obj.mKeyOffsetString < 0)
+				obj.mKeyOffsetString = 0; // aStartOffset also excluded some string keys.
+		}
+		//else no need to check mKeyOffsetString since it should always be >= mKeyOffsetObject.
 	}
-	//else no need to check mKeyOffsetString since it should always be >= mKeyOffsetObject.
 
 	for (i = 0; i < mCount; ++i)
 	{
 		Pair &dst = obj.mItem[i];
 		Pair &src = mItem[i];
 
-		// Copy key.
-		if (i >= obj.mKeyOffsetString)
+		if (!IsUnsorted())
 		{
-			dst.key_c = src.key_c;
-			if ( !(dst.key.s = _tcsdup(src.key.s)) )
+			// Copy key.
+			if (i >= obj.mKeyOffsetString)
 			{
-				// Key allocation failed. At this point, all int and object keys
-				// have been set and values for previous items have been copied.
-				++failure_count;
+				dst.key_c = src.key_c;
+				if ( !(dst.key.s = _tcsdup(src.key.s)) )
+				{
+					// Key allocation failed. At this point, all int and object keys
+					// have been set and values for previous items have been copied.
+					++failure_count;
+				}
+			}
+			else
+			{
+				// Copy whole key; search "(IntKeyType)(INT_PTR)" for comments.
+				dst.key = src.key;
+				if (i >= obj.mKeyOffsetObject)
+					dst.key.p->AddRef();
 			}
 		}
-		else 
+		else
 		{
-			// Copy whole key; search "(IntKeyType)(INT_PTR)" for comments.
-			dst.key = src.key;
-			if (i >= obj.mKeyOffsetObject)
-				dst.key.p->AddRef();
+			auto &keytype = mKeyTypes[i];
+			obj.mKeyTypes[i] = keytype;
+			if (keytype == SYM_STRING)
+			{	// Copy key.
+				dst.key_c = src.key_c;
+				if (!(dst.key.s = _tcsdup(src.key.s)))
+				{
+					// Key allocation failed. At this point, all int and object keys
+					// have been set and values for previous items have been copied.
+					++failure_count;
+				}
+			}
+			else
+			{
+				// Copy whole key; search "(IntKeyType)(INT_PTR)" for comments.
+				dst.key = src.key;
+				if (keytype == SYM_OBJECT)
+					dst.key.p->AddRef();
+			}
 		}
 
 		// Copy value.
@@ -328,7 +409,7 @@ ResultType GetEnumerator(IObject *&aEnumerator, ExprTokenType &aEnumerable, int 
 	}
 	result_token.Free();
 	if (aDisplayError)
-		g_script.RuntimeError(ERR_TYPE_MISMATCH, _T("__Enum"), FAIL, nullptr, ErrorPrototype::Type);
+		g_script->RuntimeError(ERR_TYPE_MISMATCH, _T("__Enum"), FAIL, nullptr, ErrorPrototype::Type);
 	return FAIL;
 }
 
@@ -346,7 +427,7 @@ ResultType CallEnumerator(IObject *aEnumerator, ExprTokenType *aParam[], int aPa
 	if (result == FAIL || result == EARLY_EXIT || result == INVOKE_NOT_HANDLED)
 	{
 		if (result == INVOKE_NOT_HANDLED && aDisplayError)
-			return g_script.RuntimeError(ERR_NOT_ENUMERABLE, nullptr, FAIL, nullptr, ErrorPrototype::Type); // Object not callable -> wrong type of object.
+			return g_script->RuntimeError(ERR_NOT_ENUMERABLE, nullptr, FAIL, nullptr, ErrorPrototype::Type); // Object not callable -> wrong type of object.
 		return result;
 	}
 	result = TokenToBOOL(result_token) ? CONDITION_TRUE : CONDITION_FALSE;
@@ -432,47 +513,49 @@ bool Object::Delete()
 			// undesirable to call the super-class' __Delete() meta-function for this.
 			return ObjectBase::Delete();
 
-		// L33: Privatize the last recursion layer's deref buffer in case it is in use by our caller.
-		// It's done here rather than in Var::FreeAndRestoreFunctionVars (even though the below might
-		// not actually call any script functions) because this function is probably executed much
-		// less often in most cases.
-		PRIVATIZE_S_DEREF_BUF;
+		if (g_script) {
+			// L33: Privatize the last recursion layer's deref buffer in case it is in use by our caller.
+			// It's done here rather than in Var::FreeAndRestoreFunctionVars (even though the below might
+			// not actually call any script functions) because this function is probably executed much
+			// less often in most cases.
+			PRIVATIZE_S_DEREF_BUF;
 
-		// If an exception has been thrown, temporarily clear it for execution of __Delete.
-		ResultToken *exc = g->ThrownToken;
-		g->ThrownToken = NULL;
-		
-		// This prevents an erroneous "The current thread will exit" message when an error occurs,
-		// by causing LineError() to throw an exception:
-		int outer_excptmode = g->ExcptMode;
-		g->ExcptMode |= EXCPTMODE_DELETE;
+			// If an exception has been thrown, temporarily clear it for execution of __Delete.
+			ResultToken *exc = g->ThrownToken;
+			g->ThrownToken = NULL;
 
-		{
-			FuncResult rt;
-			CallMeta(_T("__Delete"), rt, ExprTokenType(this), nullptr, 0);
-			rt.Free();
+			// This prevents an erroneous "The current thread will exit" message when an error occurs,
+			// by causing LineError() to throw an exception:
+			int outer_excptmode = g->ExcptMode;
+			g->ExcptMode |= EXCPTMODE_DELETE;
+
+			{
+				FuncResult rt;
+				CallMeta(_T("__Delete"), rt, ExprTokenType(this), nullptr, 0);
+				rt.Free();
+			}
+
+			// Call main destructor and all nested destructors before deleting anything, since an outer
+			// object's nested objects should be assumed valid within the outer object's destructor,
+			// and all objects in the group may rely on the mData of the outer-most object.
+			if (mNested)
+				CallNestedDelete();
+
+			g->ExcptMode = outer_excptmode;
+
+			// Exceptions thrown by __Delete are reported immediately because they would not be handled
+			// consistently by the caller (they would typically be "thrown" by the next function call),
+			// and because the caller must be allowed to make additional __Delete calls.
+			if (g->ThrownToken)
+				g_script->FreeExceptionToken(g->ThrownToken);
+
+			// If an exception has been thrown by our caller, it's likely that it can and should be handled
+			// reliably by our caller, so restore it.
+			if (exc)
+				g->ThrownToken = exc;
+
+			DEPRIVATIZE_S_DEREF_BUF; // L33: See above.
 		}
-
-		// Call main destructor and all nested destructors before deleting anything, since an outer
-		// object's nested objects should be assumed valid within the outer object's destructor,
-		// and all objects in the group may rely on the mData of the outer-most object.
-		if (mNested)
-			CallNestedDelete();
-
-		g->ExcptMode = outer_excptmode;
-
-		// Exceptions thrown by __Delete are reported immediately because they would not be handled
-		// consistently by the caller (they would typically be "thrown" by the next function call),
-		// and because the caller must be allowed to make additional __Delete calls.
-		if (g->ThrownToken)
-			g_script.FreeExceptionToken(g->ThrownToken);
-
-		// If an exception has been thrown by our caller, it's likely that it can and should be handled
-		// reliably by our caller, so restore it.
-		if (exc)
-			g->ThrownToken = exc;
-
-		DEPRIVATIZE_S_DEREF_BUF; // L33: See above.
 
 		// Above may pass the script a reference to this object to allow cleanup routines to free any
 		// associated resources.  Deleting it is only safe if the script no longer holds any references
@@ -533,15 +616,26 @@ void Map::Clear()
 		// Copy key before Free() since it might cause re-entry via __delete.
 		auto key = mItem[mCount].key;
 		mItem[mCount].Free();
-		if (mCount >= mKeyOffsetString)
-			free(key.s);
-		else 
+		if (!IsUnsorted())
 		{
-			--mKeyOffsetString;
-			if (mCount >= mKeyOffsetObject)
-				key.p->Release(); // Might also cause re-entry.
-			else
-				--mKeyOffsetObject;
+			if (mCount >= mKeyOffsetString)
+				free(key.s);
+			else 
+			{
+				--mKeyOffsetString;
+				if (mCount >= mKeyOffsetObject)
+					key.p->Release(); // Might also cause re-entry.
+				else
+					--mKeyOffsetObject;
+			}
+		}
+		else
+		{
+			SymbolType akeytype = (SymbolType)mKeyTypes[mCount];
+			if (akeytype == SYM_STRING)
+				free(key.s);
+			else if (akeytype == SYM_OBJECT)
+				key.p->Release();  // Might also cause re-entry.
 		}
 	}
 }
@@ -553,15 +647,39 @@ void Map::Clear()
 
 ObjectMember Object::sMembers[] =
 {
+	Object_Member(__Item, __Item, 0, IT_SET, 1, 1),
 	Object_Method1(Clone, 0, 0),
 	Object_Method1(DefineProp, 2, 2),
 	Object_Method1(DeleteProp, 1, 1),
+	Object_Member(Get, __Item, 0, IT_CALL, 1, 2),
 	Object_Method1(GetOwnPropDesc, 1, 1),
 	Object_Method1(HasOwnProp, 1, 1),
-	Object_Method1(OwnProps, 0, 0)
+	Object_Method1(OwnProps, 0, 0),
+	Object_Method1(ToJSON, 0, 2)
 };
 
 LPTSTR Object::sMetaFuncName[] = { _T("__Get"), _T("__Set"), _T("__Call") };
+
+void Object::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+{
+	TCHAR buf[MAX_NUMBER_LENGTH];
+	ExprTokenType t_this(this);
+	int index = IS_INVOKE_SET ? 1 : 0;
+	LPTSTR name = TokenToString(*aParam[index], buf);
+	if (!*name && TokenToObject(*aParam[index]))
+		_o_throw_type(_T("String"), *aParam[index]);
+	auto result = Invoke(aResultToken, aFlags & ~IT_CALL | IF_IGNORE_DEFAULT, name, t_this, aParam, index);
+	if (!index && result == INVOKE_NOT_HANDLED)
+	{
+		if (!ParamIndexIsOmitted(1))
+			aResultToken.CopyValueFrom(*aParam[1]);
+		else if (g_DefaultObjectValue)
+			aResultToken.ReturnPtr(g_DefaultObjectValue);
+		else
+			aResultToken.UnknownMemberError(t_this, IT_GET, name);
+	}
+}
+
 
 ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 {
@@ -770,7 +888,7 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 		if (tfr_set)
 			func_token.CopyValueFrom(token_for_recursion);
 		else if (!field)
-			return INVOKE_NOT_HANDLED;
+				return INVOKE_NOT_HANDLED;
 		else if (field->symbol == SYM_DYNAMIC)
 			func_token.SetValue(field->prop->Method());
 		else
@@ -902,6 +1020,8 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 			method->AddRef();
 			return aResultToken.Return(method);
 		}
+		else if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
+			return aResultToken.ReturnPtr(g_DefaultObjectValue);
 	}
 
 	// Fell through from one of the sections above: invocation was not handled.
@@ -958,7 +1078,7 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 		{
 			if (ParamIndexIsOmitted(1))
 			{
-				auto result = Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType { this }, nullptr, 0);
+				auto result = Invoke(aResultToken, IT_GET | IF_IGNORE_DEFAULT, _T("Default"), ExprTokenType { this }, nullptr, 0);
 				if (result == INVOKE_NOT_HANDLED)
 					_o_return_unset;
 				return;
@@ -982,7 +1102,7 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 
 void Map::Set(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
-	if (aParamCount & 1)
+	if ((aParamCount & 1) && !(aParamCount == 1 && TokenToObject(*aParam[0])))
 		_o_throw(ERR_PARAM_COUNT_INVALID);
 	if (!SetItems(aParam, aParamCount))
 		_o_throw_oom;
@@ -1277,6 +1397,7 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 Object *Object::CreateClass(LPTSTR aClassName, Object *aBase, Object *aPrototype, ClassFactoryDef aFactory)
 {
 	auto class_obj = CreateClass(aPrototype, aBase);
+	aPrototype->Release(); // HotKeyIt: the scripts var should be the only reference to the prototype so it can be released on clearance.
 
 	if (aFactory.call)
 	{
@@ -1292,7 +1413,7 @@ Object *Object::CreateClass(LPTSTR aClassName, Object *aBase, Object *aPrototype
 		ctor->Release();
 	}
 
-	auto var = g_script.FindOrAddVar(aClassName, 0, VAR_DECLARE_GLOBAL);
+	auto var = g_script->FindOrAddVar(aClassName, 0, VAR_DECLARE_GLOBAL);
 	var->AssignSkipAddRef(class_obj);
 	var->MakeReadOnly();
 
@@ -1342,15 +1463,27 @@ void Map::Delete(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 	mCount--;
 	// Free item and keys.
 	copy->Free();
-	if (key_type == SYM_STRING)
-		free(copy->key.s);
-	else // i.e. SYM_OBJECT or SYM_INTEGER
+	if (!IsUnsorted())
 	{
-		mKeyOffsetString--;
-		if (key_type == SYM_INTEGER)
-			mKeyOffsetObject--;
-		else
+		if (key_type == SYM_STRING)
+			free(copy->key.s);
+		else // i.e. SYM_OBJECT or SYM_INTEGER
+		{
+			mKeyOffsetString--;
+			if (key_type == SYM_INTEGER)
+				mKeyOffsetObject--;
+			else
+				copy->key.p->Release();
+		}
+	}
+	else
+	{
+		if (key_type == SYM_STRING)
+			free(copy->key.s);
+		else if (key_type == SYM_OBJECT)
 			copy->key.p->Release();
+		if (mCount > pos)
+			memmove(mKeyTypes + pos, mKeyTypes + pos + 1, mCount - pos);
 	}
 	_o_return_retval;
 }
@@ -1487,6 +1620,23 @@ void Object::OwnProps(ResultToken &aResultToken, int aID, int aFlags, ExprTokenT
 		, static_cast<IndexEnumerator::Callback>(&Object::GetEnumProp)));
 }
 
+void Object::ToJSON(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount)
+{
+	if (aParamCount >= 1 && aParam[0]->symbol == SYM_PTR) {
+		auto js = (JSON*)(aParam[0]->object);
+		js->appendObj(this, false);
+		_f_return_empty;
+	}
+	else {
+		ExprTokenType t_this(this), opt(0);
+		ExprTokenType* param[] = { &t_this,&opt,&opt };
+		JSON json;
+		if (aParamCount)
+			param[1] = aParam[0];
+		json.Stringify(aResultToken, param, 3);
+	}
+}
+
 void Map::__Enum(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
 	_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 0)
@@ -1512,6 +1662,7 @@ void Object::Clone(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 	if (GetNativeBase() != Object::sPrototype)
 		_o_throw(ERR_TYPE_MISMATCH, ErrorPrototype::Type); // Cannot construct an instance of this class using Object::Clone().
 	auto clone = new Object();
+	clone->mFlags = mFlags;
 	if (!CloneTo(*clone))
 		_o_throw_oom;	
 	_o_return(clone);
@@ -2273,10 +2424,11 @@ Array::~Array()
 	free(mItem);
 }
 
-Array *Array::Create(ExprTokenType *aValue[], index_t aCount)
+Array *Array::Create(ExprTokenType *aValue[], index_t aCount, bool aUnsorted)
 {
 	auto arr = new Array();
 	arr->SetBase(Array::sPrototype);
+	if (aUnsorted) arr->mFlags |= UnsortedFlag;
 	if (!aCount || arr->InsertAt(0, aValue, aCount))
 		return arr;
 	arr->Release();
@@ -2286,6 +2438,7 @@ Array *Array::Create(ExprTokenType *aValue[], index_t aCount)
 Array *Array::Clone()
 {
 	auto arr = new Array();
+	arr->mFlags = mFlags;
 	if (!CloneTo(*arr))
 		return nullptr; // CloneTo() released arr.
 	if (!arr->SetCapacity(mCapacity))
@@ -2327,7 +2480,13 @@ ObjectMember Array::sMembers[] =
 	Object_Method(InsertAt, 1, MAXP_VARIADIC),
 	Object_Method(Pop, 0, 0),
 	Object_Method(Push, 0, MAXP_VARIADIC),
-	Object_Method(RemoveAt, 1, 2)
+	Object_Method(RemoveAt, 1, 2),
+	Object_Method(Filter, 1, 1),
+	Object_Method(FindIndex, 1, 2),
+	Object_Method(IndexOf, 1, 2),
+	Object_Method(Join, 0, 1),
+	Object_Method(Map, 1, 1),
+	Object_Method(Sort, 0, 1),
 };
 
 void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
@@ -2338,7 +2497,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 	case M_Get:
 	{
 		auto index = ParamToZeroIndex(*aParam[IS_INVOKE_SET ? 1 : 0]);
-		if (index >= mLength)
+		if (index >= mLength) 
 			_o_throw(ERR_INVALID_INDEX, *aParam[IS_INVOKE_SET ? 1 : 0], ErrorPrototype::Index);
 		auto &item = mItem[index];
 		if (IS_INVOKE_SET)
@@ -2354,7 +2513,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 				aResultToken.CopyValueFrom(*aParam[1]);
 				return;
 			}
-			auto result = Object::Invoke(aResultToken, IT_GET, _T("Default"), ExprTokenType{this}, nullptr, 0);
+			auto result = Object::Invoke(aResultToken, IT_GET | IF_IGNORE_DEFAULT, _T("Default"), ExprTokenType{this}, nullptr, 0);
 			if (result != INVOKE_NOT_HANDLED)
 				_o_return_retval;
 			_o_return_unset;
@@ -2394,6 +2553,8 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 			index = mLength;
 		if (!InsertAt(index, aParam, aParamCount))
 			_o_throw_oom;
+		if (aID == M_Push)
+			_o_return(mLength);
 		_o_return_empty;
 	}
 
@@ -2459,6 +2620,200 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 	case M___Enum:
 		_o_return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 0)
 			, static_cast<IndexEnumerator::Callback>(&Array::GetEnumItem)));
+
+	case M_Join:
+	{
+		auto buf = aResultToken.buf;
+		auto js = ParamIndexToOptionalStringDef(0, _T(","), buf);
+		ExprTokenType token;
+		TString tmp;
+		for (size_t i = 0; i < mLength; i++)
+		{
+			mItem[i].ToToken(token);
+			if (token.symbol == SYM_OBJECT) {
+				ObjectToString(aResultToken, token, token.object);
+				if (aResultToken.Exited())
+					_o_return_retval;
+				if (aResultToken.symbol != SYM_STRING) {
+					aResultToken.Free();
+					aResultToken.SetValue(_T(""));
+					_o_throw_type(_T("String"), token);
+				}
+				tmp += aResultToken.marker;
+				if (aResultToken.mem_to_free)
+					free(aResultToken.mem_to_free), aResultToken.mem_to_free = nullptr;
+			}
+			else
+				tmp += TokenToString(token, buf);
+			tmp += js;
+		}
+		if (!tmp.data())
+			_o_return_retval;
+		tmp.size() -= _tcslen(js);
+		aResultToken.AcceptMem(tmp.data(), tmp.size());
+		tmp.release();
+		_o_return_retval;
+	}
+	
+	case M_Sort:
+	{
+		auto obj = ParamIndexToOptionalObject(0);
+		int (*cmp)(void *context, const void *a, const void *b);
+		struct Context {
+			IObject *func;
+			ResultType result;
+		} context;
+		if (obj)
+		{
+			if (!ValidateFunctor(obj, 2, aResultToken))
+				return;
+			context.func = obj;
+			context.result = OK;
+			cmp = [](void *context, const void *a, const void *b) {
+				auto &result = ((Context *)context)->result;
+				if (!result || result == EARLY_EXIT)
+					return 0;
+				__int64 i64;
+				ExprTokenType param[2];
+				((Variant *)a)->ToToken(param[0]);
+				((Variant *)b)->ToToken(param[1]);
+				auto func = ((Context *)context)->func;
+				result = CallMethod(func, func, nullptr, param, _countof(param), &i64);
+				int returned_int;
+				if (i64)
+					returned_int = i64 < 0 ? -1 : 1;
+				else
+					returned_int = a < b ? -1 : 1;
+				return returned_int;
+			};
+		}
+		else
+		{
+			cmp = [](void *context, const void *a, const void *b) {
+				__int64 rand;
+				GenRandom(&rand, sizeof(rand));
+				return rand & 1 ? 1 : -1;
+			};
+		}
+		qsort_s(mItem, mLength, sizeof(Variant), cmp, &context);
+		AddRef();
+		_o_return(this);
+	}
+
+	case M_FindIndex:
+	case M_IndexOf:
+	{
+		__int64 start = ParamIndexToOptionalInt64(1, 1), end, step = 1;
+		if (!start)
+			start = -1;
+		if (start > 0)
+			start--, end = mLength;
+		else
+			start = mLength - 1, end = step = -1;
+		if (aID == M_IndexOf) {
+			ExprTokenType find_token = *aParam[0];
+			if (find_token.symbol == SYM_VAR)
+				find_token.var->ToTokenSkipAddRef(find_token);
+			for (; start != end; start += step)
+			{
+				auto &it = mItem[start];
+				if (it.symbol != find_token.symbol)
+					continue;
+				if (it.symbol == SYM_STRING) {
+					if (!_tcsicmp(it.string, find_token.marker))
+						break;
+				}
+				else if (it.n_int64 == find_token.value_int64)
+					break;
+			}
+		}
+		else
+		{
+			auto obj = ParamIndexToObject(0);
+			ExprTokenType param[2];
+			__int64 retval;
+			int param_count = 1;
+			if (!obj)
+				_o_throw_param(0);
+			if (ValidateFunctor(obj, 2, aResultToken, nullptr, false) == OK)
+				param_count = 2;
+			else if (!ValidateFunctor(obj, 1, aResultToken))
+				return;
+			for (; start != end; start += step)
+			{
+				mItem[start].ToToken(param[0]);
+				param[1].SetValue(start + 1);
+				auto result = CallMethod(obj, obj, nullptr, param, param_count, &retval);
+				if (!result)
+					_o_return_FAIL;
+				if (result == EARLY_EXIT)
+				{
+					start = -1;
+					break;
+				}
+				if (retval)
+					break;
+			}
+		}
+		if (start == mLength)
+			_o_return(0);
+		_o_return(start + 1);
+	}
+
+	case M_Filter:
+	case M_Map:
+	{
+		auto obj = ParamIndexToObject(0);
+		int param_count = 1;
+		if (ValidateFunctor(obj, 2, aResultToken, nullptr, false) == OK)
+			param_count = 2;
+		else if (!ValidateFunctor(obj, 1, aResultToken))
+			return;
+		__int64 retval;
+		ExprTokenType param[2];
+		auto arr = Array::Create();
+		param[1].SetValue(0);
+		if (aID == M_Map)
+		{
+			ExprTokenType this_token(obj), *params[] = { param,param + 1 };
+			arr->SetLength(mLength);
+			for (auto &i = param[1].value_int64; i < mLength;)
+			{
+				mItem[i++].ToToken(param[0]);
+				auto result = obj->Invoke(aResultToken, IT_CALL, nullptr, this_token, params, param_count);
+				if (!result)
+				{
+					aResultToken.mem_to_free = nullptr;
+					arr->Release();
+					_o_return_FAIL;
+				}
+				if (result == EARLY_EXIT)
+				{
+					arr->SetLength((index_t)i);
+					aResultToken.SetResult(OK);
+					break;
+				}
+				arr->mItem[i - 1].Assign(aResultToken);
+				aResultToken.Free();
+			}
+			aResultToken.mem_to_free = nullptr;
+		}
+		else for (auto &i = param[1].value_int64; i < mLength;)
+		{
+			mItem[i++].ToToken(param[0]);
+			auto result = CallMethod(obj, obj, nullptr, param, param_count, &retval);
+			if (!result)
+			{
+				arr->Release();
+				_o_return_FAIL;
+			}
+			if (result == EARLY_EXIT)
+				break;
+			if (retval)
+				arr->Append(param[0]);
+		}
+		_o_return(arr);
+	}
 	}
 }
 
@@ -2600,7 +2955,16 @@ ResultType Map::GetEnumItem(UINT &aIndex, Var *aKey, Var *aVal, int aVarCount)
 		auto &item = mItem[aIndex];
 		if (aKey)
 		{
-			if (aIndex < mKeyOffsetObject) // mKeyOffsetInt < mKeyOffsetObject
+			if (IsUnsorted())
+			{
+				if (mKeyTypes[aIndex] == SYM_STRING)
+					aKey->Assign(item.key.s);
+				else if (mKeyTypes[aIndex] == SYM_OBJECT)
+					aKey->Assign(item.key.p);
+				else
+					aKey->Assign(item.key.i);
+			}
+			else if (aIndex < mKeyOffsetObject) // mKeyOffsetInt < mKeyOffsetObject
 				aKey->Assign(item.key.i);
 			else if (aIndex < mKeyOffsetString) // mKeyOffsetObject < mKeyOffsetString
 				aKey->Assign(item.key.p);
@@ -2677,6 +3041,15 @@ Object::FieldType *Object::FindField(name_t name, index_t &insert_pos)
 	int first_char = *name;
 	if (first_char <= 'Z' && first_char >= 'A')
 		first_char += 32;
+	if (IsUnsorted())
+	{
+		for (insert_pos = 0; insert_pos < right; insert_pos++) {
+			FieldType &field = mFields[insert_pos];
+			if (!(first_char - field.key_c) && !_tcsicmp(name, field.name))
+				return &field;
+		}
+		return nullptr;
+	}
 	while (left < right)
 	{
 		mid = left + ((right - left) >> 1);
@@ -2704,9 +3077,26 @@ Object::FieldType *Object::FindField(name_t name, index_t &insert_pos)
 	return nullptr;
 }
 
-bool Object::HasProp(name_t name)
+char Object::HasProp(name_t name)
 {
-	return FindField(name) || mBase && mBase->HasProp(name);
+	if (auto field = FindField(name)) {
+		if (field->symbol == SYM_DYNAMIC) {
+			auto& prop = field->prop;
+			char kind = 0;
+			if (prop->Method())
+				kind |= 8;
+			if (prop->MaxParams > 0) {
+				if (prop->Getter())
+					kind |= 2;
+				if (prop->Setter())
+					kind |= 4;
+			}
+			else kind |= 1;
+			return kind;
+		}
+		return 1;
+	}
+	return mBase ? mBase->HasProp(name) : 0;
 }
 
 IObject *Object::GetMethod(name_t name)
@@ -2775,7 +3165,29 @@ Map::Pair *Map::FindItem(SymbolType key_type, Key key, index_t &insert_pos)
 // left and right must indicate the appropriate section of mItem to search, based on key type.
 {
 	index_t left, right;
-
+	if (IsUnsorted()) {
+		if (key_type == SYM_STRING) {
+			bool caseless = mFlags & MapCaseless;
+			bool use_locale = mFlags & MapUseLocale;
+			LPTSTR val = key.s;
+			int first_char = caseless ? 0 : *val;
+			for (insert_pos = 0; insert_pos < mCount; insert_pos++) {
+				auto &item = mItem[insert_pos];
+				if (first_char == item.key_c && mKeyTypes[insert_pos] == SYM_STRING && !(!caseless ? _tcscmp(val, item.key.s) 
+					: use_locale ? lstrcmpi(val, item.key.s) : _tcsicmp(val, item.key.s)))
+					return &item;
+			}
+		}
+		else {
+			IntKeyType val = key_type == SYM_OBJECT ? (IntKeyType)(INT_PTR)key.p : key.i;
+			for (insert_pos = 0; insert_pos < mCount; insert_pos++) {
+				auto& item = mItem[insert_pos];
+				if (mKeyTypes[insert_pos] == key_type && val == item.key.i)
+					return &item;
+			}
+		}
+		return nullptr;
+	}
 	switch (key_type)
 	{
 	case SYM_STRING:
@@ -2850,6 +3262,12 @@ bool Object::SetInternalCapacity(index_t new_capacity)
 bool Map::SetInternalCapacity(index_t new_capacity)
 // Caller *must* ensure new_capacity >= 1 && new_capacity >= mCount.
 {
+	if (IsUnsorted()) {
+		char* new_types = (char*)realloc(mKeyTypes, new_capacity * sizeof(char));
+		if (!new_types)
+			return false;
+		mKeyTypes = new_types;
+	}
 	Pair *new_fields = (Pair *)realloc(mItem, new_capacity * sizeof(Pair));
 	if (!new_fields)
 		return false;
@@ -2892,8 +3310,17 @@ Map::Pair *Map::Insert(SymbolType key_type, Key key, index_t at)
 		memmove(&item + 1, &item, (mCount - at) * sizeof(Pair));
 	++mCount; // Only after memmove above.
 
+	if (IsUnsorted()) {
+		if (at + 1 < mCount)
+			memmove(mKeyTypes + at + 1, mKeyTypes + at, mCount - at - 1);
+		mKeyTypes[at] = key_type;
+		if (key_type == SYM_STRING)
+			item.key_c = (mFlags & MapCaseless) ? 0 : *key.s;
+		else if (key_type == SYM_OBJECT)
+			key.p->AddRef();
+	}
 	// Update key-type offsets based on where and what was inserted; also update this key's ref count:
-	if (key_type == SYM_STRING)
+	else if (key_type == SYM_STRING)
 	{
 		item.key_c = (mFlags & MapCaseless) ? 0 : *key.s;
 	}
@@ -3382,7 +3809,49 @@ ObjectMember Object::sOSErrorMembers[]
 	Object_Member(__New, Error__New, M_OSError__New, IT_CALL, 0, 3)
 };
 
+ObjectMember DynaToken::sMembers[] =
+{
+	Object_Property_get(MinParams),
+	Object_Property_get(MaxParams),
+	Object_Property_get_set(Param, 1, 1)
+};
 
+ObjectMember JSON::sMembers[] =
+{
+	Object_Method(Parse, 1, 3),
+	Object_Method(Stringify, 1, 2),
+	Object_Property_get(True),
+	Object_Property_get(False),
+	Object_Property_get(Null)
+};
+
+ObjectMember Promise::sMembers[] =
+{
+	Object_Method(Then, 1, 1),
+	Object_Method(Catch, 1, 1)
+};
+
+#undef GetObject
+ObjectMember Worker::sMembers[] =
+{
+	Object_Method(__New, 0, 3),
+	Object_Property_get_set(__Item, 1, 1),
+	Object_Method(AddScript, 1, 2),
+	Object_Method(AsyncCall, 1, MAXP_VARIADIC),
+	Object_Method(Exec, 1, 2),
+	Object_Method(ExitApp, 0, 0),
+	Object_Method(Pause, 1, 1),
+	Object_Property_get(Ready),
+	Object_Method(Reload, 0, 0),
+	Object_Property_get(ThreadID),
+	Object_Method(Wait, 0, 1)
+};
+
+#ifdef ENABLE_DECIMAL
+ObjectMember Decimal::sMembers[] = {
+	Object_Method(ToString, 0, 1),
+};
+#endif // ENABLE_DECIMAL
 
 struct ClassDef
 {
@@ -3421,16 +3890,17 @@ void Object::CreateRootPrototypes()
 	// only handles Objects, and these must handle primitive values.
 	static const LPTSTR sFuncs[] = { _T("GetMethod"), _T("HasBase"), _T("HasMethod"), _T("HasProp") };
 	for (int i = 0; i < _countof(sFuncs); ++i)
-		sAnyPrototype->DefineMethod(sFuncs[i], g_script.FindGlobalFunc(sFuncs[i]));
+		sAnyPrototype->DefineMethod(sFuncs[i], g_script->FindGlobalFunc(sFuncs[i]));
 	auto prop = sAnyPrototype->DefineProperty(_T("Base"));
 	prop->MinParams = 0;
 	prop->MaxParams = 0;
-	prop->SetGetter(g_script.FindGlobalFunc(_T("ObjGetBase")));
-	prop->SetSetter(g_script.FindGlobalFunc(_T("ObjSetBase")));
-	
+	prop->SetGetter(g_script->FindGlobalFunc(_T("ObjGetBase")));
+	prop->SetSetter(g_script->FindGlobalFunc(_T("ObjSetBase")));
+
 	// Define __Init so that Script::DefineClassInit can add an unconditional super.__Init().
-	static auto __Init = new BuiltInFunc { _T(""), Any___Init, 1, 1 };
+	auto __Init = new BuiltInFunc{ _T(""), Any___Init, 1, 1 };
 	sAnyPrototype->DefineMethod(_T("__Init"), __Init);
+	__Init->Release();
 
 	DefineMembers(sPrototype, _T("Object"), sMembers, _countof(sMembers));
 	DefineMembers(Func::sPrototype, _T("Func"), Func::sMembers, _countof(Func::sMembers));
@@ -3489,7 +3959,32 @@ void Object::CreateRootPrototypes()
 		}},
 		{_T("RegExMatchInfo"), &RegExMatchObject::sPrototype, no_ctor
 			, RegExMatchObject::sMembers, _countof(RegExMatchObject::sMembers)}
+		,{_T("Worker"), &Worker::sPrototype, NewObject<Worker>
+		, Worker::sMembers, _countof(Worker::sMembers) }
 	});
+	if (auto var = g_script->FindGlobalVar(_T("Worker")))
+	{
+		auto fn = new BuiltInFunc(_T("Worker.__Enum"),
+			[](BIF_DECL_PARAMS) {
+				_o_return(new IndexEnumerator(sPrototype, 0,
+				static_cast<IndexEnumerator::Callback>(&Worker::GetEnumItem)));
+			}, 1, 2, false);
+		((Object *)var->ToObject())->DefineMethod(_T("__Enum"), fn);
+		fn->Release();
+	}
+#ifdef ENABLE_DLLCALL
+	DynaToken::sPrototype = Object::CreatePrototype(_T("DynaCall"), Object::sPrototype, DynaToken::sMembers, _countof(DynaToken::sMembers));
+#endif
+	Promise::sPrototype = Object::CreatePrototype(_T("Promise"), Object::sPrototype, Promise::sMembers, _countof(Promise::sMembers));
+	if (auto var = g_script->FindOrAddVar(_T("JSON"), 4, VAR_DECLARE_GLOBAL))
+	{
+		auto obj = new Object();
+		auto proto = Object::CreatePrototype(_T("JSON"), Object::sPrototype, JSON::sMembers, _countof(JSON::sMembers));
+		obj->SetBase(proto);
+		var->Assign(obj);
+		obj->Release(), proto->Release();
+		var->MakeReadOnly();
+	}
 
 	// Parameter counts are specified for static Call in the following classes
 	// but not those using NewObject<> because the latter passes parameters on
@@ -3507,11 +4002,28 @@ void Object::CreateRootPrototypes()
 			{_T("Number"), &Object::sNumberPrototype, {BIF_Number, 2, 2}, no_members, 0, {
 				{_T("Float"), &Object::sFloatPrototype, {BIF_Float, 2, 2}},
 				{_T("Integer"), &Object::sIntegerPrototype, {BIF_Integer, 2, 2}}
+#ifdef ENABLE_DECIMAL
+				,{_T("Decimal"), &Decimal::sPrototype, {Decimal::Create, 2, 2}, Decimal::sMembers, _countof(Decimal::sMembers)}
+#endif // ENABLE_DECIMAL
 			}},
 			{_T("String"), &Object::sStringPrototype, {BIF_String, 2, 2}}
 		}},
 		{_T("VarRef"), &sVarRefPrototype}
 	});
+
+#ifdef ENABLE_DECIMAL
+	if (auto var = g_script->FindGlobalVar(_T("Decimal"), 7)) {
+		if (auto obj = dynamic_cast<Object *>(var->ToObject())) {
+			auto fn = new BuiltInFunc(_T("Decimal.SetPrecision"), Decimal::SetPrecision, 1, 3);
+			obj->DefineMethod(_T("SetPrecision"), fn);
+			fn->Release();
+		}
+	}
+#endif // ENABLE_DECIMAL
+
+	JSON::_true = new ComObject(VARIANT_TRUE, VT_BOOL);
+	JSON::_false = new ComObject(VARIANT_FALSE, VT_BOOL);
+	JSON::_null = new ComObject(0, VT_NULL);
 
 	GuiControlType::DefineControlClasses();
 	DefineComPrototypeMembers();
@@ -3522,51 +4034,56 @@ void Object::CreateRootPrototypes()
 	ErrorPrototype::OS->mFlags &= ~NativeClassPrototype;
 }
 
-Object *Object::sAnyPrototype;
-Object *Func::sPrototype;
-Object *Object::sPrototype;
+thread_local Object *Object::sAnyPrototype;
+thread_local Object *Func::sPrototype;
+thread_local Object *Object::sPrototype;
 
-Object *Object::sClassPrototype;
-Object *Array::sPrototype;
-Object *Map::sPrototype;
+thread_local Object *Object::sClassPrototype;
+thread_local Object *Array::sPrototype;
+thread_local Object *Map::sPrototype;
 
-Object *Object::sClass;
+thread_local Object *Object::sClass;
 
-Object *Closure::sPrototype;
-Object *BoundFunc::sPrototype;
-Object *EnumBase::sPrototype;
+thread_local Object *Closure::sPrototype;
+thread_local Object *BoundFunc::sPrototype;
+thread_local Object *EnumBase::sPrototype;
 
-Object *BufferObject::sPrototype;
-Object *ClipboardAll::sPrototype;
+thread_local Object *BufferObject::sPrototype;
+thread_local Object *ClipboardAll::sPrototype;
 
-Object *RegExMatchObject::sPrototype;
+thread_local Object *RegExMatchObject::sPrototype;
 
-Object *GuiType::sPrototype;
-Object *UserMenu::sPrototype;
-Object *UserMenu::sBarPrototype;
+thread_local Object *GuiType::sPrototype;
+thread_local Object *UserMenu::sPrototype;
+thread_local Object *UserMenu::sBarPrototype;
 
 namespace ErrorPrototype
 {
-	Object *Error, *Memory, *Type, *Value, *OS, *ZeroDivision;
-	Object *Target, *Unset, *Member, *Property, *Method, *Index, *UnsetItem;
-	Object *Timeout;
+	thread_local Object *Error, *Memory, *Type, *Value, *OS, *ZeroDivision;
+	thread_local Object *Target, *Unset, *Member, *Property, *Method, *Index, *UnsetItem;
+	thread_local Object *Timeout;
 }
 
-Object *Object::sVarRefPrototype;
-Object *Object::sComObjectPrototype, *Object::sComValuePrototype, *Object::sComArrayPrototype, *Object::sComRefPrototype;
+thread_local Object *Object::sVarRefPrototype;
+thread_local Object *Object::sComObjectPrototype, *Object::sComValuePrototype, *Object::sComArrayPrototype, *Object::sComRefPrototype;
 
-IObject *Object::sObjectCall;
+thread_local IObject *Object::sObjectCall;
 
+thread_local Object* Promise::sPrototype;
+thread_local Object* Worker::sPrototype;
+#ifdef ENABLE_DLLCALL
+thread_local Object* DynaToken::sPrototype;
+#endif
 
 //
 // Primitive values as objects
 //
 
-Object *Object::sPrimitivePrototype;
-Object *Object::sStringPrototype;
-Object *Object::sNumberPrototype;
-Object *Object::sIntegerPrototype;
-Object *Object::sFloatPrototype;
+thread_local Object *Object::sPrimitivePrototype;
+thread_local Object *Object::sStringPrototype;
+thread_local Object *Object::sNumberPrototype;
+thread_local Object *Object::sIntegerPrototype;
+thread_local Object *Object::sFloatPrototype;
 
 Object *Object::ValueBase(ExprTokenType &aValue)
 {
@@ -3596,9 +4113,11 @@ void Object::DefineClass(name_t aName, Object *aClass)
 	prop->MinParams = 0;
 	prop->MaxParams = 0;
 	prop->SetGetter(get);
+	get->Release();
 
 	auto call = new BuiltInFunc { _T(""), Class_CallNestedClass, 1, 1, true, info };
 	prop->SetMethod(call);
+	call->Release();
 }
 
 

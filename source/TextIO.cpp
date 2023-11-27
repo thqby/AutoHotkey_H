@@ -65,6 +65,8 @@ bool TextStream::Open(LPCTSTR aFileSpec, DWORD aFlags, UINT aCodePage)
 					SetCodePage(CP_UTF8);
 				}
 			}
+			else if ((aFlags & TextStream::DETECT_UTF8) && aCodePage != CP_UTF8 && IsValidUTF8((LPCCH)mBuffer, mLength))
+				SetCodePage(CP_UTF8);
 		}
 	}
 	if (mode == TextStream::WRITE || (mode == TextStream::APPEND || mode == TextStream::UPDATE) && _Length() == 0) {
@@ -164,7 +166,7 @@ DWORD TextStream::Read(LPTSTR aBuf, DWORD aBufLen, BOOL aReadLine)
 						// There should be a low surrogate following this, but since there's
 						// not enough data in the buffer we need to postpone processing it.
 						break;
- 					}
+					}
 					// Rather than discarding unpaired high/low surrogate code units, let them
 					// through as though this is UCS-2, not UTF-16. The following check is not
 					// necessary since low surrogates can't be misinterpreted as \r or \n:
@@ -204,7 +206,7 @@ DWORD TextStream::Read(LPTSTR aBuf, DWORD aBufLen, BOOL aReadLine)
 					else if (IsLeadByte(*src))
 						src_size = 2;
 					// Otherwise, leave it at the default set above: 1.
-					
+
 					// Ensure that the expected number of bytes are available:
 					if (src + src_size > src_end)
 					{
@@ -658,7 +660,7 @@ bool TextFile::_Open(LPCTSTR aFileSpec, DWORD &aFlags)
 		// it should be detected as an error below by CreateFile() failing (or if not, it's
 		// somehow valid and should not be treated as an error).
 	}
-	
+
 	// FILE_FLAG_SEQUENTIAL_SCAN is set, as sequential accesses are quite common for text files handling.
 	mFile = CreateFile(aFileSpec, dwDesiredAccess, dwShareMode, NULL, dwCreationDisposition,
 		(aFlags & (EOL_CRLF | EOL_ORPHAN_CR)) ? FILE_FLAG_SEQUENTIAL_SCAN : 0, NULL);
@@ -714,7 +716,7 @@ class FileObject : public Object
 	~FileObject() {}
 
 	static ObjectMemberMd sMembers[];
-	static Object *sPrototype;
+	thread_local static Object *sPrototype;
 
 	friend void ::DefineFileClass();
 	
@@ -999,7 +1001,7 @@ ObjectMemberMd FileObject::sMembers[] =
 	md_member		(FileObject, WriteUShort, CALL, (In, UInt16, Value), (Ret, UInt32, RetVal)),
 };
 
-Object *FileObject::sPrototype;
+thread_local Object *FileObject::sPrototype;
 
 void DefineFileClass()
 {
@@ -1053,7 +1055,7 @@ BIF_DECL(BIF_FileOpen)
 			// Invalid flag.
 			goto invalid_param;
 		}
-		
+
 		// Default to not locking file, for consistency with fopen/standard AutoHotkey and because it seems best for flexibility.
 		aFlags |= TextStream::SHARE_ALL;
 
@@ -1097,7 +1099,7 @@ BIF_DECL(BIF_FileOpen)
 		if (aEncoding == -1)
 			goto invalid_param;
 	}
-	else aEncoding = g->Encoding;
+	else aEncoding = g->Encoding, aFlags |= TextStream::DETECT_UTF8;
 	
 	ASSERT( (~CP_AHKNOBOM) == CP_AHKCP );
 	// aEncoding may include CP_AHKNOBOM, in which case below will not add BOM_UTFxx flag.

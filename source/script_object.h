@@ -33,7 +33,7 @@ protected:
 public:
 	ULONG STDMETHODCALLTYPE AddRef()
 	{
-		return ++mRefCount;
+		return InterlockedIncrement(&mRefCount); // ++mRefCount;
 	}
 
 	ULONG STDMETHODCALLTYPE Release()
@@ -56,7 +56,7 @@ public:
 			// deletes the object and (erroneously) returns false, checking if mRefCount is still
 			// 1 may be just as unsafe as decrementing mRefCount as per usual.
 		}
-		return --mRefCount;
+		return InterlockedDecrement(&mRefCount); // --mRefCount;
 	}
 
 	ULONG RefCount() { return mRefCount; }
@@ -339,6 +339,7 @@ protected:
 #endif
 	enum Flags : decltype(mFlags)
 	{
+		UnsortedFlag = 0x80000000,
 		ClassPrototype = 0x01,
 		NativeClassPrototype = 0x02,
 		DataIsSetFlag = 0x04,
@@ -385,14 +386,16 @@ protected:
 	ResultType NestedNew(ResultToken &aResultToken, StructInfo *si);
 
 public:
+	bool IsUnsorted() { return mFlags & UnsortedFlag; }
+	static void FreesPrototype(Object *aObject) { aObject->mFields.Free(); }
 
 	static Object *Create();
-	static Object *Create(ExprTokenType *aParam[], int aParamCount, ResultToken *apResultToken = nullptr);
+	static Object *Create(ExprTokenType *aParam[], int aParamCount, ResultToken *apResultToken = nullptr, bool aUnsorted = false);
 
 	ResultType New(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, Object *aOuter = nullptr);
 	ResultType Construct(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount);
 
-	bool HasProp(name_t aName);
+	char HasProp(name_t aName);
 	bool HasMethod(name_t aName);
 	IObject *GetMethod(name_t name);
 
@@ -511,12 +514,13 @@ public:
 	Object *GetUnresolvedClass(LPTSTR &aName);
 	
 	ResultType Invoke(IObject_Invoke_PARAMS_DECL);
+	void __Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
 	static ObjectMember sMembers[];
 	static ObjectMember sClassMembers[];
 	static ObjectMember sErrorMembers[], sOSErrorMembers[];
-	static Object *sPrototype, *sClass, *sClassPrototype;
-	static IObject *sObjectCall;
+	thread_local static Object *sPrototype, *sClass, *sClassPrototype;
+	thread_local static IObject *sObjectCall;
 
 	static void CreateRootPrototypes();
 	static Object *CreateClass(Object *aPrototype, Object *aBase = Object::sClassPrototype);
@@ -552,18 +556,19 @@ public:
 	void HasOwnProp(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 	void OwnProps(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 	void Clone(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	void ToJSON(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
 	enum { M_Error__New, M_OSError__New };
 	void Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
 	// For pseudo-objects:
 	static ObjectMember sValueMembers[];
-	static Object *sAnyPrototype, *sPrimitivePrototype, *sStringPrototype
+	thread_local static Object *sAnyPrototype, *sPrimitivePrototype, *sStringPrototype
 		, *sNumberPrototype, *sIntegerPrototype, *sFloatPrototype;
-	static Object *sVarRefPrototype;
+	thread_local static Object *sVarRefPrototype;
 
 	// For COM object wrappers:
-	static Object *sComObjectPrototype, *sComValuePrototype, *sComArrayPrototype, *sComRefPrototype;
+	thread_local static Object *sComObjectPrototype, *sComValuePrototype, *sComArrayPrototype, *sComRefPrototype;
 
 	static Object *ValueBase(ExprTokenType &aValue);
 	static bool HasBase(ExprTokenType &aValue, IObject *aBase);
@@ -571,6 +576,8 @@ public:
 	static LPTSTR sMetaFuncName[];
 
 	IObject_DebugWriteProperty_Def;
+	friend class JSON;
+	friend class IAhkApi;
 #ifdef CONFIG_DEBUGGER
 	friend class Debugger;
 #endif
@@ -621,7 +628,7 @@ public:
 	ResultType GetEnumItem(UINT &aIndex, Var *, Var *, int);
 
 	~Array();
-	static Array *Create(ExprTokenType *aValue[] = nullptr, index_t aCount = 0);
+	static Array *Create(ExprTokenType *aValue[] = nullptr, index_t aCount = 0, bool aUnsorted = false);
 	static Array *FromArgV(LPTSTR *aArgV, int aArgC);
 	static Array *FromEnumerable(ExprTokenType &aEnum);
 	ResultType ToStrings(LPTSTR *aStrings, int &aStringCount, int aStringsMax);
@@ -640,11 +647,19 @@ public:
 		M_Has,
 		M_Delete,
 		M_Clone,
-		M___Enum
+		M___Enum,
+		M_Filter,
+		M_FindIndex,
+		M_IndexOf,
+		M_Join,
+		M_Map,
+		M_Sort,
 	};
 	static ObjectMember sMembers[];
-	static Object *sPrototype;
+	thread_local static Object *sPrototype;
 	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	friend class JSON;
+	friend class IAhkApi;
 };
 
 
@@ -685,16 +700,24 @@ class Map : public Object
 	// mKeyOffsetString should be set to mKeyOffsetObject + the number of object keys.
 	// mKeyOffsetObject-1, mKeyOffsetString-1 and mFieldCount-1 indicate the last index of each prior type.
 	static const index_t mKeyOffsetInt = 0;
-	index_t mKeyOffsetObject = 0, mKeyOffsetString = 0;
+	union {
+		struct {
+			index_t mKeyOffsetObject;
+			index_t mKeyOffsetString;
+		};
+		char* mKeyTypes;
+	};
 
-	Map() {}
+	Map(): mKeyOffsetObject(0), mKeyOffsetString(0) {}
 	void Clear();
 	~Map()
 	{
 		Clear();
 		free(mItem);
+		if (IsUnsorted())
+			free(mKeyTypes), mKeyTypes = nullptr;
 	}
-	 
+	
 	Pair *FindItem(LPTSTR val, index_t left, index_t right, index_t &insert_pos);
 	Pair *FindItem(IntKeyType val, index_t left, index_t right, index_t &insert_pos);
 	Pair *FindItem(SymbolType key_type, Key key, index_t &insert_pos);	
@@ -717,7 +740,7 @@ class Map : public Object
 	ResultType GetEnumItem(UINT &aIndex, Var *, Var *, int);
 
 public:
-	static Map *Create(ExprTokenType *aParam[] = NULL, int aParamCount = 0);
+	static Map *Create(ExprTokenType *aParam[] = NULL, int aParamCount = 0, bool aUnsorted = false);
 
 	bool HasItem(ExprTokenType &aKey)
 	{
@@ -787,7 +810,9 @@ public:
 	void Clone(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
 	static ObjectMember sMembers[];
-	static Object *sPrototype;
+	thread_local static Object *sPrototype;
+	friend class JSON;
+	friend class IAhkApi;
 };
 
 
@@ -842,7 +867,7 @@ public:
 		M___Enum
 	};
 	static ObjectMember sMembers[];
-	static Object *sPrototype;
+	thread_local static Object *sPrototype;
 	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 };
 
@@ -879,7 +904,7 @@ public:
 		M___New = P_Size,
 	};
 	static ObjectMember sMembers[];
-	static Object *sPrototype;
+	thread_local static Object *sPrototype;
 	static BufferObject *Create(void *aData = nullptr, size_t aSize = 0);
 	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
@@ -899,7 +924,7 @@ private:
 
 public:
 	static ObjectMember sMembers[];
-	static Object *sPrototype;
+	thread_local static Object *sPrototype;
 	static Object *Create();
 	void __New(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 };
@@ -913,9 +938,9 @@ void DefineFileClass();
 
 namespace ErrorPrototype
 {
-	extern Object *Error, *Memory, *Type, *Value, *OS, *ZeroDivision;
-	extern Object *Target, *Unset, *Member, *Property, *Method, *Index, *UnsetItem;
-	extern Object *Timeout;
+	thread_local extern Object *Error, *Memory, *Type, *Value, *OS, *ZeroDivision;
+	thread_local extern Object *Target, *Unset, *Member, *Property, *Method, *Index, *UnsetItem;
+	thread_local extern Object *Timeout;
 }
 
 
@@ -934,3 +959,215 @@ BIF_DECL(Class_CallNestedClass);
 BIF_DECL(Class_New);
 
 BIF_DECL(Any___Init);
+
+////////////////////////
+// DYNACALL TOKEN //
+////////////////////////
+
+#ifdef ENABLE_DLLCALL
+
+class DynaToken : public Object
+{
+protected:
+	void *mFunction;
+	void *mData; // DYNAPARM return_attrib, DYNAPARM default_param[mParamCount], int param_shift[mParamCount], bool param_free[mParamCount]
+	int mParamCount;
+#ifdef WIN32_PLATFORM
+	int mDllCallMode;
+#endif
+
+	DynaToken()
+		: mParamCount(0), mFunction(NULL), mData(NULL)
+#ifdef WIN32_PLATFORM
+		, mDllCallMode(0)
+#endif
+	{}
+
+	~DynaToken();
+
+	enum MemberID
+	{
+		P_MinParams,
+		P_MaxParams,
+		P_Param
+	};
+
+public:
+	static DynaToken *Create(ExprTokenType *aParam[], int aParamCount);
+	ResultType Invoke(IObject_Invoke_PARAMS_DECL);
+	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	thread_local static Object *sPrototype;
+	static ObjectMember sMembers[];
+	IObject_Type_Impl("DynaCall");
+	friend BIF_DECL(BIF_DynaCall);
+	friend BIF_DECL(BIF_DllCall);
+};
+
+#endif
+
+class JSON : public Object
+{
+public:
+	thread_local static IObject *_true;
+	thread_local static IObject *_false;
+	thread_local static IObject *_null;
+
+	void Parse(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount);
+	void Stringify(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount);
+	void appendObj(IObject *obj, bool invoke_tojson = true);
+	void append(IObject *obj, bool is_enum_base = false);
+	void ToToken(ResultToken &aResultToken) {
+		if (!str.data())
+			return;
+		if (str.back() == ',')
+			str.pop_back();
+		aResultToken.AcceptMem(str.data(), str.size());
+		str.release();
+	}
+	enum MemberID
+	{
+		M_Parse,
+		M_Stringify,
+		P_True,
+		P_False,
+		P_Null
+	};
+	static ObjectMember sMembers[];
+	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+
+private:
+	LPTSTR objcolon = nullptr;
+	LPTSTR indent = nullptr;
+	UINT indent_len = 0;
+	UINT deep = 0;
+	UINT depth = -1;
+	TString str;
+	void append(Array *obj);
+	void append(Object *obj);
+	void append(Map *obj);
+	void append(Var &vval);
+	void append(Var &vkey, Var &vval);
+	void append(LPTSTR s);
+	bool append(Variant &field, Object *obj = nullptr);
+	void append(UINT deep) {
+		if (!indent)
+			return;
+		auto c = str.back();
+		if (deep - (c == '[' || c == '{' ? 1 : 0) < depth) {
+			str.append('\n');
+			str.append(indent, indent_len, deep);
+		}
+	}
+};
+
+class Promise : public Object
+{
+public:
+	Promise(IObject *aFunc, Var *aVar, bool aMarshal) : mFunc(aFunc), mVar(aVar), mMarshal(aMarshal)
+		, mComplete(nullptr), mError(nullptr), mReply(NULL)
+		, mParam(nullptr), mParamToken(nullptr)
+		, mParamCount(0), mState(0), mPriority(0) {
+		if (mFunc)
+			mFunc->AddRef();
+		SetBase(sPrototype);
+		InitializeCriticalSection(&mCritical);
+	}
+	~Promise() {
+		FreeParams();
+		FreeResult();
+		if (mFunc)
+			mFunc->Release();
+		free(mParamToken);
+		if (mError) mError->Release();
+		if (mComplete) mComplete->Release();
+		DeleteCriticalSection(&mCritical);
+	}
+
+	Var *mVar;
+	IObject *mFunc, *mComplete, *mError;
+	ResultToken *mParamToken, **mParam, mResult;
+	CRITICAL_SECTION mCritical;
+	HWND mReply;
+	int mParamCount, mPriority;
+	SHORT mState;
+	bool mMarshal;
+
+	enum MemberID
+	{
+		M_Then,
+		M_Catch
+	};
+	static ObjectMember sMembers[];
+	thread_local static Object *sPrototype;
+
+	bool Init(ExprTokenType *aParam[], int aParamCount);
+	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	void Call();
+	void OnFinish();
+	void FreeParams();
+	void FreeResult();
+	void UnMarshal();
+	Func *ToBoundFunc();
+};
+
+class Worker : public Object
+{
+public:
+	Worker() : mThread(NULL), mThreadID(0), mIndex(-1), mHwnd(NULL) {}
+	~Worker() { if (mThread) CloseHandle(mThread); }
+	static Worker *Create();
+	bool New(DWORD aThreadID);
+	bool New(ResultToken &aResultToken, LPTSTR aScript, LPTSTR aCmd, LPTSTR aTitle);
+
+	enum MemberID
+	{
+		M___New,
+		P___Item,
+		M_AddScript,
+		M_AsyncCall,
+		M_Exec,
+		M_ExitApp,
+		M_Pause,
+		P_Ready,
+		M_Reload,
+		P_ThreadID,
+		M_Wait
+	};
+	static ObjectMember sMembers[];
+	thread_local static Object *sPrototype;
+	ResultType GetEnumItem(UINT &aIndex, Var *aVal, Var *aReserved, int aVarCount);
+	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+
+private:
+	HWND mHwnd;
+	HANDLE mThread;
+	DWORD mIndex;
+	DWORD mThreadID;
+};
+
+bool MarshalObjectToToken(IObject *obj, ResultToken &token);
+
+class Module : public Object
+{
+	LPTSTR mName;
+public:
+	~Module() { if (mName) free(mName); }
+	static Object *Create(LPTSTR aName = nullptr) {
+		auto obj = new Module;
+		obj->SetBase(Object::sPrototype);
+		if (aName && *aName)
+			obj->mName = _tcsdup(aName);
+		else obj->mName = nullptr;
+		return obj;
+	}
+
+	LPTSTR Type() { return mName ? mName : _T("Module"); }
+	ResultType Invoke(IObject_Invoke_PARAMS_DECL) {
+		if (aFlags & IT_CALL) {
+			ResultToken this_token{};
+			if (aName && GetOwnProp(this_token, aName) && this_token.symbol == SYM_OBJECT)
+				return this_token.object->Invoke(aResultToken, IT_CALL, nullptr, this_token, aParam, aParamCount);
+		}
+		return Object::Invoke(IObject_Invoke_PARAMS);
+	}
+};

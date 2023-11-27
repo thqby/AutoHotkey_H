@@ -27,6 +27,9 @@
     <Filter Include="Built-in library\Gui">
       <UniqueIdentifier>{d89b1451-308b-4d71-b654-bd52e7e74493}</UniqueIdentifier>
     </Filter>
+    <Filter Include="H">
+      <UniqueIdentifier>{bf30415b-9b32-49f2-b900-42445e0ac5c0}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="source\script2.cpp">
@@ -188,6 +191,30 @@
     <ClCompile Include="source\ahklib.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="source\COMServer.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\decimal.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\exports.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\LiteZip.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\lowlevelbif.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\MemoryModule.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\MinHook.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
+    <ClCompile Include="source\script_h.cpp">
+      <Filter>H</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\ahkversion.h">
@@ -297,6 +324,21 @@
     </ClInclude>
     <ClInclude Include="source\DispObject.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="source\LiteZip.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\decimal.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\exports.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\MemoryModule.h">
+      <Filter>H</Filter>
+    </ClInclude>
+    <ClInclude Include="source\MinHook.h">
+      <Filter>H</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

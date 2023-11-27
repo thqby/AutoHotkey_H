@@ -78,6 +78,7 @@ inline bool IsTextMatch(LPCTSTR aHaystack, LPCTSTR aNeedle)
 #define CRITERION_CLASS 0x08
 #define CRITERION_GROUP 0x10
 #define CRITERION_PATH	0x20
+#define CRITERION_PARENT 0x100
 
 class WindowSearch
 {
@@ -125,6 +126,8 @@ public:
 	TCHAR mCandidateClass[WINDOW_CLASS_SIZE]; // Must not share mem with mCandidateTitle because even if ahk_class is in effect, ExcludeTitle can also be in effect.
 	TCHAR mCandidatePath[MAX_PATH]; // MAX_PATH vs. T_MAX_PATH because it currently seems to be impossible to run an executable with a longer path (in Windows 10.0.16299).
 
+	HWND mCriterionParentHwnd;                // For "ahk_parent".
+	HWND mCandidateParentHwnd;
 
 	void SetCandidate(HWND aWnd) // Must be kept thread-safe since it may be called indirectly by the hook thread.
 	{

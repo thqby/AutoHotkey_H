@@ -310,7 +310,7 @@ UserMenu::UserMenu(MenuTypeType aMenuType)
 	: mMenuType(aMenuType)
 {
 	SetBase(sPrototype);
-	g_script.AddMenu(this);
+	g_script->AddMenu(this);
 }
 
 UserMenu *Script::AddMenu(UserMenu *aMenu)
@@ -391,7 +391,7 @@ void UserMenu::Dispose()
 
 UserMenu::~UserMenu()
 {
-	g_script.ScriptDeleteMenu(this);
+	g_script->ScriptDeleteMenu(this);
 }
 
 
@@ -420,7 +420,7 @@ UINT Script::GetFreeMenuItemID()
 	// delete code, however, and it would reduce the overall maintainability.  So it definitely
 	// doesn't seem worth it, especially since Windows XP seems to have trouble even displaying
 	// menus larger than around 15000-25000 items.
-	static UINT sLastFreeID = ID_USER_FIRST - 1;
+	thread_local static UINT sLastFreeID = ID_USER_FIRST - 1;
 	// Increment by one for each new search, both due to the above line and because the
 	// last-found free ID has a high likelihood of still being in use:
 	++sLastFreeID;
@@ -526,11 +526,11 @@ ResultType UserMenu::AddItem(LPCTSTR aName, UINT aMenuID, IObject *aCallback, Us
 {
 	size_t length = _tcslen(aName);
 	if (length > MAX_MENU_NAME_LENGTH)
-		return g_script.RuntimeError(_T("Menu item name too long."), aName);
+		return g_script->RuntimeError(_T("Menu item name too long."), aName);
 	// If caller didn't specify a (built-in) item ID, get the next free ID.
 	// Even separators get an ID, so that they can be modified later using the position& notation.
-	if (  !aMenuID && !(aMenuID = g_script.GetFreeMenuItemID())  )
-		return g_script.RuntimeError(_T("Too many menu items.")); // All ~64000 IDs are in use!
+	if (  !aMenuID && !(aMenuID = g_script->GetFreeMenuItemID())  )
+		return g_script->RuntimeError(_T("Too many menu items.")); // All ~64000 IDs are in use!
 	// After mem is allocated, the object takes charge of its later deletion:
 	LPTSTR name_dynamic;
 	if (length)
@@ -711,7 +711,7 @@ ResultType UserMenu::ModifyItem(UserMenuItem *aMenuItem, IObject *aCallback, Use
 		MENUITEMINFO mii;
 		mii.cbSize = sizeof(mii);
 		mii.fMask = MIIM_ID;
-		mii.wID = g_script.GetFreeMenuItemID();
+		mii.wID = g_script->GetFreeMenuItemID();
 		if (mMenu)
 			SetMenuItemInfo(mMenu, aMenuItem->mMenuID, FALSE, &mii);
 		aMenuItem->mMenuID = mii.wID;
@@ -1077,18 +1077,18 @@ ResultType UserMenu::AppendStandardItems()
 	for (; i < _countof(sItems); ++i)
 	{
 #ifndef AUTOHOTKEYSC
-		if (i == 1 && g_script.mKind == Script::ScriptKindResource)
+		if (i == 1 && g_script->mKind == Script::ScriptKindResource)
 			i += 6;
 		// To minimize code size, and to make it easier for a stdin script to imitate a standard script,
 		// the Reload and Edit options are not disabled or removed here for stdin scripts.
-		//else if (i == 4 && g_script.mKind == Script::ScriptKindStdIn)
+		//else if (i == 4 && g_script->mKind == Script::ScriptKindStdIn)
 		//	i += 3;
 #endif
 		if (!FindItemByID(sItems[i].id)) // Avoid duplicating items, but add any missing ones.
 			if (!AddItem(sItems[i].name, sItems[i].id, NULL, NULL, _T(""), NULL))
 				return FAIL;
 	}
-	if (this == g_script.mTrayMenu && !mDefault && first_new_item
+	if (this == g_script->mTrayMenu && !mDefault && first_new_item
 		&& first_new_item->mMenuID == ID_TRAY_OPEN)
 	{
 		// No user-defined default menu item, so use the standard one.
@@ -1114,7 +1114,7 @@ ResultType UserMenu::EnableStandardOpenItem(bool aEnable)
 					UserMenuItem **p = mi_prev ? &mi_prev->mNextMenuItem : &mFirstMenuItem;
 					if (!AddItem(_T("&Open"), ID_TRAY_OPEN, NULL, NULL, _T(""), p))
 						return FAIL;
-					if (this == g_script.mTrayMenu && !mDefault)
+					if (this == g_script->mTrayMenu && !mDefault)
 						SetDefault(*p);
 					return OK;
 				}
@@ -1170,14 +1170,14 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 // displaying the menu, it might be impossible to dismiss the menu by clicking outside of it.
 {
 	if (mMenuType != MENU_TYPE_POPUP)
-		return g_script.RuntimeError(ERR_INVALID_MENU_TYPE);
+		return g_script->RuntimeError(ERR_INVALID_MENU_TYPE);
 	if (!mMenuItemCount)
 		return OK;  // Consider the display of an empty menu to be a success.
 	if (!CreateHandle()) // Create if needed.  No error msg since so rare.
 		return FAIL;
 	//if (!IsMenu(mMenu))
 	//	mMenu = NULL;
-	if (this == g_script.mTrayMenu)
+	if (this == g_script->mTrayMenu)
 	{
 		// These are okay even if the menu items don't exist (perhaps because the user customized the menu):
 		CheckMenuItem(mMenu, ID_TRAY_SUSPEND, g_IsSuspended ? MF_CHECKED : MF_UNCHECKED);
@@ -1290,14 +1290,17 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 			return OK; // The other actions below are unlikely to apply in this case.
 		// We made it modeless, so wait until the menu closes before returning.
 		while (g_MenuIsTempModeless == mMenu)
-			MsgSleep(INTERVAL_UNSPECIFIED);
+			if ((char)g->IsPaused == -1)	// ahk_h: Used to terminate a thread
+				return EARLY_RETURN;
+			else
+				MsgSleep(INTERVAL_UNSPECIFIED);
 	}
 	// Seems best to avoid the following for the tray menu since it doesn't seem to work and might
 	// produce side-effects in some cases.  The check might currently be unnecessary when the tray
 	// menu is shown by internal code because !aWait would have caused return above, but it might
 	// be helpful for cases where the script shows the tray menu manually, such as if it intercepts
 	// right click by handling the AHK_NOTIFYICON message.
-	if (this != g_script.mTrayMenu)
+	if (this != g_script->mTrayMenu)
 	{
 		if (change_fore && fore_win && GetForegroundWindow() == g_hWnd)
 		{
@@ -1321,7 +1324,7 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 	// Fix for v1.0.38.05: If the current thread is interruptible (which it should be since a menu was just
 	// displayed, which almost certainly timed out the default Thread Interrupt setting), the following
 	// MsgSleep() will launch the selected menu item's subroutine.  This fix is needed because of a change
-	// in v1.0.38.04, namely the line "g_script.mLastPeekTime = tick_now;" in IsCycleComplete().
+	// in v1.0.38.04, namely the line "g_script->mLastPeekTime = tick_now;" in IsCycleComplete().
 	// The root problem here is that it would not be intuitive to allow the command after
 	// "Menu, MyMenu, Show" to run before the menu item's subroutine launches as a new thread.
 	// 
@@ -1387,7 +1390,7 @@ void UserMenu::UpdateAccelerators()
 	else
 	{
 		// This menu isn't a menu bar, but perhaps it is contained by one.
-		for (UserMenu *menu = g_script.mFirstMenu; menu; menu = menu->mNextMenu)
+		for (UserMenu *menu = g_script->mFirstMenu; menu; menu = menu->mNextMenu)
 			if (menu->mMenuType == MENU_TYPE_BAR && menu->ContainsMenu(this))
 			{
 				menu->UpdateAccelerators();

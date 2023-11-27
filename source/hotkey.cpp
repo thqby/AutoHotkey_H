@@ -22,16 +22,16 @@ GNU General Public License for more details.
 #include "script_func_impl.h"
 
 // Initialize static members:
-HookType Hotkey::sWhichHookNeeded = 0;
-HookType Hotkey::sWhichHookAlways = 0;
-DWORD Hotkey::sTimePrev = {0};
-DWORD Hotkey::sTimeNow = {0};
-Hotkey **Hotkey::shk = NULL;
-int Hotkey::shkMax = 0;
-HotkeyIDType Hotkey::sNextID = 0;
-const HotkeyIDType &Hotkey::sHotkeyCount = Hotkey::sNextID;
-bool Hotkey::sJoystickHasHotkeys[MAX_JOYSTICKS] = {false};
-DWORD Hotkey::sJoyHotkeyCount = 0;
+thread_local HookType Hotkey::sWhichHookNeeded = 0;
+thread_local HookType Hotkey::sWhichHookAlways = 0;
+thread_local DWORD Hotkey::sTimePrev = {0};
+thread_local DWORD Hotkey::sTimeNow = {0};
+thread_local Hotkey **Hotkey::shk = NULL;
+thread_local int Hotkey::shkMax = 0;
+thread_local HotkeyIDType Hotkey::sNextID = 0;
+thread_local HotkeyIDType &Hotkey::sHotkeyCount = Hotkey::sNextID;
+thread_local bool Hotkey::sJoystickHasHotkeys[MAX_JOYSTICKS] = {false};
+thread_local DWORD Hotkey::sJoyHotkeyCount = 0;
 
 
 
@@ -504,6 +504,8 @@ void Hotkey::AllDestruct()
 		UnhookWindowsHookEx(g_PlaybackHook);
 	for (int i = 0; i < sHotkeyCount; ++i)
 		delete shk[i]; // Unregisters before destroying.
+	if (shkMax)
+		free(shk), shk = NULL, sHotkeyCount = 0, shkMax = 0;
 }
 
 
@@ -831,12 +833,12 @@ void Hotkey::PerformInNewThreadMadeByCaller(HotkeyVariant &aVariant)
 // Caller is responsible for having called PerformIsAllowed() before calling us.
 // Caller must have already created a new thread for us, and must close the thread when we return.
 {
-	static bool sDialogIsDisplayed = false;  // Prevents double-display caused by key buffering.
+	thread_local static bool sDialogIsDisplayed = false;  // Prevents double-display caused by key buffering.
 	if (sDialogIsDisplayed) // Another recursion layer is already displaying the warning dialog below.
 		return; // Don't allow new hotkeys to fire during that time.
 
 	// Help prevent runaway hotkeys (infinite loops due to recursion in bad script files):
-	static UINT throttled_key_count = 0;  // This var doesn't belong in struct since it's used only here.
+	thread_local static UINT throttled_key_count = 0;  // This var doesn't belong in struct since it's used only here.
 	UINT time_until_now;
 	int display_warning;
 	if (!sTimePrev)
@@ -875,7 +877,7 @@ void Hotkey::PerformInNewThreadMadeByCaller(HotkeyVariant &aVariant)
 		sDialogIsDisplayed = true;
 		g_AllowInterruption = FALSE;
 		if (MsgBox(error_text, MB_YESNO) == IDNO)
-			g_script.ExitApp(EXIT_CLOSE); // Might not actually Exit if there's an OnExit function.
+			g_script->ExitApp(EXIT_CLOSE); // Might not actually Exit if there's an OnExit function.
 		g_AllowInterruption = TRUE;
 		sDialogIsDisplayed = false;
 	}
@@ -902,13 +904,13 @@ void Hotkey::PerformInNewThreadMadeByCaller(HotkeyVariant &aVariant)
 	// by a timed subroutine, while A_HotkeyModifierTimeout is still in effect,
 	// in which case we would want SendKeys() to take note of these modifiers even
 	// if it was called from an ExecUntil() other than ours here:
-	g_script.mThisHotkeyModifiersLR = mModifiersConsolidatedLR;
+	g_script->mThisHotkeyModifiersLR = mModifiersConsolidatedLR;
 
 	// LAUNCH HOTKEY SUBROUTINE:
 	++aVariant.mExistingThreads;  // This is the thread count for this particular hotkey only.
 
 	ExprTokenType params = { mName };
-	ResultType result = aVariant.mCallback->ExecuteInNewThread(g_script.mThisHotkeyName, &params, 1);
+	ResultType result = aVariant.mCallback->ExecuteInNewThread(g_script->mThisHotkeyName, &params, 1);
 	
 	--aVariant.mExistingThreads;
 
@@ -1289,7 +1291,7 @@ Hotkey::Hotkey(HotkeyIDType aID, IObject *aCallback, HookActionType aHookAction,
 	{
 		// This will actually cause the script to terminate if this hotkey is a static (load-time)
 		// hotkey.  In the future, some other behavior is probably better:
-		g_script.ScriptError(_T("Max hotkeys."));  // Brief msg since so rare.
+		g_script->ScriptError(_T("Max hotkeys."));  // Brief msg since so rare.
 		return;
 	}
 
@@ -1843,7 +1845,7 @@ ResultType Hotkey::TextToKey(LPCTSTR aText, bool aIsModifier, Hotkey *aThisHotke
 		if (   !(temp_sc = TextToSC(aText))   )
 			if (   !(temp_sc = (sc_type)ConvertJoy(aText, &joystick_id, true))   )  // Is there a joystick control/button?
 			{
-				if (!aText[1] && !g_script.mIsReadyToExecute)
+				if (!aText[1] && !g_script->mIsReadyToExecute)
 				{
 					// At load time, single-character key names are always considered valid but show a
 					// warning if they can't be registered as hotkeys on the current keyboard layout.
@@ -2195,11 +2197,19 @@ LPTSTR Hotkey::ToText(LPTSTR aBuf, int aBufSize, bool aAppendNewline)
 ///////////////
 
 // Init static variables:
-Hotstring **Hotstring::shs = NULL;
-HotstringIDType Hotstring::sHotstringCount = 0;
-HotstringIDType Hotstring::sHotstringCountMax = 0;
-UINT Hotstring::sEnabledCount = 0;
+thread_local Hotstring **Hotstring::shs = NULL;
+thread_local HotstringIDType Hotstring::sHotstringCount = 0;
+thread_local HotstringIDType Hotstring::sHotstringCountMax = 0;
+thread_local UINT Hotstring::sEnabledCount = 0;
 
+void Hotstring::AllDestruct()
+// HotKeyIt destroy all HotStrings H1
+{
+	for (UINT i = 0; i < sHotstringCount; ++i)
+		delete shs[i];
+	if (sHotstringCountMax)
+		free(shs), shs = NULL, sHotstringCount = 0, sHotstringCountMax = 0;
+}
 
 void Hotstring::SuspendAll(bool aSuspend)
 {
@@ -2253,14 +2263,14 @@ ResultType Hotstring::PerformInNewThreadMadeByCaller()
 	if (mExistingThreads >= mMaxThreads)
 		return FAIL;
 	// See Hotkey::Perform() for details about this.  For hot strings -- which also use the
-	// g_script.mThisHotkeyStartTime value to determine whether g_script.mThisHotkeyModifiersLR
+	// g_script->mThisHotkeyStartTime value to determine whether g_script->mThisHotkeyModifiersLR
 	// is still timely/accurate -- it seems best to set to "no modifiers":
-	g_script.mThisHotkeyModifiersLR = 0;
+	g_script->mThisHotkeyModifiersLR = 0;
 	++mExistingThreads;  // This is the thread count for this particular hotstring only.
 	
 	ResultType result;
 	ExprTokenType params = { mName };
-	result = mCallback->ExecuteInNewThread(g_script.mThisHotkeyName, &params, 1);
+	result = mCallback->ExecuteInNewThread(g_script->mThisHotkeyName, &params, 1);
 	
 	--mExistingThreads;
 	return result ? OK : FAIL;	// Return OK on all non-failure results.
@@ -2409,7 +2419,7 @@ ResultType Hotstring::AddHotstring(LPCTSTR aName, IObjectPtr aCallback, LPCTSTR 
 	}
 
 	++sHotstringCount;
-	if (!g_script.mIsReadyToExecute) // Caller is LoadIncludedFile(); allow BIF_Hotstring to manage this at runtime.
+	if (!g_script->mIsReadyToExecute) // Caller is LoadIncludedFile(); allow BIF_Hotstring to manage this at runtime.
 		++sEnabledCount; // This works because the script can't be suspended during startup (aSuspend is always FALSE).
 	return OK;
 }
@@ -2438,13 +2448,9 @@ Hotstring::Hotstring(LPCTSTR aName, IObjectPtr aCallback, LPCTSTR aOptions, LPCT
 		, mOmitEndChar, mSendRaw, mEndCharRequired, mDetectWhenInsideWord, mDoReset, unused_x, mSuspendExempt);
 	
 	// To avoid memory leak, this is done only when it is certain the hotstring will be created:
-	if (   !(mString = SimpleHeap::Malloc(aHotstring))   )
-		return; // ScriptError() was already called by Malloc().
 	if (   !(mName = SimpleHeap::Malloc(aName))   )
-	{
-		SimpleHeap::Delete(mString); // SimpleHeap allows deletion of most recently added item.
-		return;
-	}
+		return; // ScriptError() was already called by Malloc().
+	mString = mName + (aHotstring - aName);
 	mStringLength = (UCHAR)_tcslen(mString);
 	if (aReplacement && *aReplacement)
 	{

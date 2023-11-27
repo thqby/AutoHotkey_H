@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -42,6 +42,10 @@ GNU General Public License for more details.
 #include "script_object.h"
 #include "globaldata.h" // for a lot of things
 #include "qmath.h" // For ExpandExpression()
+
+#ifdef ENABLE_DECIMAL
+#include "decimal.h"
+#endif // ENABLE_DECIMAL
 
 // __forceinline: Decided against it for this function because although it's only called by one caller,
 // testing shows that it wastes stack space (room for its automatic variables would be unconditionally 
@@ -159,7 +163,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 					//	goto abort_with_exception;
 					//}
 					// v2.0: Dynamic creation of variables is not permitted, so FindOrAddVar() is not used.
-					if (!(temp_var = g_script.FindVar(right_string, right_length
+					if (!(temp_var = g_script->FindVar(right_string, right_length
 						, VARREF_IS_WRITE(this_token.var_usage) ? FINDVAR_FOR_WRITE : FINDVAR_FOR_READ)))
 					{
 						if (this_token.var_usage == VARREF_ISSET) // this_token is to be passed to IsSet().
@@ -174,7 +178,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 							this_token.symbol = SYM_MISSING;
 							goto push_this_token;
 						}
-						if (g->CurrentFunc && g_script.FindGlobalVar(right_string, right_length))
+						if (g->CurrentFunc && g_script->FindGlobalVar(right_string, right_length))
 							error_msg = ERR_DYNAMIC_BAD_GLOBAL;
 						else
 							error_msg = ERR_DYNAMIC_NOT_FOUND;
@@ -397,10 +401,10 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 
 #ifdef CONFIG_DEBUGGER
 			// See PostExecFunctionCall() itself for comments.
-			if (g_Debugger.IsConnected())
-				g_Debugger.PostExecFunctionCall(this);
+			if (g_Debugger->IsConnected())
+				g_Debugger->PostExecFunctionCall(this);
 #endif
-			g_script.mCurrLine = this; // For error-reporting.
+			g_script->mCurrLine = this; // For error-reporting.
 			
 			if ((flags & EIF_LEAVE_PARAMS)
 				&& (!(flags & EIF_UNSET_RETURN) || result_token.symbol == SYM_MISSING))
@@ -766,6 +770,18 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 				this_token.value_double = -TokenToDouble(right, FALSE); // Pass FALSE for aCheckForHex since PURE_FLOAT is never hex.
 			else // String.  Seems best to consider the application of unary minus to a string to be a failure.
 			{
+#ifdef ENABLE_DECIMAL
+				if (auto dec = Decimal::ToDecimal(right))
+					if (dec->Eval(this_token) == 1) {
+						if (mArg[aArgIndex].max_alloc < mArg[aArgIndex].max_stack) {
+							auto old_to_free = to_free;
+							to_free = (ExprTokenType **)_alloca((mArg[aArgIndex].max_alloc = mArg[aArgIndex].max_stack) * sizeof(ExprTokenType *));
+							memcpy(to_free, old_to_free, to_free_count * sizeof(ExprTokenType *));
+						}
+						to_free[to_free_count++] = &this_token;
+						break;
+					}
+#endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
 				goto type_mismatch;
@@ -779,6 +795,18 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 				TokenToDoubleOrInt64(right, this_token);
 			else
 			{
+#ifdef ENABLE_DECIMAL
+				if (auto dec = Decimal::ToDecimal(right))
+					if (dec->Eval(this_token) == 1) {
+						if (mArg[aArgIndex].max_alloc < mArg[aArgIndex].max_stack) {
+							auto old_to_free = to_free;
+							to_free = (ExprTokenType **)_alloca((mArg[aArgIndex].max_alloc = mArg[aArgIndex].max_stack) * sizeof(ExprTokenType *));
+							memcpy(to_free, old_to_free, to_free_count * sizeof(ExprTokenType *));
+						}
+						to_free[to_free_count++] = &this_token;
+						break;
+					}
+#endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
 				goto type_mismatch; // For consistency with unary minus (see above).
@@ -825,6 +853,24 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			is_pre_op = SYM_INCREMENT_OR_DECREMENT_IS_PRE(this_token.symbol); // Store this early because its symbol will soon be overwritten.
 			if (right_is_number == PURE_NOT_NUMERIC) // Not numeric: invalid operation.
 			{
+#ifdef ENABLE_DECIMAL
+				if (auto dec = Decimal::ToDecimal(right))
+					if (dec->Eval(this_token) == 1) {
+						if (is_pre_op) {
+							this_token.object->Release();
+							if (right.var->Type() == VAR_NORMAL)
+								this_token.SetVar(right.var);
+							break;
+						}
+						if (mArg[aArgIndex].max_alloc < mArg[aArgIndex].max_stack) {
+							auto old_to_free = to_free;
+							to_free = (ExprTokenType **)_alloca((mArg[aArgIndex].max_alloc = mArg[aArgIndex].max_stack) * sizeof(ExprTokenType *));
+							memcpy(to_free, old_to_free, to_free_count * sizeof(ExprTokenType *));
+						}
+						to_free[to_free_count++] = &this_token;
+						break;
+					}
+#endif // ENABLE_DECIMAL
 				error_info = _T("Number");
 				error_value = &right;
 				goto type_mismatch;
@@ -981,6 +1027,21 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 					// comparison operators as unsupported than for (obj == "") to evaluate to true.
 					if (right_obj || left_obj)
 					{
+#ifdef ENABLE_DECIMAL
+						if (left_obj) {
+							if (auto obj = Decimal::ToDecimal(left_obj)) {
+								if (obj->Eval(this_token, &right) != 1)
+									this_token.SetValue(this_token.symbol == SYM_NOTEQUAL || this_token.symbol == SYM_NOTEQUALCASE);
+								goto push_this_token;
+							}
+						}
+						else if (Decimal::ToDecimal(right_obj)) {
+							Decimal tmp;
+							if (!tmp.Assign(&left) || tmp.Eval(this_token, &right) != 1)
+								this_token.SetValue(this_token.symbol == SYM_NOTEQUAL || this_token.symbol == SYM_NOTEQUALCASE);
+							goto push_this_token;
+						}
+#endif // ENABLE_DECIMAL
 						this_token.SetValue((this_token.symbol != SYM_NOTEQUAL && this_token.symbol != SYM_NOTEQUALCASE) == (right_obj == left_obj));
 						goto push_this_token;
 					}
@@ -1174,6 +1235,40 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 				}
 
 				default:
+#ifdef ENABLE_DECIMAL
+				{
+					Decimal tmp;
+					auto dec = Decimal::ToDecimal(left);
+					if (!dec && Decimal::ToDecimal(right) && tmp.Assign(&left))
+						dec = &tmp;
+					if (dec) {
+						auto r = dec->Eval(this_token, &right);
+						if (r == 1) {
+							if (sym_assign_var)
+							{
+								auto result = sym_assign_var->Assign(this_token);
+								this_token.object->Release();
+								if (!result)
+									goto abort;
+								if (sym_assign_var->Type() == VAR_NORMAL)
+									this_token.SetVar(sym_assign_var);
+								goto push_this_token;
+							}
+							if (mArg[aArgIndex].max_alloc < mArg[aArgIndex].max_stack) {
+								auto old_to_free = to_free;
+								to_free = (ExprTokenType **)_alloca((mArg[aArgIndex].max_alloc = mArg[aArgIndex].max_stack) * sizeof(ExprTokenType *));
+								memcpy(to_free, old_to_free, to_free_count * sizeof(ExprTokenType *));
+							}
+							to_free[to_free_count++] = &this_token;
+							goto push_this_token;
+						}
+						else if (r == 0)
+							goto divide_by_zero;
+						else if (r == -2)
+							goto abort_with_exception;
+					}
+				}
+#endif // ENABLE_DECIMAL
 					// All other operators do not support non-numeric operands.
 					error_info = _T("Number");
 					error_value = right_is_number ? &left : &right; // Must use right_is_number since if it's false, left_is_number wasn't set.
@@ -1566,13 +1661,13 @@ type_mismatch:
 		goto abort_if_result;
 	}
 divide_by_zero:
-	aResult = g_script.RuntimeError(ERR_DIVIDEBYZERO, nullptr, FAIL_OR_OK, this, ErrorPrototype::ZeroDivision);
+	aResult = g_script->RuntimeError(ERR_DIVIDEBYZERO, nullptr, FAIL_OR_OK, this, ErrorPrototype::ZeroDivision);
 	goto abort_if_result;
 outofmem:
 	aResult = MemoryError();
 	goto abort_if_result;
 unset_var:
-	aResult = g_script.VarUnsetError(error_value->var);
+	aResult = g_script->VarUnsetError(error_value->var);
 	goto abort_if_result;
 
 //normal_end: // This isn't currently used, but is available for future-use and readability.
@@ -1712,7 +1807,7 @@ ResultType VariadicCall(IObject *aObj, IObject_Invoke_PARAMS_DECL)
 		param_array->Release();
 	if (token)
 		_freea(token);
-	
+
 	return result;
 }
 
@@ -1748,7 +1843,7 @@ bool NativeFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aP
 			aResultToken.Error(ERR_TOO_FEW_PARAMS, mName);
 			return false; // Abort expression.
 		}
-		
+
 		for (int i = 0; i < mMinParams; ++i)
 		{
 			if (aParam[i]->symbol == SYM_MISSING
@@ -1794,7 +1889,7 @@ bool BuiltInFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int a
 		mBIF(aResultToken, aParam, aParamCount);
 
 		DEBUGGER_STACK_POP()
-		
+
 		// There shouldn't be any need to check g->ThrownToken since built-in functions
 		// currently throw exceptions via aResultToken.Error():
 		//if (g->ThrownToken)
@@ -1954,6 +2049,19 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 			}
 		}
 
+		if (mIsMacro)
+		{
+			for (int i = 0; i < mVars.mCount; i++)
+			{
+				auto var = mVars.mItem[i];
+				if (var->Scope() != VAR_LOCAL)
+					continue;
+				auto outer_var = g_script->FindVar(var->mName, 0, FINDVAR_FOR_READ);
+				if (outer_var)
+					var->SetAliasDirect(outer_var);
+			}
+		}
+
 		int default_expr = mParamCount;
 		for (j = 0; j < mParamCount; ++j) // For each formal parameter.
 		{
@@ -1985,7 +2093,7 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 					}
 				}
 #endif
-			
+
 				switch(this_formal_param.default_type)
 				{
 				case PARAM_DEFAULT_STR:   this_formal_param.var->Assign(this_formal_param.default_str);    break;
@@ -2043,7 +2151,7 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 			}
 			//else // This parameter is passed "by value".
 			// Assign actual parameter's value to the formal parameter (which is itself a
-			// local variable in the function).  
+			// local variable in the function).
 			// token.var's Type() is always VAR_NORMAL (never a built-in virtual variable).
 			// A SYM_VAR token can still happen because the previous loop's conversion of all
 			// by-value SYM_VAR operands into the appropriate operand symbol would not have
@@ -2075,6 +2183,10 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 
 		DEBUGGER_STACK_PUSH(&recurse)
 
+		auto prev_func = g->CurrentFunc; // This will be non-NULL when a function is called from inside another function.
+		if (!mIsMacro)
+			g->CurrentFunc = this;
+
 		ResultType result = OK;
 		// Execute any default initializers that weren't simple constants.  This is not done in
 		// the loop above for two reasons:
@@ -2096,6 +2208,11 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 
 		if (result == OK)
 			result = Execute(&aResultToken); // Execute the body of the function.
+
+		// Restore the original value in case this function is called from inside another function.
+		// Due to the synchronous nature of recursion and recursion-collapse, this should keep
+		// g->CurrentFunc accurate, even amidst the asynchronous saving and restoring of "g" itself:
+		g->CurrentFunc = prev_func;
 
 		DEBUGGER_STACK_POP()
 		
@@ -2134,7 +2251,7 @@ free_and_return:
 	return !aResultToken.Exited(); // i.e. aResultToken.SetExitResult() or aResultToken.Error() was not called.
 }
 
-FreeVars *UserFunc::sFreeVars = nullptr;
+thread_local FreeVars *UserFunc::sFreeVars = nullptr;
 
 
 
@@ -2290,7 +2407,7 @@ ResultType Line::ExpandArgs(ResultToken *aResultTokens)
 
 			if (VAR(mArg[i])->IsUninitializedNormalVar())
 			{
-				result_to_return = g_script.VarUnsetError(VAR(mArg[i]));
+				result_to_return = g_script->VarUnsetError(VAR(mArg[i]));
 				goto end;
 			}
 
@@ -2407,7 +2524,7 @@ end:
 		// (potentially thousands or millions of times per second).  There's no need for the timer
 		// to be precise, so don't reset it more often than twice every second.  (Even checking
 		// now != sLastTimerReset is sufficient.)
-		static DWORD sLastTimerReset = 0;
+		thread_local static DWORD sLastTimerReset = 0;
 		DWORD now = GetTickCount();
 		if (now - sLastTimerReset > 500 || !g_DerefTimerExists)
 		{

@@ -22,6 +22,20 @@ GNU General Public License for more details.
 #include "abi.h"
 
 
+__declspec(noinline)
+static FResult ThrowTargetError(LPCTSTR aMsg, LPCTSTR aExtraInfo, IObject*)
+{
+	if (aMsg == ERR_NO_WINDOW)
+	{
+		if (!g_TargetWindowError)
+			return FAIL;
+	}
+	else if (!g_TargetControlError)
+		return FAIL;
+	return FError(aMsg, aExtraInfo, ErrorPrototype::Target);
+}
+
+
 
 static FResult WinAct(WINTITLE_PARAMETERS_DECL, BuiltInFunctionID action, optl<double> aWaitTime = nullptr)
 {
@@ -43,7 +57,7 @@ static FResult WinAct(WINTITLE_PARAMETERS_DECL, BuiltInFunctionID action, optl<d
 	if (aWaitTime.has_value()) // Implies (action == FID_WinClose || action == FID_WinKill)
 		wait_time = (int)(1000 * aWaitTime.value());
 	if (is_ahk_group)
-		if (WinGroup *group = g_script.FindGroup(omit_leading_whitespace(aTitle + 9)))
+		if (WinGroup *group = g_script->FindGroup(omit_leading_whitespace(aTitle + 9)))
 		{
 			group->ActUponAll(action, wait_time); // It will do DoWinDelay if appropriate.
 			return OK;
@@ -59,7 +73,7 @@ static FResult WinAct(WINTITLE_PARAMETERS_DECL, BuiltInFunctionID action, optl<d
 		if (fr != OK)
 			return fr;
 		if (hwnd_specified && !target_window) // Specified a HWND of 0, or IsWindow() returned false.
-			return FError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
+			return ThrowTargetError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
 	}
 
 	if (action == FID_WinClose || action == FID_WinKill)
@@ -72,7 +86,7 @@ static FResult WinAct(WINTITLE_PARAMETERS_DECL, BuiltInFunctionID action, optl<d
 		}
 		if (!WinClose(*g, aTitle, aText, wait_time, aExcludeTitle.value_or_empty(), aExcludeText.value_or_empty(), action == FID_WinKill))
 			// Currently WinClose returns NULL only for this case; it doesn't confirm the window closed.
-			return FError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
+			return ThrowTargetError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
 		DoWinDelay;
 		return OK;
 	}
@@ -89,7 +103,7 @@ static FResult WinAct(WINTITLE_PARAMETERS_DECL, BuiltInFunctionID action, optl<d
 		if (need_restore)
 			g->DetectHiddenWindows = false;
 		if (!target_window)
-			return FError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
+			return ThrowTargetError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
 	}
 
 	// WinGroup's EnumParentActUponAll() is quite similar to the following, so the two should be
@@ -222,7 +236,7 @@ bif_impl FResult WinActivateBottom(WINTITLE_PARAMETERS_DECL)
 
 bif_impl FResult GroupAdd(StrArg aGroup, optl<StrArg> aTitle, optl<StrArg> aText, optl<StrArg> aExcludeTitle, optl<StrArg> aExcludeText)
 {
-	auto group = g_script.FindGroup(aGroup, true);
+	auto group = g_script->FindGroup(aGroup, true);
 	if (!group)
 		return FR_FAIL; // It already displayed the error for us.
 	return group->AddWindow(aTitle.value_or_null(), aText.value_or_null(), aExcludeTitle.value_or_null(), aExcludeText.value_or_null()) ? OK : FR_FAIL;
@@ -233,7 +247,7 @@ bif_impl FResult GroupAdd(StrArg aGroup, optl<StrArg> aTitle, optl<StrArg> aText
 bif_impl FResult GroupActivate(StrArg aGroup, optl<StrArg> aMode, UINT &aRetVal)
 {
 	WinGroup *group;
-	if (   !(group = g_script.FindGroup(aGroup, true))   ) // Last parameter -> create-if-not-found.
+	if (   !(group = g_script->FindGroup(aGroup, true))   ) // Last parameter -> create-if-not-found.
 		return FR_FAIL; // It already displayed the error for us.
 	
 	TCHAR mode = 0;
@@ -254,7 +268,7 @@ bif_impl FResult GroupActivate(StrArg aGroup, optl<StrArg> aMode, UINT &aRetVal)
 
 bif_impl FResult GroupDeactivate(StrArg aGroup, optl<StrArg> aMode)
 {
-	auto group = g_script.FindGroup(aGroup);
+	auto group = g_script->FindGroup(aGroup);
 	if (!group)
 		return FR_E_ARG(0);
 	TCHAR mode = 0;
@@ -274,7 +288,7 @@ bif_impl FResult GroupDeactivate(StrArg aGroup, optl<StrArg> aMode)
 
 bif_impl FResult GroupClose(StrArg aGroup, optl<StrArg> aMode)
 {
-	auto group = g_script.FindGroup(aGroup);
+	auto group = g_script->FindGroup(aGroup);
 	if (!group)
 		return FR_E_ARG(0);
 	TCHAR mode = 0;
@@ -609,7 +623,7 @@ bif_impl FResult ControlClick(ExprTokenType *aControlSpec, ExprTokenType *aWinTi
 	return result;
 
 control_error:
-	return FError(ERR_NO_CONTROL, aControl, ErrorPrototype::Target);
+	return ThrowTargetError(ERR_NO_CONTROL, aControl, ErrorPrototype::Target);
 }
 
 
@@ -2245,7 +2259,7 @@ FResult DetermineTargetWindow(HWND &aWindow, WINTITLE_PARAMETERS_DECL, bool aFin
 		if (result != CONDITION_FALSE)
 		{
 			if (result == OK && !aWindow)
-				return FError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
+				return ThrowTargetError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
 			return result ? OK : result_token.Exited() ? FR_FAIL : FR_ABORTED;
 		}
 		title = TokenToString(*aWinTitle, number_buf);
@@ -2254,7 +2268,7 @@ FResult DetermineTargetWindow(HWND &aWindow, WINTITLE_PARAMETERS_DECL, bool aFin
 		, aExcludeText.value_or_empty(), aFindLastMatch);
 	if (aWindow)
 		return OK;
-	return FError(ERR_NO_WINDOW, title, ErrorPrototype::Target);
+	return ThrowTargetError(ERR_NO_WINDOW, title, ErrorPrototype::Target);
 }
 
 
@@ -2278,7 +2292,7 @@ FResult DetermineTargetControl(HWND &aControl, HWND &aWindow, CONTROL_PARAMETERS
 		{
 			aControl = aWindow;
 			if (!aControl)
-				return FError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
+				return ThrowTargetError(ERR_NO_WINDOW, nullptr, ErrorPrototype::Target);
 			return OK;
 		}
 		// Since above didn't return, it wasn't a pure Integer or object {Hwnd}.
@@ -2289,7 +2303,7 @@ FResult DetermineTargetControl(HWND &aControl, HWND &aWindow, CONTROL_PARAMETERS
 		return fr;
 	aControl = control_spec ? ControlExist(aWindow, control_spec) : aWindow;
 	if (!aControl && aThrowIfNotFound)
-		return FError(ERR_NO_CONTROL, control_spec, ErrorPrototype::Target);
+		return ThrowTargetError(ERR_NO_CONTROL, control_spec, ErrorPrototype::Target);
 	return OK;
 }
 

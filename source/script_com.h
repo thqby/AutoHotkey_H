@@ -70,6 +70,7 @@ public:
 	FResult SafeArray_Enum(optl<int>, IObject *&aRetVal);
 	FResult SafeArray_MaxIndex(optl<UINT> aDims, int &aRetVal);
 	FResult SafeArray_MinIndex(optl<UINT> aDims, int &aRetVal);
+	FResult SafeArray_ToJSON(ExprTokenType *aParam, ResultToken &aResultToken);
 
 	ResultType Invoke(IObject_Invoke_PARAMS_DECL);
 	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
@@ -149,6 +150,7 @@ public:
 	static HRESULT Begin(ComObject *aArrayObject, ComArrayEnum *&aOutput, int aMode);
 	ResultType Next(Var *aVar1, Var *aVar2);
 	~ComArrayEnum();
+	friend class JSON;
 };
 
 
@@ -182,6 +184,8 @@ enum TTVArgType
 	VariantIsAllocatedString,
 	VariantIsVarRef
 };
+void AssignVariant(Var& aArg, VARIANT& aVar, bool aRetainVar = true);
+void VariantToToken(VARIANT& aVar, ResultToken& aToken, bool aRetainVar = true);
 void TokenToVariant(ExprTokenType &aToken, VARIANT &aVar, TTVArgType *aVarIsArg = FALSE);
 HRESULT TokenToVarType(ExprTokenType &aToken, VARTYPE aVarType, void *apValue, bool aCallerIsComValue = false);
 
@@ -189,3 +193,5 @@ void ComError(HRESULT, ResultToken &, LPTSTR = _T(""), EXCEPINFO* = NULL);
 
 bool SafeSetTokenObject(ExprTokenType &aToken, IObject *aObject);
 
+
+IObject *UnMarshalObjectFromStream(IStream *pstream);

@@ -213,7 +213,7 @@ BIF_DECL(BIF_HasProp)
 	auto obj = ParamToObjectOrBase(*aParam[0]);
 	if (obj == Object::sComObjectPrototype)
 		_f_throw_param(0);
-	_f_return_b(obj->HasProp(ParamIndexToString(1, _f_number_buf)));
+	_f_return_i(obj->HasProp(ParamIndexToString(1, _f_number_buf)));
 }
 
 
@@ -267,6 +267,19 @@ void Object::SetDataPtr(UINT_PTR aPtr)
 		free(mData);
 	mData = (void*)aPtr;
 	mFlags = (mFlags & ~(DataIsAllocatedFlag | DataIsStructInfo)) | DataIsSetFlag;
+	if (!mNested)
+		return;
+	for (auto base = mBase; base; base = base->mBase)
+	{
+		if (!(base->mFlags & DataIsStructInfo))
+			continue;
+		for (index_t i = 0; i < base->mFields.Length(); ++i)
+		{
+			auto &field = base->mFields[i];
+			if (field.symbol == SYM_TYPED_FIELD && field.tprop->class_object)
+				mNested[field.tprop->object_index]->SetDataPtr(aPtr + field.tprop->data_offset);
+		}
+	}
 }
 
 
@@ -341,3 +354,24 @@ FResult Object::FreeDataPtr()
 	return OK;
 }
 #endif
+
+BIF_DECL(BIF_UArray)
+{
+	if (auto arr = Array::Create(aParam, aParamCount, true))
+		_f_return(arr);
+	_f_throw_oom;
+}
+
+BIF_DECL(BIF_UMap)
+{
+	if (auto arr = Map::Create(aParam, aParamCount, true))
+		_f_return(arr);
+	_f_throw_oom;
+}
+
+BIF_DECL(BIF_UObject)
+{
+	if (IObject *obj = Object::Create(aParam, aParamCount, &aResultToken, true))
+		_f_return(obj);
+	//else: an error was already thrown.
+}

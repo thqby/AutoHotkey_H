@@ -21,6 +21,9 @@ GNU General Public License for more details.
 #include "SimpleHeap.h"
 #include "clipboard.h"
 #include "util.h" // for strlcpy() & snprintf()
+#ifdef ENABLE_DECIMAL
+#include "decimal.h"
+#endif // ENABLE_DECIMAL
 EXTERN_CLIPBOARD;
 
 #define MAX_ALLOC_SIMPLE 64  // Do not decrease this much since it is used for the sizing of some built-in variables.
@@ -117,7 +120,7 @@ class VarRef;
 #endif
 class Var
 {
-private:
+public:
 	// Keep VarBkp (above) in sync with any changes made to the members here.
 	union // 64-bit members kept at the top of the struct to reduce the chance that they'll span 2 64-bit regions.
 	{
@@ -430,6 +433,10 @@ public:
 			aToken.value_double = var.ToDouble();
 			break;
 		default: // Not a pure number.
+#ifdef ENABLE_DECIMAL
+			if (auto obj = Decimal::ToDecimal(var.ToObject()))
+				return obj->ToToken(aToken);
+#endif // ENABLE_DECIMAL
 			return FAIL;
 		}
 		return OK; // Since above didn't return, indicate success.

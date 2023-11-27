@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -20,6 +20,9 @@ GNU General Public License for more details.
 #include "util.h"
 #include "globaldata.h"
 
+#include "Shlwapi.h"
+#include "LiteZip.h"
+#include <wincrypt.h> // DecompressBuffer
 
 int GetYDay(int aMon, int aDay, bool aIsLeapYear)
 // Returns a number between 1 and 366.
@@ -2573,7 +2576,7 @@ BOOL CALLBACK ResourceIndexToIdEnumProc(HMODULE hModule, LPCTSTR lpszType, LPTST
 	return TRUE; // Continue
 }
 
-static TCHAR RESOURCE_ID_NOT_FOUND[] = {0};
+thread_local static TCHAR RESOURCE_ID_NOT_FOUND[] = {0};
 
 // L17: Find ID of resource from one-based index. i.e. IconNumber -> resource ID.
 // v1.1.22.05: Return LPTSTR since some (very few) icons have a string ID.
@@ -3381,3 +3384,172 @@ void OutputDebugStringFormat(LPCTSTR fmt, ...)
 	OutputDebugString(sMsg);
 }
 #endif
+
+
+
+DWORD CryptAES(LPVOID lp, DWORD sz, LPTSTR pwd, bool aEncrypt, DWORD aSID) {
+	HCRYPTPROV phProv;
+	HCRYPTHASH phHash;
+	HCRYPTKEY phKey;
+
+	if (!CryptAcquireContext(&phProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+		return 0;
+	if (!CryptCreateHash(phProv, CALG_SHA1, 0, 0, &phHash)) {
+		CryptReleaseContext(phProv, 0);
+		return 0;
+	}
+
+	if (pwd == g_default_pwd) {
+#ifdef ENABLE_TLS_CALLBACK
+		ULONGLONG code[] = { *(PULONGLONG)CryptHashData, *(PULONGLONG)CryptDeriveKey, *(PULONGLONG)CryptDestroyHash, *(PULONGLONG)CryptEncrypt, *(PULONGLONG)CryptDecrypt, *(PULONGLONG)CryptDestroyKey };
+		if (memcmp(g_crypt_code, code, sizeof(code)))
+			pwd = NULL;
+		else
+#endif // ENABLE_TLS_CALLBACK
+			pwd = (LPTSTR)_c(g_DEFAULT_PWD);
+	}
+	else if (!pwd)
+		pwd = _T("");
+	if (!pwd || !CryptHashData(phHash, (BYTE*)pwd, (DWORD)_tcslen(pwd) * sizeof(TCHAR), 0) || !CryptDeriveKey(phProv, aSID == 128 ? CALG_AES_128 : aSID == 192 ? CALG_AES_192 : CALG_AES_256, phHash, aSID << 16, &phKey)) {
+		CryptDestroyHash(phHash), CryptReleaseContext(phProv, 0);
+		return 0;
+	}
+	if (aEncrypt)
+		CryptEncrypt(phKey, 0, 1, 0, (BYTE*)lp, &sz, sz + 16);
+	else
+		CryptDecrypt(phKey, 0, 1, 0, (BYTE*)lp, &sz);
+	CryptDestroyKey(phKey), CryptDestroyHash(phHash), CryptReleaseContext(phProv, 0);
+	return sz;
+}
+
+
+
+DWORD CompressBuffer(BYTE *aBuffer, LPVOID &aDataBuf, DWORD sz, LPTSTR pwd, int level) // LiteZip Raw compression
+{
+	unsigned int hdrsz = 20;
+	HZIP	hz;
+	ZipCreateBuffer(&hz, 0, sz + 10240, 0, level);
+	ZipAddBufferRaw(hz, aBuffer, sz);
+	ULONGLONG aSize;
+	HANDLE aBase;
+	DWORD aSizeEncoded;
+	BYTE *aBufferMem;
+	ZipGetMemory(hz, (void**)&aBufferMem, &aSize, &aBase);
+	if (aSize < sz)
+		aBuffer = aBufferMem;
+	else aSize = sz;
+	LPVOID aBufferPtr;
+	if (pwd)
+	{
+		CryptBinaryToStringA(aBuffer, (DWORD)aSize, CRYPT_STRING_BASE64, NULL, &aSizeEncoded);
+		if (!(aBufferPtr = malloc(aSizeEncoded + 17)))
+			goto ret;
+		CryptBinaryToStringA(aBuffer, (DWORD)aSize, CRYPT_STRING_BASE64, (LPSTR)aBufferPtr, &aSizeEncoded);
+		aSizeEncoded = CryptAES(aBufferPtr, aSizeEncoded + 1, pwd);
+		if (!aSizeEncoded)
+			goto ret;
+	}
+	else
+	{
+		aBufferPtr = aBuffer;
+		aSizeEncoded = 0;
+	}
+	UINT hdr[5] = { 0x4034b50, 0, (DWORD)aSize, sz, aSizeEncoded };
+	DWORD size;
+	HashData((LPBYTE)aBufferPtr, size = aSizeEncoded ? aSizeEncoded : (DWORD)aSize, (LPBYTE)&hdr[1], 4);
+	if (aDataBuf = malloc(size_t(aSize = size + sizeof(hdr))))
+	{
+		memcpy(aDataBuf, hdr, sizeof(hdr));
+		memcpy((char *)aDataBuf + sizeof(hdr), aBufferPtr, size);
+	}
+	else
+	{
+	ret:	aSize = 0;
+	}
+	if (pwd)
+		free(aBufferPtr);
+	UnmapViewOfFile(aBufferMem);
+	CloseHandle(aBase);
+	return (DWORD)aSize;
+}
+
+
+
+DWORD DecompressBuffer(void *aBuffer,LPVOID &aDataBuf,DWORD sz, LPTSTR pwd) // LiteZip Raw decompression
+{
+	unsigned int hdrsz = 20;
+	ULONG aSizeCompressed = *(ULONG*)((UINT_PTR)aBuffer + 8);
+	DWORD aSizeEncrypted = *(DWORD*)((UINT_PTR)aBuffer + 16);
+	if (sz < aSizeCompressed || sz < aSizeEncrypted)
+		return 0; // data is a normal zip file
+	DWORD hash;
+	BYTE *aDataEncrypted = NULL;
+	HashData((LPBYTE)aBuffer + hdrsz, aSizeEncrypted ? aSizeEncrypted : aSizeCompressed, (LPBYTE)&hash, 4);
+	if (0x04034b50 == *(ULONG*)(UINT_PTR)aBuffer && hash == *(ULONG*)((UINT_PTR)aBuffer + 4))
+	{
+		HUNZIP		huz;
+		ZIPENTRY	ze;
+		DWORD		result;
+		ULONG aSizeDeCompressed = *(ULONG*)((UINT_PTR)aBuffer + 12);
+		if (!(aDataBuf = malloc(aSizeDeCompressed)))
+			return 0;
+		if (aSizeEncrypted)
+		{
+			DWORD aSizeDataEncrypted = aSizeEncrypted;
+			LPSTR aDataEncryptedString = (LPSTR)malloc(aSizeEncrypted);
+			if (!aDataEncryptedString)
+			{
+				free(aDataBuf);
+				return 0;
+			}
+			memcpy(aDataEncryptedString, (LPBYTE)aBuffer + hdrsz, aSizeEncrypted);
+			CryptAES(aDataEncryptedString, aSizeEncrypted, pwd, false);
+			aDataEncrypted = (BYTE *)malloc(aSizeDataEncrypted);
+			if (!aDataEncrypted)
+			{
+				free(aDataBuf);
+				free(aDataEncryptedString);
+				return 0;
+			}
+			CryptStringToBinaryA(aDataEncryptedString, NULL, CRYPT_STRING_BASE64, aDataEncrypted, &aSizeEncrypted, NULL, NULL);
+			free(aDataEncryptedString);
+			if (aSizeDeCompressed == aSizeCompressed)
+			{
+				memcpy(aDataBuf, aDataEncrypted, aSizeDeCompressed);
+				free(aDataEncrypted);
+				return aSizeDeCompressed;
+			}
+			if (UnzipOpenBufferRaw(&huz, (LPBYTE)aDataEncrypted, aSizeCompressed, 0))
+			{   // failed to open archive
+				UnzipClose(huz);
+				free(aDataBuf);
+				free(aDataEncrypted);
+				return 0;
+			}
+		}
+		else if (aSizeDeCompressed == aSizeCompressed)
+		{
+			memcpy(aDataBuf, (LPBYTE)aBuffer + hdrsz, aSizeDeCompressed);
+			return aSizeDeCompressed;
+		}
+		else if (UnzipOpenBufferRaw(&huz, (LPBYTE)aBuffer + hdrsz, aSizeCompressed, 0))
+		{   // failed to open archive
+			UnzipClose(huz);
+			free(aDataBuf);
+			return 0;
+		}
+		ze.CompressedSize = aSizeCompressed;
+		ze.UncompressedSize = aSizeDeCompressed;
+		if ((result = UnzipItemToBuffer(huz, aDataBuf, &ze)))
+			free(aDataBuf);
+		else
+		{
+			UnzipClose(huz);
+			free(aDataEncrypted);
+			return aSizeDeCompressed;
+		}
+		UnzipClose(huz);
+		free(aDataEncrypted);
+	}
+	return 0;
+}

@@ -9,11 +9,18 @@ library ComLib {
 		HRESULT LoadFile([in] BSTR FileName);
 		HRESULT Execute([out, retval] int* ExitCode);
 		HRESULT OnProblem([in] IDispatch* Callback);
+		HRESULT NewThread([in] BSTR Script, [in, optional] VARIANT CmdLine, [in, optional] VARIANT Title, [out, retval] IDispatch** Value);
+		HRESULT AddScript([in] BSTR Script, [in] int Wait, [out, retval] UINT_PTR *Line);
+		HRESULT AhkExec([in] BSTR Script, [out, retval] VARIANT_BOOL *Success);
+		HRESULT FindFunc([in] BSTR FuncName, [out, retval] IDispatch** Value);
+		HRESULT FindLabel([in] BSTR LabelName, [out, retval] IDispatch** Value);
 		[propget] HRESULT Script([out, retval] IDispatch** Value);
 		[propget] HRESULT Funcs([out, retval] IDispatch** Value);
 		[propget] HRESULT Vars([out, retval] IDispatch** Value);
 		[propget] HRESULT Labels([out, retval] IDispatch** Value);
 		[propget] HRESULT Files([out, retval] SAFEARRAY(BSTR)* Value);
+		[propget] HRESULT Ready([out, retval] VARIANT_BOOL* Value);
+		[propget] HRESULT ThreadID([out, retval] DWORD* Value);
 	}
 	[object, uuid(DA16C631-D15A-44E6-A113-9601CC1310AA), dual]
 	interface IDispCollection : IDispatch {
@@ -54,5 +61,10 @@ library ComLib {
 		[propget] HRESULT Vars([out, retval] IDispatch** Value);
 		[propget] HRESULT Globals([out, retval] IDispatch** Value);
 		[propget] BSTR DefaultVarType();
+	};
+	[uuid(934b0e6a-9b50-4248-884b-be5a9bc66b39), helpstring("AutoHotkey v2 Script")]
+	coclass AutoHotkey
+	{
+		[default] interface IAutoHotkeyLib;
 	};
 }

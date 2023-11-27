@@ -54,9 +54,9 @@ class WinGroup
 private:
 	// The maximum number of windows to keep track of:
 	#define MAX_ALREADY_VISITED 500
-	static WinGroup *sGroupLastUsed;
-	static HWND *sAlreadyVisited;  // Array.  It will be dynamically allocated on first use.
-	static int sAlreadyVisitedCount;
+	thread_local static WinGroup *sGroupLastUsed;
+	thread_local static HWND *sAlreadyVisited;  // Array.  It will be dynamically allocated on first use.
+	thread_local static int sAlreadyVisitedCount;
 	bool mIsModeActivate;
 
 	static void MarkAsVisited(HWND aWnd)

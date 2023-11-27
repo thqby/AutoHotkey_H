@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -25,108 +25,109 @@ GNU General Public License for more details.
 #include "Debugger.h"
 
 extern HINSTANCE g_hInstance;
-extern DWORD g_MainThreadID;
-extern DWORD g_HookThreadID;
-extern CRITICAL_SECTION g_CriticalRegExCache;
+thread_local extern DWORD g_MainThreadID;
+thread_local extern DWORD g_HookThreadID;
+thread_local extern CRITICAL_SECTION g_CriticalRegExCache;
 
-extern UINT g_DefaultScriptCodepage;
+thread_local extern UINT g_DefaultScriptCodepage;
 
-extern bool g_DestroyWindowCalled;
-extern HWND g_hWnd;  // The main window
-extern HWND g_hWndEdit;  // The edit window, child of main.
-extern HFONT g_hFontEdit;
-extern HACCEL g_hAccelTable; // Accelerator table for main menu shortcut keys.
-extern MSG *g_CalledByIsDialogMessageOrDispatch; // Helps avoid launching a monitor function twice for the same message.
+thread_local extern bool g_DestroyWindowCalled;
+thread_local extern HWND g_hWnd;  // The main window
+thread_local extern HWND g_hWndEdit;  // The edit window, child of main.
+thread_local extern HFONT g_hFontEdit;
+thread_local extern HACCEL g_hAccelTable; // Accelerator table for main menu shortcut keys.
+thread_local extern MSG *g_CalledByIsDialogMessageOrDispatch; // Helps avoid launching a monitor function twice for the same message.
 
-typedef int (WINAPI *StrCmpLogicalW_type)(LPCWSTR, LPCWSTR);
-extern StrCmpLogicalW_type g_StrCmpLogicalW;
-extern WNDPROC g_TabClassProc;
+//typedef int (WINAPI *StrCmpLogicalW_type)(LPCWSTR, LPCWSTR);
+//extern StrCmpLogicalW_type g_StrCmpLogicalW;
+//extern WNDPROC g_TabClassProc;
 
-extern modLR_type g_modifiersLR_logical;   // Tracked by hook (if hook is active).
-extern modLR_type g_modifiersLR_logical_non_ignored;
-extern modLR_type g_modifiersLR_physical;  // Same as above except it's which modifiers are PHYSICALLY down.
-extern modLR_type g_modifiersLR_numpad_mask;  // Shift keys temporarily released by Numpad.
-extern modLR_type g_modifiersLR_ctrlaltdel_mask; // For excluding AltGr from Ctrl+Alt+Del handling.
-extern modLR_type g_modifiersLR_last_pressed;
-extern DWORD g_modifiersLR_last_pressed_time;
+thread_local extern modLR_type g_modifiersLR_logical;   // Tracked by hook (if hook is active).
+thread_local extern modLR_type g_modifiersLR_logical_non_ignored;
+thread_local extern modLR_type g_modifiersLR_physical;  // Same as above except it's which modifiers are PHYSICALLY down.
+thread_local extern modLR_type g_modifiersLR_numpad_mask;  // Shift keys temporarily released by Numpad.
+thread_local extern modLR_type g_modifiersLR_ctrlaltdel_mask; // For excluding AltGr from Ctrl+Alt+Del handling.
+thread_local extern modLR_type g_modifiersLR_last_pressed;
+thread_local extern DWORD g_modifiersLR_last_pressed_time;
 
-extern key_type *pPrefixKey;
+thread_local extern key_type *pPrefixKey;
 
 #ifdef FUTURE_USE_MOUSE_BUTTONS_LOGICAL
-extern WORD g_mouse_buttons_logical; // A bitwise combination of MK_LBUTTON, etc.
+thread_local extern WORD g_mouse_buttons_logical; // A bitwise combination of MK_LBUTTON, etc.
 #endif
 
 #define STATE_DOWN 0x80
 #define STATE_ON 0x01
-extern BYTE g_PhysicalKeyState[VK_ARRAY_COUNT];
-extern bool g_BlockWinKeys;
-extern DWORD g_AltGrExtraInfo;
+thread_local extern BYTE g_PhysicalKeyState[VK_ARRAY_COUNT];
+thread_local extern bool g_BlockWinKeys;
+thread_local extern DWORD g_AltGrExtraInfo;
 
-extern BYTE g_MenuMaskKeyVK; // For #MenuMaskKey.
-extern USHORT g_MenuMaskKeySC;
+thread_local extern BYTE g_MenuMaskKeyVK; // For #MenuMaskKey.
+thread_local extern USHORT g_MenuMaskKeySC;
 
 // If a SendKeys() operation takes longer than this, hotkey's modifiers won't be pressed back down:
-extern int g_HotkeyModifierTimeout;
-extern int g_ClipboardTimeout;
+thread_local extern int g_HotkeyModifierTimeout;
+thread_local extern int g_ClipboardTimeout;
 
-extern HHOOK g_KeybdHook;
-extern HHOOK g_MouseHook;
-extern HHOOK g_PlaybackHook;
-extern bool g_ForceLaunch;
-extern bool g_WinActivateForce;
-extern WarnMode g_Warn_LocalSameAsGlobal;
-extern WarnMode g_Warn_Unreachable;
-extern WarnMode g_Warn_VarUnset;
-extern SingleInstanceType g_AllowOnlyOneInstance;
-extern bool g_persistent;
-extern bool g_NoTrayIcon;
-extern bool g_AllowMainWindow;
-extern bool g_DeferMessagesForUnderlyingPump;
-extern bool g_MainTimerExists;
-extern bool g_InputTimerExists;
-extern bool g_DerefTimerExists;
-extern bool g_SoundWasPlayed;
-extern bool g_IsSuspended;
-extern bool g_OnExitIsRunning;
-extern BOOL g_AllowInterruption;
-extern int g_nLayersNeedingTimer;
-extern int g_nThreads;
-extern int g_nPausedThreads;
-extern int g_MaxHistoryKeys;
-extern DWORD g_InputTimeoutAt;
+thread_local extern HHOOK g_KeybdHook;
+thread_local extern HHOOK g_MouseHook;
+thread_local extern HHOOK g_PlaybackHook;
+thread_local extern bool g_ForceLaunch;
+thread_local extern bool g_WinActivateForce;
+thread_local extern WarnMode g_Warn_LocalSameAsGlobal;
+thread_local extern WarnMode g_Warn_Unreachable;
+thread_local extern WarnMode g_Warn_VarUnset;
+thread_local extern SingleInstanceType g_AllowOnlyOneInstance;
+thread_local extern bool g_persistent;
+thread_local extern bool g_NoTrayIcon;
+thread_local extern bool g_AllowMainWindow;
+thread_local extern bool g_DeferMessagesForUnderlyingPump;
+thread_local extern bool g_MainTimerExists;
+thread_local extern bool g_InputTimerExists;
+thread_local extern bool g_DerefTimerExists;
+thread_local extern bool g_SoundWasPlayed;
+thread_local extern bool g_IsSuspended;
+thread_local extern bool g_OnExitIsRunning;
+thread_local extern BOOL g_AllowInterruption;
+thread_local extern int g_nLayersNeedingTimer;
+thread_local extern int g_nThreads;
+thread_local extern int g_nPausedThreads;
+thread_local extern int g_MaxHistoryKeys;
+thread_local extern DWORD g_InputTimeoutAt;
 
-extern UCHAR g_MaxThreadsPerHotkey;
-extern int g_MaxThreadsTotal;
-extern UINT g_MaxHotkeysPerInterval;
-extern UINT g_HotkeyThrottleInterval;
-extern bool g_MaxThreadsBuffer;
-extern bool g_SuspendExempt;
-extern bool g_SuspendExemptHS;
-extern SendLevelType g_InputLevel;
-extern HotkeyCriterion *g_FirstHotCriterion, *g_LastHotCriterion;
+thread_local extern UCHAR g_MaxThreadsPerHotkey;
+thread_local extern int g_MaxThreadsTotal;
+thread_local extern UINT g_MaxHotkeysPerInterval;
+thread_local extern UINT g_HotkeyThrottleInterval;
+thread_local extern bool g_MaxThreadsBuffer;
+thread_local extern bool g_SuspendExempt;
+thread_local extern bool g_SuspendExemptHS;
+thread_local extern SendLevelType g_InputLevel;
+thread_local extern HotkeyCriterion *g_FirstHotCriterion, *g_LastHotCriterion;
 
 // Global variables for #HotIf (expression). See globaldata.cpp for comments.
-extern UINT g_HotExprTimeout;
-extern HWND g_HotExprLFW;
-extern HotkeyCriterion *g_FirstHotExpr, *g_LastHotExpr;
+thread_local extern UINT g_HotExprTimeout;
+thread_local extern HWND g_HotExprLFW;
+thread_local extern HotkeyCriterion *g_FirstHotExpr, *g_LastHotExpr;
 
 extern int g_ScreenDPI;
-extern bool g_MenuIsVisible;
-extern HMENU g_MenuIsTempModeless;
-extern bool g_MenuIsTempTopmost;
-extern int g_nMessageBoxes;
-extern int g_nFileDialogs;
-extern int g_nFolderDialogs;
-extern GuiType *g_firstGui, *g_lastGui;
-extern HWND g_hWndToolTip[MAX_TOOLTIPS];
-extern MsgMonitorList g_MsgMonitor;
+thread_local extern bool g_MenuIsVisible;
+thread_local extern HMENU g_MenuIsTempModeless;
+thread_local extern bool g_MenuIsTempTopmost;
+thread_local extern int g_nMessageBoxes;
+thread_local extern int g_nFileDialogs;
+thread_local extern int g_nFolderDialogs;
+thread_local extern GuiType *g_firstGui, *g_lastGui;
+thread_local extern HWND g_hWndToolTip[MAX_TOOLTIPS];
+thread_local extern MsgMonitorList *g_MsgMonitor;
 
-extern UCHAR g_SortCaseSensitive;
-extern bool g_SortNumeric;
-extern bool g_SortReverse;
-extern int g_SortColumnOffset;
-extern IObject *g_SortFunc;
-extern ResultType g_SortFuncResult;
+// These are not required with qsort_s
+//extern UCHAR g_SortCaseSensitive;
+//extern bool g_SortNumeric;
+//extern bool g_SortReverse;
+//extern int g_SortColumnOffset;
+//extern IObject *g_SortFunc;
+//extern ResultType g_SortFuncResult;
 
 #define g_DerefChar   '%' // As of v2 these are constant, so even more parts of the code assume they
 #define g_EscapeChar  '`' // are at their usual default values to reduce code size/complexity.
@@ -134,28 +135,28 @@ extern ResultType g_SortFuncResult;
 #define g_CommentChar ';'
 
 // Hot-string vars:
-extern TCHAR g_HSBuf[HS_BUF_SIZE];
-extern int g_HSBufLength;
-extern HWND g_HShwnd;
+thread_local extern TCHAR g_HSBuf[HS_BUF_SIZE];
+thread_local extern int g_HSBufLength;
+thread_local extern HWND g_HShwnd;
 
 // Hot-string global settings:
-extern int g_HSPriority;
-extern int g_HSKeyDelay;
-extern SendModes g_HSSendMode;
-extern SendRawType g_HSSendRaw;
-extern bool g_HSCaseSensitive;
-extern bool g_HSConformToCase;
-extern bool g_HSDoBackspace;
-extern bool g_HSOmitEndChar;
-extern bool g_HSEndCharRequired;
-extern bool g_HSDetectWhenInsideWord;
-extern bool g_HSDoReset;
-extern bool g_HSResetUponMouseClick;
-extern bool g_HSSameLineAction;
-extern TCHAR g_EndChars[HS_MAX_END_CHARS + 1];
+thread_local extern int g_HSPriority;
+thread_local extern int g_HSKeyDelay;
+thread_local extern SendModes g_HSSendMode;
+thread_local extern SendRawType g_HSSendRaw;
+thread_local extern bool g_HSCaseSensitive;
+thread_local extern bool g_HSConformToCase;
+thread_local extern bool g_HSDoBackspace;
+thread_local extern bool g_HSOmitEndChar;
+thread_local extern bool g_HSEndCharRequired;
+thread_local extern bool g_HSDetectWhenInsideWord;
+thread_local extern bool g_HSDoReset;
+thread_local extern bool g_HSResetUponMouseClick;
+thread_local extern bool g_HSSameLineAction;
+thread_local extern TCHAR g_EndChars[HS_MAX_END_CHARS + 1];
 
 // Global objects:
-extern input_type *g_input;
+thread_local extern input_type *g_input;
 EXTERN_SCRIPT;
 EXTERN_CLIPBOARD;
 EXTERN_OSVER;
@@ -164,20 +165,20 @@ extern HICON g_IconSmall;
 extern HICON g_IconLarge;
 
 EXTERN_G;
-extern global_struct *g_array;
+thread_local extern global_struct g_startup, *g_array;
 #define g_default g_array[0]
 
-extern CString g_WorkingDir;
-extern LPTSTR g_WorkingDirOrig;
+thread_local extern CString g_WorkingDir;
+thread_local extern LPTSTR g_WorkingDirOrig;
 
-extern bool g_ForceKeybdHook;
-extern ToggleValueType g_ForceNumLock;
-extern ToggleValueType g_ForceCapsLock;
-extern ToggleValueType g_ForceScrollLock;
+thread_local extern bool g_ForceKeybdHook;
+thread_local extern ToggleValueType g_ForceNumLock;
+thread_local extern ToggleValueType g_ForceCapsLock;
+thread_local extern ToggleValueType g_ForceScrollLock;
 
-extern ToggleValueType g_BlockInputMode;
-extern bool g_BlockInput;  // Whether input blocking is currently enabled.
-extern bool g_BlockMouseMove; // Whether physical mouse movement is currently blocked via the mouse hook.
+thread_local extern ToggleValueType g_BlockInputMode;
+thread_local extern bool g_BlockInput;  // Whether input blocking is currently enabled.
+thread_local extern bool g_BlockMouseMove; // Whether physical mouse movement is currently blocked via the mouse hook.
 
 extern Action g_act[];
 extern int g_ActionCount;
@@ -189,14 +190,14 @@ extern key_to_sc_type g_key_to_sc[];
 extern int g_key_to_vk_count;
 extern int g_key_to_sc_count;
 
-extern KeyHistoryItem *g_KeyHistory;
-extern int g_KeyHistoryNext;
-extern DWORD g_HistoryTickNow;
-extern DWORD g_HistoryTickPrev;
-extern HWND g_HistoryHwndPrev;
-extern DWORD g_TimeLastInputPhysical;
-extern DWORD g_TimeLastInputKeyboard;
-extern DWORD g_TimeLastInputMouse;
+thread_local extern KeyHistoryItem *g_KeyHistory;
+thread_local extern int g_KeyHistoryNext;
+thread_local extern DWORD g_HistoryTickNow;
+thread_local extern DWORD g_HistoryTickPrev;
+thread_local extern HWND g_HistoryHwndPrev;
+thread_local extern DWORD g_TimeLastInputPhysical;
+thread_local extern DWORD g_TimeLastInputKeyboard;
+thread_local extern DWORD g_TimeLastInputMouse;
 
 
 // 9 might be better than 10 because if the granularity/timer is a little
@@ -330,5 +331,71 @@ static inline void RemoveGuiFromList(GuiType* gui)
 	prevNext = next;
 	nextPrev = prev;
 }
+
+#define g_DEFAULT_PWD _T("AutoHotkey")
+extern ULONGLONG g_crypt_code[6];
+extern TCHAR g_default_pwd[1];
+extern LPSTR g_hWinAPI, g_hWinAPIlowercase;		// loads WinAPI functions definitions from resource
+extern HRSRC g_hResource;						// for compiled AutoHotkey.exe
+extern CRITICAL_SECTION g_Critical;
+extern AhkThreadInfo g_ahkThreads[MAX_AHK_THREADS];
+thread_local extern PVOID g_enter_tls;			// for hook thread
+thread_local extern CRITICAL_SECTION g_CriticalTLS;
+extern HMODULE g_hMemoryModule;
+extern DWORD g_ProcessId;
+extern DWORD g_FirstThreadID;
+thread_local extern UINT g_MapCaseSense;
+thread_local extern LPTSTR g_DefaultObjectValue;
+thread_local extern LPWSTR g_WindowClassMain;
+thread_local extern LPWSTR g_WindowClassGUI;
+thread_local extern ATOM g_MainWinClass;
+thread_local extern ATOM g_GuiWinClass;
+thread_local extern bool g_TargetWindowError;
+thread_local extern bool g_TargetControlError;
+thread_local extern char g_Reloading;
+thread_local extern bool g_UseStdLib;
+
+struct AutoTLS {
+	PMYTEB teb;
+	PVOID tls = NULL;
+	BOOL lock = FALSE;
+	BOOL Lock(DWORD aIndex) {
+		auto t = g_ahkThreads[aIndex].TLS;
+		if (!t) return FALSE;
+		teb = (PMYTEB)NtCurrentTeb();
+		tls = teb->ThreadLocalStoragePointer;
+		teb->ThreadLocalStoragePointer = t;
+		EnterCriticalSection(&g_CriticalTLS);
+		return lock = TRUE;
+	}
+	void Enter(LPVOID aTls) {
+		if (!aTls) return;
+		teb = (PMYTEB)NtCurrentTeb();
+		tls = teb->ThreadLocalStoragePointer;
+		teb->ThreadLocalStoragePointer = aTls;
+	}
+	int Enter(DWORD aThreadID) {
+		if ((aThreadID && aThreadID != g_MainThreadID) || g_MainThreadID != GetCurrentThreadId())
+		{
+			DWORD i = -1;
+			if (aThreadID)
+				for (i = 0; i < MAX_AHK_THREADS && g_ahkThreads[i].ThreadID != aThreadID; i++);
+#ifndef CONFIG_DLL
+			else aThreadID = g_ahkThreads[i = 0].ThreadID;
+#endif
+			if (i >= MAX_AHK_THREADS || !Lock(i))
+				return 0;
+			return aThreadID == g_ahkThreads[i].ThreadID && g_ahkThreads[i].Script->mIsReadyToExecute ? 2 : 0;
+		}
+		return g_script && g_script->mIsReadyToExecute;
+	}
+	~AutoTLS() {
+		if (!tls)return;
+		if (lock)
+			LeaveCriticalSection(&g_CriticalTLS);
+		teb->ThreadLocalStoragePointer = tls;
+		tls = NULL;
+	}
+};
 
 #endif

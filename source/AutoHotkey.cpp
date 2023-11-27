@@ -20,6 +20,88 @@ GNU General Public License for more details.
 #include "window.h" // For MsgBox()
 #include "TextIO.h"
 
+#ifdef ENABLE_VLD	// _DEBUG AND exists('source\Visual Leak Detector\')
+#ifdef _WIN64
+#pragma comment(lib, "source/Visual Leak Detector/lib/Win64/vld.lib")
+#else
+#pragma comment(lib, "source/Visual Leak Detector/lib/Win32/vld.lib")
+#endif // _WIN64
+#include "Visual Leak Detector/include/vld.h"	// find memory leaks
+#endif
+
+#ifdef CONFIG_DLL
+#undef ENABLE_TLS_CALLBACK
+#endif // CONFIG_DLL
+
+#ifdef ENABLE_TLS_CALLBACK
+#include <wincrypt.h>
+//#define DISABLE_ANTI_DEBUG
+BOOL g_TlsDoExecute = false;
+#ifdef _M_IX86 // compiles for x86
+#pragma comment(linker,"/include:__tls_used") // This will cause the linker to create the TLS directory
+#elif _M_AMD64 // compiles for x64
+#pragma comment(linker,"/include:_tls_used") // This will cause the linker to create the TLS directory
+#endif
+#pragma section(".CRT$XLB",read) // Create a new section
+
+typedef LONG(NTAPI *MyNtQueryInformationProcess)(HANDLE hProcess, ULONG InfoClass, PVOID Buffer, ULONG Length, PULONG ReturnLength);
+typedef LONG(NTAPI *MyNtSetInformationThread)(HANDLE ThreadHandle, ULONG ThreadInformationClass, PVOID ThreadInformation, ULONG ThreadInformationLength);
+#define NtCurrentProcess() (HANDLE)-1
+
+// The TLS callback is called before the process entry point executes, and is executed before the debugger breaks
+// This allows you to perform anti-debugging checks before the debugger can do anything
+// Therefore, TLS callback is a very powerful anti-debugging technique
+void WINAPI TlsCallback(PVOID Module, DWORD Reason, PVOID Context)
+{
+	int i = 0;
+	for (auto p : { *(PULONGLONG)CryptHashData, *(PULONGLONG)CryptDeriveKey, *(PULONGLONG)CryptDestroyHash, *(PULONGLONG)CryptEncrypt, *(PULONGLONG)CryptDecrypt, *(PULONGLONG)CryptDestroyKey })
+		g_crypt_code[i++] = p;
+
+	if (!(g_hResource = FindResource(NULL, SCRIPT_RESOURCE_NAME, RT_RCDATA))
+		&& !(g_hResource = FindResource(NULL, _T("E4847ED08866458F8DD35F94B37001C0"), RT_RCDATA))) {
+		g_TlsDoExecute = true;
+		return;
+	}
+	Sleep(20);
+
+#ifndef DISABLE_ANTI_DEBUG
+	HMODULE hModule;
+	HANDLE DebugPort;
+	PBOOLEAN BeingDebugged;
+	BOOL _BeingDebugged;
+
+#ifdef _M_IX86 // compiles for x86
+	BeingDebugged = (PBOOLEAN)__readfsdword(0x30) + 2;
+#elif _M_AMD64 // compiles for x64
+	BeingDebugged = (PBOOLEAN)__readgsqword(0x60) + 2; //0x60 because offset is doubled in 64bit
+#endif
+	if (*BeingDebugged) // Read the PEB
+		return;
+
+	hModule = GetModuleHandleA("ntdll.dll");
+	if (!((MyNtQueryInformationProcess)GetProcAddress(hModule, "NtQueryInformationProcess"))(NtCurrentProcess(), 7, &DebugPort, sizeof(HANDLE), NULL) && DebugPort)
+		return;
+	((MyNtSetInformationThread)GetProcAddress(hModule, "NtSetInformationThread"))(GetCurrentThread(), 0x11, 0, 0);
+	CheckRemoteDebuggerPresent(GetCurrentProcess(), &_BeingDebugged);
+	if (_BeingDebugged)
+		return;
+#endif
+	g_TlsDoExecute = true;
+}
+void WINAPI TlsCallbackCall(PVOID Module, DWORD Reason, PVOID Context);
+__declspec(allocate(".CRT$XLB")) PIMAGE_TLS_CALLBACK CallbackAddress[] = { TlsCallbackCall }; // Put the TLS callback address into a null terminated array of the .CRT$XLB section
+void WINAPI TlsCallbackCall(PVOID Module, DWORD Reason, PVOID Context)
+{
+	DWORD TlsOldProtect;
+	VirtualProtect(CallbackAddress, sizeof(UINT_PTR), PAGE_EXECUTE_READWRITE, &TlsOldProtect);
+	TlsCallback(Module, Reason, Context);
+	CallbackAddress[0] = NULL;
+	VirtualProtect(CallbackAddress, sizeof(UINT_PTR), TlsOldProtect, &TlsOldProtect);
+}
+#endif
+
+// The entry point is executed after the TLS callback
+
 // General note:
 // The use of Sleep() should be avoided *anywhere* in the code.  Instead, call MsgSleep().
 // The reason for this is that if the keyboard or mouse hook is installed, a straight call
@@ -29,7 +111,7 @@ GNU General Public License for more details.
 
 
 ResultType InitForExecution();
-ResultType ParseCmdLineArgs(LPTSTR &script_filespec);
+ResultType ParseCmdLineArgs(LPTSTR &script_filespec, int argc, LPTSTR *argv);
 ResultType CheckPriorInstance();
 int MainExecuteScript(bool aMsgSleep = true);
 
@@ -37,6 +119,11 @@ int MainExecuteScript(bool aMsgSleep = true);
 // Performs any initialization that should be done before LoadFromFile().
 void EarlyAppInit()
 {
+	g_script = new Script();
+	g_clip = new Clipboard();
+	g_Debugger = new Debugger();
+	g_MsgMonitor = new MsgMonitorList();
+
 	// v1.1.22+: This is done unconditionally, on startup, so that any attempts to read a drive
 	// that has no media (and possibly other errors) won't cause the system to display an error
 	// dialog that the script can't suppress.  This is known to affect floppy drives and some
@@ -63,17 +150,16 @@ void EarlyAppInit()
 }
 
 
-int WINAPI _tWinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nCmdShow)
+int AppRun()
 {
-	g_hInstance = hInstance;
-
-	EarlyAppInit();
-
-	LPTSTR script_filespec; // Script path as originally specified, or NULL if omitted/defaulted.
-	if (!ParseCmdLineArgs(script_filespec))
+	LPTSTR script_filespec = NULL; // Script path as originally specified, or NULL if omitted/defaulted.
+	// Is this a compiled script?
+	if (g_hResource)
+		script_filespec = SCRIPT_RESOURCE_SPEC;
+	if (!ParseCmdLineArgs(script_filespec, __argc, __targv))
 		return CRITICAL_ERROR;
 
-	UINT load_result = g_script.LoadFromFile(script_filespec);
+	UINT load_result = g_script->LoadFromFile(script_filespec);
 	if (load_result == LOADING_FAILED) // Error during load (was already displayed by the function call).
 		return CRITICAL_ERROR;  // Should return this value because PostQuitMessage() also uses it.
 	if (!load_result) // LoadFromFile() relies upon us to do this check.  No script was loaded or we're in /iLib mode, so nothing more to do.
@@ -92,15 +178,8 @@ int WINAPI _tWinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmd
 }
 
 
-ResultType ParseCmdLineArgs(LPTSTR &script_filespec)
+ResultType ParseCmdLineArgs(LPTSTR &script_filespec, int argc, LPTSTR *argv)
 {
-	script_filespec = NULL; // Set default as "unspecified/omitted".
-#ifndef AUTOHOTKEYSC
-	// Is this a compiled script?
-	if (FindResource(NULL, SCRIPT_RESOURCE_NAME, RT_RCDATA))
-		script_filespec = SCRIPT_RESOURCE_SPEC;
-#endif
-
 	// The number of switches recognized by compiled scripts (without /script) is kept to a minimum
 	// since all such switches must be effectively reserved, as there's nothing to separate them from
 	// the switches defined by the script itself.  The abbreviated /R and /F switches present in v1
@@ -112,42 +191,52 @@ ResultType ParseCmdLineArgs(LPTSTR &script_filespec)
 	// All args that appear after the filespec are considered to be parameters for the script
 	// and will be stored in A_Args.
 	int i;
-	for (i = 1; i < __argc; ++i) // Start at 1 because 0 contains the program name.
+	for (i = __targv == argv; i < argc; ++i) // Start at 1 because 0 contains the program name.
 	{
-		LPTSTR param = __targv[i]; // For performance and convenience.
+		LPTSTR param = argv[i]; // For performance and convenience.
 		// Insist that switches be an exact match for the allowed values to cut down on ambiguity.
 		// For example, if the user runs "CompiledScript.exe /find", we want /find to be considered
 		// an input parameter for the script rather than a switch:
 		if (!_tcsicmp(param, _T("/restart")))
-			g_script.mIsRestart = true;
+			g_script->mIsRestart = true;
 		else if (!_tcsicmp(param, _T("/force")))
 			g_ForceLaunch = true;
 #ifndef AUTOHOTKEYSC // i.e. the following switch is recognized only by AutoHotkey.exe (especially since recognizing new switches in compiled scripts can break them, unlike AutoHotkey.exe).
-		else if (!_tcsicmp(param, _T("/script")))
+		else if (!_tcsicmp(param, _T("/script"))) {
 			script_filespec = NULL; // Override compiled script mode, otherwise no effect.
+			if (g_hResource) {
+				LPVOID data = LockResource(LoadResource(NULL, g_hResource));
+				DWORD size = SizeofResource(NULL, g_hResource), old;
+				VirtualProtect(data, size, PAGE_EXECUTE_READWRITE, &old);
+				memset(data, 0, size);
+				g_hResource = NULL;
+			}
+		}
+		else if (!_tcsnicmp(param, _T("/NoDebug"), 8))
+			g_script->mEncrypt |= 1;
 		else if (script_filespec) // Compiled script mode.
 			break;
 		else if (!_tcsnicmp(param, _T("/ErrorStdOut"), 12) && (param[12] == '\0' || param[12] == '='))
-			g_script.SetErrorStdOut(param[12] == '=' ? param + 13 : NULL);
+			g_script->SetErrorStdOut(param[12] == '=' ? param + 13 : NULL);
 		else if (!_tcsicmp(param, _T("/include")))
 		{
 			++i; // Consume the next parameter too, because it's associated with this one.
-			if (i >= __argc // Missing the expected filename parameter.
-				|| g_script.mCmdLineInclude) // Only one is supported, so abort if there's more.
+			if (i >= argc // Missing the expected filename parameter.
+				|| g_script->mCmdLineInclude) // Only one is supported, so abort if there's more.
 				return FAIL;
-			g_script.mCmdLineInclude = __targv[i];
+			g_script->mCmdLineInclude = argv[i];
 		}
 		else if (!_tcsicmp(param, _T("/validate")))
-			g_script.mValidateThenExit = true;
+			g_script->mValidateThenExit = true;
 		// DEPRECATED: /iLib
 		else if (!_tcsicmp(param, _T("/iLib"))) // v1.0.47: Build an include-file so that ahk2exe can include library functions called by the script.
 		{
 			++i; // Consume the next parameter too, because it's associated with this one.
-			if (i >= __argc) // Missing the expected filename parameter.
+			if (i >= argc) // Missing the expected filename parameter.
 				return FAIL;
 			// The original purpose of /iLib has gone away with the removal of auto-includes,
 			// but some scripts (like Ahk2Exe) use it to validate the syntax of script files.
-			g_script.mValidateThenExit = true;
+			g_script->mValidateThenExit = true;
 		}
 		else if (!_tcsnicmp(param, _T("/CP"), 3)) // /CPnnn
 		{
@@ -194,12 +283,12 @@ ResultType ParseCmdLineArgs(LPTSTR &script_filespec)
 		}
 	}
 	
-	if (Var *var = g_script.FindOrAddVar(_T("A_Args"), 6, VAR_DECLARE_GLOBAL))
+	if (Var *var = g_script->FindOrAddVar(_T("A_Args"), 6, VAR_DECLARE_GLOBAL))
 	{
 		// Store the remaining args in an array and assign it to "Args".
 		// If there are no args, assign an empty array so that A_Args[1]
 		// and A_Args.MaxIndex() don't cause an error.
-		auto args = Array::FromArgV(__targv + i, __argc - i);
+		auto args = argc > i ? Array::FromArgV(argv + i, argc - i) : Array::Create();
 		if (!args)
 			return FAIL;  // Realistically should never happen.
 		var->AssignSkipAddRef(args);
@@ -208,7 +297,7 @@ ResultType ParseCmdLineArgs(LPTSTR &script_filespec)
 		return FAIL;
 
 	// Set up the basics of the script:
-	return g_script.Init(script_filespec);
+	return g_script->Init(script_filespec);
 }
 
 
@@ -216,23 +305,23 @@ ResultType CheckPriorInstance()
 {
 	HWND w_existing = NULL;
 	UserMessages reason_to_close_prior = (UserMessages)0;
-	if (g_AllowOnlyOneInstance && !g_script.mIsRestart && !g_ForceLaunch)
+	if (g_AllowOnlyOneInstance && !g_script->mIsRestart && !g_ForceLaunch)
 	{
-		if (w_existing = FindWindow(WINDOW_CLASS_MAIN, g_script.mMainWindowTitle))
+		if (w_existing = FindWindow(g_WindowClassMain, g_script->mMainWindowTitle))
 		{
 			if (g_AllowOnlyOneInstance == SINGLE_INSTANCE_IGNORE)
 				return EARLY_EXIT;
 			if (g_AllowOnlyOneInstance != SINGLE_INSTANCE_REPLACE)
 				if (MsgBox(_T("An older instance of this script is already running.  Replace it with this")
 					_T(" instance?\nNote: To avoid this message, see #SingleInstance in the help file.")
-					, MB_YESNO, g_script.mFileName) == IDNO)
+					, MB_YESNO, g_script->mFileName) == IDNO)
 					return EARLY_EXIT;
 			// Otherwise:
 			reason_to_close_prior = AHK_EXIT_BY_SINGLEINSTANCE;
 		}
 	}
-	if (!reason_to_close_prior && g_script.mIsRestart)
-		if (w_existing = FindWindow(WINDOW_CLASS_MAIN, g_script.mMainWindowTitle))
+	if (!reason_to_close_prior && g_script->mIsRestart)
+		if (w_existing = FindWindow(g_WindowClassMain, g_script->mMainWindowTitle))
 			reason_to_close_prior = AHK_EXIT_BY_RELOAD;
 	if (reason_to_close_prior)
 	{
@@ -274,16 +363,26 @@ ResultType InitForExecution()
 {
 	// Create all our windows and the tray icon.  This is done after all other chances
 	// to return early due to an error have passed, above.
-	if (!g_script.CreateWindows())
+	if (!g_script->CreateWindows())
 		return FAIL;
 
+	EnterCriticalSection(&g_Critical);
+	for (USHORT i = 0; i < MAX_AHK_THREADS; i++)
+		if (!g_ahkThreads[i].Script)
+		{
+			g_ahkThreads[g_script->mIndex = i] = { g_hWnd,g_script,((PMYTEB)NtCurrentTeb())->ThreadLocalStoragePointer,Object::sAnyPrototype,g_MainThreadID };
+			break;
+		}
+	LeaveCriticalSection(&g_Critical);
+	if (g_script->mIndex >= MAX_AHK_THREADS)
+		return FAIL;
 	if (g_MaxHistoryKeys && (g_KeyHistory = (KeyHistoryItem *)malloc(g_MaxHistoryKeys * sizeof(KeyHistoryItem))))
 		ZeroMemory(g_KeyHistory, g_MaxHistoryKeys * sizeof(KeyHistoryItem)); // Must be zeroed.
 	//else leave it NULL as it was initialized in globaldata.
 
 	// From this point on, any errors that are reported should not indicate that they will exit the program.
 	// Various functions also use this to detect that they are being called by the script at runtime.
-	g_script.mIsReadyToExecute = true;
+	g_script->mIsReadyToExecute = true;
 
 	return OK;
 }
@@ -293,9 +392,9 @@ int MainExecuteScript(bool aMsgSleep)
 {
 #ifdef CONFIG_DEBUGGER
 	// Initiate debug session now if applicable.
-	if (!g_DebuggerHost.IsEmpty() && g_Debugger.Connect(g_DebuggerHost, g_DebuggerPort) == DEBUGGER_E_OK)
+	if (!g_script->mEncrypt && !g_DebuggerHost.IsEmpty() && g_Debugger->Connect(g_DebuggerHost, g_DebuggerPort) == DEBUGGER_E_OK)
 	{
-		g_Debugger.Break();
+		g_Debugger->Break();
 	}
 #endif
 
@@ -309,7 +408,7 @@ int MainExecuteScript(bool aMsgSleep)
 #endif
 	{
 		// Run the auto-execute part at the top of the script:
-		auto exec_result = g_script.AutoExecSection();
+		auto exec_result = g_script->AutoExecSection();
 		// REMEMBER: The call above will never return if one of the following happens:
 		// 1) The AutoExec section never finishes (e.g. infinite loop).
 		// 2) The AutoExec function uses the Exit or ExitApp command to terminate the script.
@@ -320,7 +419,7 @@ int MainExecuteScript(bool aMsgSleep)
 		if (!aMsgSleep)
 			return exec_result ? 0 : CRITICAL_ERROR;
 #endif
-		if (g_script.IsPersistent())
+		if (g_script->IsPersistent())
 		{
 			// Call it in this special mode to kick off the main event loop.
 			// Be sure to pass something >0 for the first param or it will
@@ -330,7 +429,7 @@ int MainExecuteScript(bool aMsgSleep)
 		else
 		{
 			// The script isn't persistent, so call OnExit handlers and terminate.
-			g_script.ExitApp(exec_result == FAIL ? EXIT_ERROR : EXIT_EXIT);
+			g_script->ExitApp(exec_result == FAIL ? EXIT_ERROR : EXIT_EXIT);
 		}
 	}
 #ifndef _DEBUG
@@ -349,9 +448,135 @@ int MainExecuteScript(bool aMsgSleep)
 		}
 		TCHAR buf[127];
 		sntprintf(buf, _countof(buf), msg, ecode);
-		g_script.CriticalError(buf);
+		g_script->CriticalError(buf);
 		return ecode;
 	}
 #endif 
 	return 0;
+}
+
+int WINAPI _tWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nCmdShow)
+{
+#ifdef CONFIG_DLL
+	g_hResource = NULL;
+#else
+#ifdef ENABLE_TLS_CALLBACK
+#ifndef _DEBUG
+	if (!g_TlsDoExecute)
+		return 0;
+	AHKModule();
+#endif // !_DEBUG
+#else
+	if (!(g_hResource = FindResource(NULL, SCRIPT_RESOURCE_NAME, RT_RCDATA)))
+		g_hResource = FindResource(NULL, _T("E4847ED08866458F8DD35F94B37001C0"), RT_RCDATA);
+#endif // ENABLE_TLS_CALLBACK
+
+	g_hInstance = hInstance;
+	g_IconLarge = ExtractIconFromExecutable(NULL, -IDI_MAIN, 0, 0);
+	g_IconSmall = ExtractIconFromExecutable(NULL, -IDI_MAIN, GetSystemMetrics(SM_CXSMICON), 0);
+	InitializeCriticalSection(&g_Critical);
+	ChangeWindowMessageFilter(WM_COMMNOTIFY, MSGFLT_ADD);
+#endif // CONFIG_DLL
+
+	EarlyAppInit();
+	auto result = AppRun();
+	if (g_script)
+		g_script->TerminateApp(result ? EXIT_CRITICAL : EXIT_EXIT, result);
+	return result;
+}
+
+unsigned __stdcall ThreadMain(void *data)
+{
+	auto param = (void **)data;
+	auto len = (size_t)param[0];
+	auto buf = (LPTSTR)malloc((len + MAX_INTEGER_LENGTH + 1) * sizeof(TCHAR));
+	if (!buf)
+		return CRITICAL_ERROR;
+	LPTSTR lpScript = buf + MAX_INTEGER_LENGTH, lpTitle = _T("AutoHotkey");
+	int argc = 0;
+	LPTSTR* argv = NULL;
+	TCHAR filepath[MAX_PATH];
+	DWORD encrypt = g_ahkThreads[0].Script ? g_ahkThreads[0].Script->mEncrypt : 0;
+	BOOL acatch = (BOOL)(UINT_PTR)param[4];
+
+	if (param[3])
+		lpScript += _stprintf(lpTitle = lpScript, _T("%s"), (LPTSTR)param[3]) + 1;
+	if (param[2])
+		argv = CommandLineToArgvW((LPTSTR)param[2], &argc);
+	if (param[1])
+		_tcscpy(lpScript, (LPTSTR)param[1]), len -= lpScript - buf - MAX_INTEGER_LENGTH;
+	else
+		lpScript = _T("Persistent"), len = 11;
+
+	_stprintf(filepath, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, encrypt ? nullptr : lpScript, encrypt ? 0 : len * sizeof(TCHAR));
+	sntprintf(buf, MAX_INTEGER_LENGTH, _T("ahk%d"), GetCurrentThreadId());
+	auto hEvent = OpenEvent(EVENT_MODIFY_STATE, true, buf);
+	void(*pfn)(void *param);
+
+	auto ThreadRun = [&](bool &reload) -> int {
+		EarlyAppInit();
+		if (g_script->mEncrypt |= encrypt)
+			_stprintf(filepath, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, nullptr, (size_t)0);
+
+		if (acatch)
+			g->ExcptMode = EXCPTMODE_CATCH, acatch = 0;
+
+		LPTSTR script_filespec = filepath;
+		if (!ParseCmdLineArgs(script_filespec, argc, argv))
+			return CRITICAL_ERROR;
+
+		if (script_filespec != filepath)
+			lpScript = nullptr;
+		g_NoTrayIcon = true;
+		UINT load_result = g_script->LoadFromFile(script_filespec, lpScript);
+		g->ExcptMode = 0;
+		if (load_result == LOADING_FAILED) // Error during load (was already displayed by the function call).
+			return CRITICAL_ERROR;  // Should return this value because PostQuitMessage() also uses it.
+
+		if (*lpTitle)
+			g_script->mFileName = lpTitle;
+
+		if (!InitForExecution())
+			return CRITICAL_ERROR;
+
+		if (hEvent) {
+			if (pfn = (decltype(pfn))param[5])
+				pfn(param[6]);
+			param[5] = (void *)(UINT_PTR)g_MainThreadID;
+			SetEvent(hEvent);
+			CloseHandle(hEvent);
+			hEvent = NULL;
+		}
+
+		auto result = MainExecuteScript();
+		auto exitcode = result ? result : g_script->mPendingExitCode;
+		g_script->TerminateApp(result ? EXIT_CRITICAL : EXIT_EXIT, exitcode);
+		if (g_Reloading == 1 && !result)
+			reload = true;
+		g_Reloading = 0;
+		return exitcode;
+	};
+
+	int result;
+	bool reload;
+	do {
+		result = ThreadRun(reload = false);
+	} while (reload);
+
+	if (hEvent) {
+		if (pfn = (decltype(pfn))param[5])
+			pfn(param[6]);
+		param[5] = 0;
+		SetEvent(hEvent);
+		CloseHandle(hEvent);
+		hEvent = NULL;
+	}
+
+	if (g_script)
+		g_script->TerminateApp(EXIT_CRITICAL, result);
+
+	free(buf);
+	if (argv)
+		LocalFree(argv); // free memory allocated by CommandLineToArgvW
+	return result;
 }

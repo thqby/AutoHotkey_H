@@ -6,11 +6,16 @@
 #include "script_func_impl.h"
 #include <DispEx.h>
 
+#include "MemoryModule.h"	// ComObjDll
+
 
 // IID__IObject -- .NET's System.Object:
 const IID IID__Object = {0x65074F7F, 0x63C0, 0x304E, 0xAF, 0x0A, 0xD5, 0x17, 0x41, 0xCB, 0x4A, 0x8D};
 
 // Identifies an AutoHotkey object which was passed to a COM API and back again:
+#ifdef CONFIG_DLL
+extern "C" __declspec(dllexport)
+#endif
 const IID IID_IObjectComCompatible = { 0x619f7e25, 0x6d89, 0x4eb4, 0xb2, 0xfb, 0x18, 0xe7, 0xc7, 0x3c, 0xe, 0xa6 };
 
 
@@ -596,7 +601,7 @@ bool SafeSetTokenObject(ExprTokenType &aToken, IObject *aObject)
 }
 
 
-void VariantToToken(VARIANT &aVar, ResultToken &aToken, bool aRetainVar = true)
+void VariantToToken(VARIANT &aVar, ResultToken &aToken, bool aRetainVar)
 {
 	aToken.mem_to_free = NULL; // Set default.	
 	switch (aVar.vt)
@@ -634,6 +639,7 @@ void VariantToToken(VARIANT &aVar, ResultToken &aToken, bool aRetainVar = true)
 			VariantClear(&aVar);
 		break;
 	case VT_I4:
+	case VT_INT:
 		aToken.symbol = SYM_INTEGER;
 		aToken.value_int64 = aVar.lVal;
 		break;
@@ -710,6 +716,7 @@ void VariantToToken(VARIANT &aVar, ResultToken &aToken, bool aRetainVar = true)
 	case VT_UI2:
 	case VT_UI4:
 	case VT_UI8:
+	case VT_UINT:
 	{
 		VARIANT var {};
 		VariantChangeType(&var, &aVar, 0, VT_I8);
@@ -717,6 +724,10 @@ void VariantToToken(VARIANT &aVar, ResultToken &aToken, bool aRetainVar = true)
 		aToken.value_int64 = var.llVal;
 		break;
 	}
+	case VT_UINT_PTR:
+		aToken.symbol = SYM_PTR;
+		aToken.value_int64 = aVar.llVal;
+		break;
 	case VT_ERROR:
 		if (aVar.scode == DISP_E_PARAMNOTFOUND)
 		{
@@ -747,7 +758,7 @@ void VariantToToken(VARIANT &aVar, ResultToken &aToken, bool aRetainVar = true)
 	}
 }
 
-void AssignVariant(Var &aArg, VARIANT &aVar, bool aRetainVar = true)
+void AssignVariant(Var &aArg, VARIANT &aVar, bool aRetainVar)
 {
 	if (aVar.vt == VT_BSTR)
 	{
@@ -851,6 +862,10 @@ void TokenToVariant(ExprTokenType &aToken, VARIANT &aVar, TTVArgType *aVarIsArg)
 		aVar.pdispVal = aToken.object;
 		if (!aVarIsArg)
 			aToken.object->AddRef();
+		break;
+	case SYM_PTR:
+		aVar.vt = VT_UINT_PTR;
+		aVar.llVal = aToken.value_int64;
 		break;
 	case SYM_MISSING:
 		aVar.vt = VT_ERROR;
@@ -1093,7 +1108,7 @@ STDMETHODIMP ComEvent::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD 
 		TCHAR funcName[256];
 		sntprintf(funcName, _countof(funcName), _T("%s%ws"), mPrefix, memberName);
 		// Find the script function:
-		func = g_script.FindGlobalFunc(funcName);
+		func = g_script->FindGlobalFunc(funcName);
 		dispid = DISPID_VALUE;
 		hr = func ? S_OK : DISP_E_MEMBERNOTFOUND;
 	}
@@ -1309,7 +1324,8 @@ ObjectMemberMd ComObject::sArrayMembers[]
 	md_member_x(ComObject, __Enum, SafeArray_Enum, CALL, (In_Opt, Int32, N), (Ret, Object, RetVal)),
 	md_member_x(ComObject, Clone, SafeArray_Clone, CALL, (Ret, Object, RetVal)),
 	md_member_x(ComObject, MaxIndex, SafeArray_MaxIndex, CALL, (In_Opt, UInt32, Dims), (Ret, Int32, RetVal)),
-	md_member_x(ComObject, MinIndex, SafeArray_MinIndex, CALL, (In_Opt, UInt32, Dims), (Ret, Int32, RetVal))
+	md_member_x(ComObject, MinIndex, SafeArray_MinIndex, CALL, (In_Opt, UInt32, Dims), (Ret, Int32, RetVal)),
+	md_member_x(ComObject, ToJSON, SafeArray_ToJSON, CALL, (In_Opt, Variant, aParam), (Ret, Variant, RetVal)),
 };
 
 ObjectMember ComObject::sRefMembers[]
@@ -1448,6 +1464,29 @@ FResult ComObject::SafeArray_Item(VariantParams &aParam, ExprTokenType *aNewValu
 }
 
 
+FResult ComObject::SafeArray_ToJSON(ExprTokenType *aParam, ResultToken &aResultToken)
+{
+	ComArrayEnum *enm;
+	auto hr = ComArrayEnum::Begin(this, enm, 2);
+	if (SUCCEEDED(hr)) {
+		if (aParam && aParam->symbol == SYM_PTR) {
+			auto js = reinterpret_cast<JSON*>(aParam->object);
+			js->append(enm, true);
+		}
+		else {
+			ExprTokenType t_this(enm), opt(0);
+			ExprTokenType *param[] = { &t_this,&opt,&opt };
+			JSON js;
+			if (aParam)
+				param[1] = aParam;
+			js.Stringify(aResultToken, param, 3);
+		}
+		enm->Release();
+	}
+	return hr;
+}
+
+
 LPTSTR ComObject::Type()
 {
 	if ((mVarType == VT_DISPATCH || mVarType == VT_UNKNOWN) && mUnknown)
@@ -1461,7 +1500,7 @@ LPTSTR ComObject::Type()
 		}
 		if (name)
 		{
-			static TCHAR sBuf[64]; // Seems generous enough.
+			thread_local static TCHAR sBuf[64]; // Seems generous enough.
 			tcslcpy(sBuf, CStringTCharFromWCharIfNeeded(name), _countof(sBuf));
 			SysFreeString(name);
 			return sBuf;
@@ -1743,9 +1782,19 @@ STDMETHODIMP IObjectComCompatible::GetTypeInfo(UINT itinfo, LCID lcid, ITypeInfo
 	return E_NOTIMPL;
 }
 
-static LPTSTR *sDispNameByIdMinus1;
-static DISPID *sDispIdSortByName;
-static DISPID sDispNameCount, sDispNameMax;
+thread_local static LPTSTR *sDispNameByIdMinus1;
+thread_local static DISPID *sDispIdSortByName;
+thread_local static DISPID sDispNameCount, sDispNameMax;
+
+void free_dispname()
+{
+	sDispNameCount = 0;
+	sDispNameMax = 0;
+	free(sDispNameByIdMinus1);
+	free(sDispIdSortByName);
+	sDispNameByIdMinus1 = NULL;
+	sDispIdSortByName = NULL;
+}
 
 STDMETHODIMP IObjectComCompatible::GetIDsOfNames(REFIID riid, LPOLESTR *rgszNames, UINT cNames, LCID lcid, DISPID *rgDispId)
 {
@@ -1921,9 +1970,9 @@ STDMETHODIMP IObjectComCompatible::Invoke(DISPID dispIdMember, REFIID riid, LCID
 					// Although there's risk of our caller showing a second message or handling
 					// the error in some other way, it couldn't report anything specific since
 					// all it will have is the generic failure code.
-					g_script.UnhandledException(NULL);
+					g_script->UnhandledException(NULL);
 				}
-				g_script.FreeExceptionToken(g->ThrownToken);
+				g_script->FreeExceptionToken(g->ThrownToken);
 			}
 			break;
 		case INVOKE_NOT_HANDLED:
@@ -2008,3 +2057,54 @@ void ComObject::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int a
 }
 
 #endif
+
+BIF_DECL(BIF_ComObjDll)
+{ // ComObjDll(moduleHandle,CLSID)
+	HMODULE hDLL;
+	if (ParamIndexIsOmitted(0) || !(hDLL = (HMODULE)TokenToInt64(*aParam[0])))
+		_f_throw_param(0);
+	if (ParamIndexIsOmittedOrEmpty(1))
+		_f_throw_param(1);
+
+	typedef HRESULT (__stdcall *pDllGetClassObject)(IN REFCLSID clsid,IN REFIID iid,OUT LPVOID FAR *ppv);
+	WCHAR buf[MAX_PATH * sizeof(WCHAR)]; // LoadTypeLibEx needs Unicode string
+	pDllGetClassObject GetClassObject;
+	if (GetModuleFileNameW(hDLL, buf, _countof(buf)))
+		GetClassObject = (pDllGetClassObject)::GetProcAddress(hDLL,"DllGetClassObject");
+	else
+		GetClassObject = (pDllGetClassObject)::MemoryGetProcAddress(hDLL,"DllGetClassObject");
+	IClassFactory *pClassFactory = NULL;
+	CLSID clsid;
+	HRESULT hr;
+	if (FAILED(hr = CLSIDFromString(CStringWCharFromTCharIfNeeded(TokenToString(*aParam[1])), &clsid)) ||
+		FAILED(hr = GetClassObject(clsid, IID_IClassFactory, (LPVOID *)&pClassFactory)))
+		return ComError(hr, aResultToken);
+
+	__int64 val;
+	IUnknown *puk;
+	VARTYPE vt = VT_UNKNOWN;
+	hr = pClassFactory->CreateInstance(NULL, IID_IUnknown, (void**)&puk);
+	pClassFactory->Release();
+	if(FAILED(hr))
+		return ComError(hr, aResultToken);
+	if (SUCCEEDED(puk->QueryInterface(IID_IDispatch, (void **)&val)))
+		puk->Release(), vt = VT_DISPATCH;
+	else val = (__int64)puk;
+	_f_return(new ComObject(val, vt));
+}
+
+IObject *UnMarshalObjectFromStream(IStream *pstream) {
+	IUnknown *puk;
+	IObject *pobj;
+	if (SUCCEEDED(CoGetInterfaceAndReleaseStream(pstream, IID_IUnknown, (LPVOID *)&puk))) {
+		if (SUCCEEDED(puk->QueryInterface(IID_IObjectComCompatible, (LPVOID *)&pobj)))
+			puk->Release();
+		else if (SUCCEEDED(puk->QueryInterface(IID_IDispatch, (LPVOID *)&pobj)) || SUCCEEDED(puk->QueryInterface(IID__Object, (LPVOID *)&pobj)))
+			pobj = new ComObject(pobj), puk->Release();
+		else pobj = new ComObject((__int64)puk, VT_UNKNOWN);
+		return pobj;
+	}
+	CoReleaseMarshalData(pstream);
+	pstream->Release();
+	return nullptr;
+}

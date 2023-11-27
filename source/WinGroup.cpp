@@ -21,9 +21,9 @@ GNU General Public License for more details.
 #include "application.h" // for DoWinDelay's MsgSleep()
 
 // Define static members data:
-WinGroup *WinGroup::sGroupLastUsed = NULL;
-HWND *WinGroup::sAlreadyVisited = NULL;
-int WinGroup::sAlreadyVisitedCount = 0;
+thread_local WinGroup *WinGroup::sGroupLastUsed = NULL;
+thread_local HWND *WinGroup::sAlreadyVisited = NULL;
+thread_local int WinGroup::sAlreadyVisitedCount = 0;
 
 
 ResultType WinGroup::AddWindow(LPCTSTR aTitle, LPCTSTR aText, LPCTSTR aExcludeTitle, LPCTSTR aExcludeText)

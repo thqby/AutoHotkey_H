@@ -1,4 +1,4 @@
-﻿/*
+/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -21,6 +21,11 @@ GNU General Public License for more details.
 #include "application.h" // for MsgSleep()
 #include "script_func_impl.h"
 #include "abi.h"
+
+#include "script_com.h"
+#ifdef ENABLE_DECIMAL
+#include "decimal.h"
+#endif // ENABLE_DECIMAL
 
 
 
@@ -101,9 +106,9 @@ bif_impl FResult TrayTip(optl<StrArg> aText, optl<StrArg> aTitle, optl<StrArg> a
 		//if (g_os.IsWin10OrLater())
 		//	nic.dwInfoFlags |= NIIF_LARGE_ICON;
 		if (nic.dwInfoFlags & NIIF_LARGE_ICON)
-			nic.hBalloonIcon = g_script.mCustomIcon ? g_script.mCustomIcon : g_IconLarge;
+			nic.hBalloonIcon = g_script->mCustomIcon ? g_script->mCustomIcon : g_IconLarge;
 		else
-			nic.hBalloonIcon = g_script.mCustomIconSmall ? g_script.mCustomIconSmall : g_IconSmall;
+			nic.hBalloonIcon = g_script->mCustomIconSmall ? g_script->mCustomIconSmall : g_IconSmall;
 	}
 	if (aTitle.has_value())
 		tcslcpy(nic.szInfoTitle, aTitle.value(), _countof(nic.szInfoTitle));
@@ -134,6 +139,8 @@ bif_impl FResult TrayTip(optl<StrArg> aText, optl<StrArg> aTitle, optl<StrArg> a
 // Main Window //
 /////////////////
 
+void callFuncDll(FuncAndToken &aFuncAndToken, bool throwerr);
+UINT_PTR CALLBACK RegisterCallbackCStub(UINT_PTR *params, char *address);
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 {
 	// Detect Explorer crashes so that tray icon can be recreated.  I think this only works on Win98
@@ -144,7 +151,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 	LRESULT msg_reply;
 	if (g_CalledByIsDialogMessageOrDispatch && g_CalledByIsDialogMessageOrDispatch->message == iMsg)
 		g_CalledByIsDialogMessageOrDispatch = nullptr; // Suppress this one message, not any other messages that could be sent due to recursion.
-	else if (g_MsgMonitor.Count() && MsgMonitor(hWnd, iMsg, wParam, lParam, NULL, msg_reply))
+	else if (g_MsgMonitor->Count() && MsgMonitor(hWnd, iMsg, wParam, lParam, NULL, msg_reply))
 		return msg_reply; // MsgMonitor has returned "true", indicating that this message should be omitted from further processing.
 
 	TRANSLATE_AHK_MSG(iMsg, wParam)
@@ -164,12 +171,12 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 // the lines most recently executed, and many people who compile scripts don't want their users
 // to see the contents of the script:
 		case WM_LBUTTONDOWN:
-			if (g_script.mTrayMenu->mClickCount != 1) // Activating tray menu's default item requires double-click.
+			if (g_script->mTrayMenu->mClickCount != 1) // Activating tray menu's default item requires double-click.
 				break; // Let default proc handle it (since that's what used to happen, it seems safest).
 			//else fall through to the next case.
 		case WM_LBUTTONDBLCLK:
-			if (g_script.mTrayMenu->mDefault)
-				PostMessage(hWnd, WM_COMMAND, g_script.mTrayMenu->mDefault->mMenuID, 0); // WM_COMMAND vs POST_AHK_USER_MENU to support the Standard menu items.
+			if (g_script->mTrayMenu->mDefault)
+				PostMessage(hWnd, WM_COMMAND, g_script->mTrayMenu->mDefault->mMenuID, 0); // WM_COMMAND vs POST_AHK_USER_MENU to support the Standard menu items.
 			return 0;
 		case WM_RBUTTONUP:
 			// v1.0.30.03:
@@ -182,7 +189,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			// by the old open-tray-on-mouse-down method:
 			//MButton::Send {RButton down}
 			//MButton up::Send {RButton up}
-			g_script.mTrayMenu->Display();
+			g_script->mTrayMenu->Display();
 			return 0;
 		} // Inner switch()
 		break;
@@ -349,7 +356,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			// DestroyWindow() upon termination so that the WM_DESTROY message winds up being
 			// received and process in this function (which is probably necessary for a clean
 			// termination of the app and all its windows):
-			g_script.ExitApp(EXIT_CLOSE);
+			g_script->ExitApp(EXIT_CLOSE);
 			return 0;  // Verified correct.
 		}
 		// Otherwise, some window of ours other than our main window was destroyed.
@@ -358,16 +365,16 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 
 	case WM_ENDSESSION: // MSDN: "A window receives this message through its WindowProc function."
 		if (wParam) // The session is being ended.
-			g_script.ExitApp((lParam & ENDSESSION_LOGOFF) ? EXIT_LOGOFF : EXIT_SHUTDOWN);
+			g_script->ExitApp((lParam & ENDSESSION_LOGOFF) ? EXIT_LOGOFF : EXIT_SHUTDOWN);
 		//else a prior WM_QUERYENDSESSION was aborted; i.e. the session really isn't ending.
 		return 0;  // Verified correct.
 
 	case AHK_EXIT_BY_RELOAD:
-		g_script.ExitApp(EXIT_RELOAD);
+		g_script->ExitApp(EXIT_RELOAD);
 		return 0; // Whether ExitApp() terminates depends on whether there's an OnExit function and what it does.
 
 	case AHK_EXIT_BY_SINGLEINSTANCE:
-		g_script.ExitApp(EXIT_SINGLEINSTANCE);
+		g_script->ExitApp(EXIT_SINGLEINSTANCE);
 		return 0; // Whether ExitApp() terminates depends on whether there's an OnExit function and what it does.
 
 	case WM_DESTROY:
@@ -381,7 +388,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 				// the OnExit function, if present, even without a main window (testing on an earlier
 				// versions shows that most commands work fine without the window). For EXIT_DESTROY,
 				// it always terminates after running the OnExit callback:
-				g_script.ExitApp(EXIT_DESTROY);
+				g_script->ExitApp(EXIT_DESTROY);
 			// Do not do PostQuitMessage() here because we don't know the proper exit code.
 			// MSDN: "The exit value returned to the system must be the wParam parameter of
 			// the WM_QUIT message."
@@ -401,9 +408,9 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		return 0;
 
 	case WM_WINDOWPOSCHANGED:
-		if (hWnd == g_hWnd && (LPWINDOWPOS(lParam)->flags & SWP_HIDEWINDOW) && g_script.mIsReadyToExecute)
+		if (hWnd == g_hWnd && (LPWINDOWPOS(lParam)->flags & SWP_HIDEWINDOW) && g_script->mIsReadyToExecute)
 		{
-			g_script.ExitIfNotPersistent(EXIT_CLOSE);
+			g_script->ExitIfNotPersistent(EXIT_CLOSE);
 			return 0;
 		}
 		break; // Let DWP handle it.
@@ -432,7 +439,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		break;
 
 	case WM_CLIPBOARDUPDATE:
-		if (g_script.mOnClipboardChange.Count()) // In case it's a bogus msg, it's our responsibility to avoid posting the msg if there's no function to call.
+		if (g_script->mOnClipboardChange.Count()) // In case it's a bogus msg, it's our responsibility to avoid posting the msg if there's no function to call.
 			PostMessage(g_hWnd, AHK_CLIPBOARD_CHANGE, 0, 0); // It's done this way to buffer it when the script is uninterruptible, etc.  v1.0.44: Post to g_hWnd vs. NULL so that notifications aren't lost when script is displaying a MsgBox or other dialog.
 		return 0;
 
@@ -456,6 +463,82 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			if ((WPARAM)cp == wParam)
 				return cp->Eval((LPTSTR)lParam);
 		return 0;
+
+	case AHK_EXECUTE_LABEL: 
+		if (wParam)
+			wParam = (WPARAM)((Label*)wParam)->mJumpToLine, lParam = UNTIL_RETURN;
+	case AHK_EXECUTE:   // sent from dll host # Naveen N9
+		if (wParam)
+			((Line*)wParam)->ExecUntil(lParam == ONLY_ONE_LINE ? ONLY_ONE_LINE : lParam == UNTIL_BLOCK_END ? UNTIL_BLOCK_END : UNTIL_RETURN);
+		return 0;
+
+	case AHK_EXECUTE_FUNCTION:
+	{
+		if ((UINT_PTR)lParam < 65536) {
+			if (auto token = (FuncAndToken *)wParam) {
+				callFuncDll(*token, true);
+				auto &result = *token->mResult;
+				if (result.symbol == SYM_OBJECT)
+					result.object->Release();
+				else if (result.symbol == SYM_STRING && !result.mem_to_free)
+					result.Malloc(result.marker, result.marker_length);
+			}
+		}
+		else {
+			auto p = (Promise *)lParam;
+			if (p->mState & 4)
+				p->Release();
+			else {
+				if (!p->mState && !p->mFunc) {
+					if (p->mFunc = p->mVar->ToObject())
+						p->mFunc->AddRef();
+					else return 0;
+				}
+				auto fn = p->ToBoundFunc();
+				g_script->UpdateOrCreateTimer(fn, true, -1, true, p->mPriority);
+				fn->Release();
+			}
+		}
+		return 1;
+	}
+
+	case AHK_THREADVAR:
+	{
+		LPSTREAM stream;
+		if (wParam < 65536)
+			return 0;
+		if ((UINT_PTR)lParam < 65536) {
+			if (lParam && SUCCEEDED(CoMarshalInterThreadInterfaceInStream(IID_IDispatch, (LPUNKNOWN)wParam, &stream)))
+				return (LRESULT)stream;
+			if (SUCCEEDED(CoMarshalInterThreadInterfaceInStream(IID_IUnknown, (LPUNKNOWN)wParam, &stream)))
+				return (LRESULT)stream;
+			return 0;
+		}
+		auto token = (ResultToken *)wParam;
+		auto var = (Var *)lParam;
+		if (token->symbol == SYM_INVALID) {
+			if (var->Type() == VAR_VIRTUAL) {
+				token->symbol = SYM_INTEGER;
+				var->Get(*token);
+			} else
+				var->ToTokenSkipAddRef(*token);
+			if (token->symbol == SYM_STRING)
+				token->marker != token->buf && !token->mem_to_free && token->Malloc(token->marker, token->marker_length);
+			else if (token->symbol == SYM_OBJECT && !MarshalObjectToToken(token->object, *token))
+				return 0;
+			return 1;
+		}
+		if (token->symbol == SYM_STREAM) {
+			token->symbol = SYM_INTEGER;
+			if (auto pobj = UnMarshalObjectFromStream((LPSTREAM)token->value_int64))
+				return var->AssignSkipAddRef(pobj) == OK;
+			return 0;
+		}
+		return var->Assign(*token) == OK;
+	}
+
+	case AHK_CALLBACK:
+		return RegisterCallbackCStub((UINT_PTR *)wParam, (char *)lParam);
 
 	case WM_ENTERMENULOOP:
 		CheckMenuItem(GetMenu(g_hWnd), ID_FILE_PAUSE, g->IsPaused ? MF_CHECKED : MF_UNCHECKED); // This is the menu bar in the main window; the tray menu's checkmark is updated only when the tray menu is actually displayed.
@@ -488,8 +571,8 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		// be reselected, which causes WM_MENUSELECT to be sent.
 		if (g_MenuIsTempModeless)
 		{
-			static HMENU sLastSelectedMenu = NULL; // Limits unnecessarily application of the workaround.
-			static bool sRecursiveCall = false; // Prevents looping due to MN_SELECTITEM causing WM_MENUSELECT.
+			thread_local static HMENU sLastSelectedMenu = NULL; // Limits unnecessarily application of the workaround.
+			thread_local static bool sRecursiveCall = false; // Prevents looping due to MN_SELECTITEM causing WM_MENUSELECT.
 			if (sLastSelectedMenu != (HMENU)lParam && !sRecursiveCall)
 			{
 				sLastSelectedMenu = (HMENU)lParam; // Before SendMessage() below.
@@ -515,8 +598,8 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		// This message is sent when data arrives on the debugger's socket.  It allows the
 		// debugger to respond to commands which are sent while the script is sleeping or
 		// waiting for messages.
-		if (g_Debugger.IsConnected() && (g_Debugger.HasPendingCommand() || LOWORD(lParam) == FD_CLOSE))
-			g_Debugger.ProcessCommands();
+		if (g_Debugger->IsConnected() && (g_Debugger->HasPendingCommand() || LOWORD(lParam) == FD_CLOSE))
+			g_Debugger->ProcessCommands();
 		break;
 #endif
 
@@ -529,13 +612,14 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			//     In this case, the taskbar icon doesn't exist yet, so NIM_MODIFY would fail.
 			//  2) The screen DPI has just changed.  Our icon already exists, but has probably
 			//     been resized by the system.  If we don't refresh it, it becomes blurry.
-			g_script.UpdateTrayIcon(true);
+			g_script->UpdateTrayIcon(true);
 			// And now pass this iMsg on to DefWindowProc() in case it does anything with it.
 		}
 		
 #ifdef CONFIG_DEBUGGER
 		static UINT sAttachDebuggerMessage = RegisterWindowMessage(_T("AHK_ATTACH_DEBUGGER"));
-		if (iMsg == sAttachDebuggerMessage && !g_Debugger.IsConnected())
+		static BOOL __init = ChangeWindowMessageFilter(sAttachDebuggerMessage, MSGFLT_ADD);
+		if (iMsg == sAttachDebuggerMessage && !g_script->mEncrypt && !g_Debugger->IsConnected())
 		{
 			char dbg_host[16] = "localhost"; // IPv4 max string len
 			char dbg_port[6] = "9000";
@@ -552,8 +636,8 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 				// Convert 16-bit port number to string for Debugger::Connect().
 				_itoa(LOWORD(lParam), dbg_port, 10);
 
-			if (g_Debugger.Connect(dbg_host, dbg_port) == DEBUGGER_E_OK)
-				g_Debugger.Break();
+			if (g_Debugger->Connect(dbg_host, dbg_port) == DEBUGGER_E_OK)
+				g_Debugger->Break();
 		}
 #endif
 
@@ -573,7 +657,7 @@ bool FindAutoHotkeyUtilSub(LPTSTR aFile, LPTSTR aDir)
 bool FindAutoHotkeyUtil(LPTSTR aFile, bool &aFoundOurs)
 {
 	// Always try our directory first, in case it has different utils to the installed version.
-	if (  !(aFoundOurs = FindAutoHotkeyUtilSub(aFile, g_script.mOurEXEDir))  )
+	if (  !(aFoundOurs = FindAutoHotkeyUtilSub(aFile, g_script->mOurEXEDir))  )
 	{
 		// Try GetAHKInstallDir() so that compiled scripts running on machines that happen
 		// to have AHK installed will still be able to fetch the help file and Window Spy:
@@ -597,12 +681,12 @@ void LaunchAutoHotkeyUtil(LPTSTR aFile, bool aIsScript)
 	if (aIsScript && our_file)
 	{
 		sntprintf(buf, _countof(buf), _T("/script %s"), aFile);
-		file = g_script.mOurEXE;
+		file = g_script->mOurEXE;
 		args = buf;
 	}
 	//else it's not a script or it's the installed copy of WindowSpy.ahk, so just run it.
 #endif
-	if (!g_script.ActionExec(file, args, NULL, false))
+	if (!g_script->ActionExec(file, args, NULL, false))
 	{
 		TCHAR buf_file[64];
 		sntprintf(buf_file, _countof(buf_file), _T("Could not launch %s"), aFile);
@@ -634,11 +718,11 @@ bool HandleMenuItem(HWND aHwnd, WORD aMenuItemID, HWND aGuiHwnd)
 		return true;
 	case ID_TRAY_EDITSCRIPT:
 	case ID_FILE_EDITSCRIPT:
-		g_script.Edit();
+		g_script->Edit();
 		return true;
 	case ID_TRAY_RELOADSCRIPT:
 	case ID_FILE_RELOADSCRIPT:
-		if (!g_script.Reload(false))
+		if (!g_script->Reload(false))
 			MsgBox(_T("The script could not be reloaded."));
 		return true;
 	case ID_TRAY_WINDOWSPY:
@@ -660,11 +744,11 @@ bool HandleMenuItem(HWND aHwnd, WORD aMenuItemID, HWND aGuiHwnd)
 		else
 			++g_nPausedThreads; // For this purpose the idle thread is counted as a paused thread.
 		g->IsPaused = !g->IsPaused;
-		g_script.UpdateTrayIcon();
+		g_script->UpdateTrayIcon();
 		return true;
 	case ID_TRAY_EXIT:
 	case ID_FILE_EXIT:
-		g_script.ExitApp(EXIT_MENU);  // More reliable than PostQuitMessage(), which has been known to fail in rare cases.
+		g_script->ExitApp(EXIT_MENU);  // More reliable than PostQuitMessage(), which has been known to fail in rare cases.
 		return true; // If there is an OnExit function, the above might not actually exit.
 	case ID_VIEW_LINES:
 		ShowMainWindow(MAIN_MODE_LINES);
@@ -682,15 +766,15 @@ bool HandleMenuItem(HWND aHwnd, WORD aMenuItemID, HWND aGuiHwnd)
 		ShowMainWindow(MAIN_MODE_REFRESH);
 		return true;
 	case ID_HELP_WEBSITE:
-		if (!g_script.ActionExec(_T(AHK_WEBSITE), _T(""), NULL, false))
+		if (!g_script->ActionExec(_T(AHK_WEBSITE), _T(""), NULL, false))
 			MsgBox(_T("Could not open URL ") _T(AHK_WEBSITE) _T(" in default browser."));
 		return true;
 	default:
 		// See if this command ID is one of the user's custom menu items.  Due to the possibility
 		// that some items have been deleted from the menu, can't rely on comparing
-		// aMenuItemID to g_script.mMenuItemCount in any way.  Just look up the ID to make sure
+		// aMenuItemID to g_script->mMenuItemCount in any way.  Just look up the ID to make sure
 		// there really is a menu item for it:
-		if (!g_script.FindMenuItemByID(aMenuItemID)) // Do nothing, let caller try to handle it some other way.
+		if (!g_script->FindMenuItemByID(aMenuItemID)) // Do nothing, let caller try to handle it some other way.
 			return false;
 		// It seems best to treat the selection of a custom menu item in a way similar
 		// to how hotkeys are handled by the hook. See comments near the definition of
@@ -743,7 +827,7 @@ ResultType ShowMainWindow(MainWindowModes aMode, bool aRestricted)
 	TCHAR buf_temp[65534];  // Formerly 32767.
 	*buf_temp = '\0';
 	bool jump_to_bottom = false;  // Set default behavior for edit control.
-	static MainWindowModes current_mode = MAIN_MODE_NO_CHANGE;
+	thread_local static MainWindowModes current_mode = MAIN_MODE_NO_CHANGE;
 
 	// If we were called from a restricted place, such as via the Tray Menu or the Main Menu,
 	// don't allow potentially sensitive info such as script lines and variables to be shown.
@@ -781,13 +865,13 @@ ResultType ShowMainWindow(MainWindowModes aMode, bool aRestricted)
 		jump_to_bottom = true;
 		break;
 	case MAIN_MODE_VARS:
-		g_script.ListVars(buf_temp, _countof(buf_temp));
+		g_script->ListVars(buf_temp, _countof(buf_temp));
 		break;
 	case MAIN_MODE_HOTKEYS:
 		Hotkey::ListHotkeys(buf_temp, _countof(buf_temp));
 		break;
 	case MAIN_MODE_KEYHISTORY:
-		g_script.ListKeyHistory(buf_temp, _countof(buf_temp));
+		g_script->ListKeyHistory(buf_temp, _countof(buf_temp));
 		break;
 	case MAIN_MODE_REFRESH:
 		// Rather than do a recursive call to self, which might stress the stack if the script is heavily recursed:
@@ -798,13 +882,13 @@ ResultType ShowMainWindow(MainWindowModes aMode, bool aRestricted)
 			jump_to_bottom = true;
 			break;
 		case MAIN_MODE_VARS:
-			g_script.ListVars(buf_temp, _countof(buf_temp));
+			g_script->ListVars(buf_temp, _countof(buf_temp));
 			break;
 		case MAIN_MODE_HOTKEYS:
 			Hotkey::ListHotkeys(buf_temp, _countof(buf_temp));
 			break;
 		case MAIN_MODE_KEYHISTORY:
-			g_script.ListKeyHistory(buf_temp, _countof(buf_temp));
+			g_script->ListKeyHistory(buf_temp, _countof(buf_temp));
 			// Special mode for when user refreshes, so that new keys can be seen without having
 			// to scroll down again:
 			jump_to_bottom = true;
@@ -1143,7 +1227,7 @@ bif_impl FResult ToolTip(optl<StrArg> aText, optl<int> aX, optl<int> aY, optl<in
 	}
 	
 	bool one_or_both_coords_unspecified = !aX.has_value() || !aY.has_value();
-		 
+
 	POINT pt, pt_cursor;
 	if (one_or_both_coords_unspecified)
 	{
@@ -1487,7 +1571,7 @@ FResult SetWorkingDir(LPCTSTR aNewDir)
 	// working dir can change.  The exception is FileSelect(), which changes the working
 	// dir as the user navigates from folder to folder.  However, the whole purpose of
 	// maintaining g_WorkingDir is to workaround that very issue.
-	if (g_script.mIsReadyToExecute) // Callers want this done only during script runtime.
+	if (g_script->mIsReadyToExecute) // Callers want this done only during script runtime.
 		UpdateWorkingDir(aNewDir);
 	return OK;
 }
@@ -1669,7 +1753,7 @@ bif_impl FResult FileSelect(optl<StrArg> aOptions, optl<StrArg> aWorkingDir, opt
 		// Use a more specific title so that the dialogs of different scripts can be distinguished
 		// from one another, which may help script automation in rare cases:
 		sntprintf(greeting, _countof(greeting), _T("Select %s - %s")
-			, (flags & FOS_PICKFOLDERS) ? _T("Folder") : _T("File"), g_script.DefaultDialogTitle());
+			, (flags & FOS_PICKFOLDERS) ? _T("Folder") : _T("File"), g_script->DefaultDialogTitle());
 
 	int options = ATOI(options_str);
 	if (options & 0x20)
@@ -1902,7 +1986,7 @@ bool Line::FileIsFilteredOut(LoopFilesStruct &aCurrentFile, FileLoopModeType aFi
 Label *Line::GetJumpTarget(bool aIsDereferenced)
 {
 	LPTSTR target_label = aIsDereferenced ? ARG1 : RAW_ARG1;
-	Label *label = g_script.FindLabel(target_label);
+	Label *label = g_script->FindLabel(target_label);
 	if (!label)
 	{
 		LineError(ERR_NO_LABEL, FAIL, target_label);
@@ -2089,7 +2173,7 @@ BIF_DECL(BIF_String)
 
 bif_impl BOOL IsLabel(StrArg aName)
 {
-	return g_script.FindLabel(aName) ? 1 : 0;
+	return g_script->FindLabel(aName) ? 1 : 0;
 }
 
 
@@ -2536,7 +2620,7 @@ bif_impl FResult SetTimer(optl<IObject*> aFunction, optl<__int64> aPeriod, optl<
 		period = aPeriod.value();
 		if (!period)
 		{
-			g_script.DeleteTimer(callback);
+			g_script->DeleteTimer(callback);
 			return OK;
 		}
 		update_period = true;
@@ -2546,7 +2630,7 @@ bif_impl FResult SetTimer(optl<IObject*> aFunction, optl<__int64> aPeriod, optl<
 		priority = aPriority.value();
 		update_priority = true;
 	}
-	g_script.UpdateOrCreateTimer(callback, update_period, period, update_priority, priority);
+	g_script->UpdateOrCreateTimer(callback, update_period, period, update_priority, priority);
 	return OK;
 }
 
@@ -2618,13 +2702,21 @@ bif_impl FResult Thread(StrArg aCommand, optl<int> aValue1, optl<int> aValue2)
 	case THREAD_CMD_INTERRUPT:
 		// If either one is blank, leave that setting as it was before.
 		if (aValue1.has_value())
-			g_script.mUninterruptibleTime = *aValue1;  // 32-bit (for compatibility with DWORDs returned by GetTickCount).
+			g_script->mUninterruptibleTime = *aValue1;  // 32-bit (for compatibility with DWORDs returned by GetTickCount).
 		if (aValue2.has_value())
-			g_script.mUninterruptedLineCountMax = *aValue2;  // 32-bit also, to help performance (since huge values seem unnecessary).
+			g_script->mUninterruptedLineCountMax = *aValue2;  // 32-bit also, to help performance (since huge values seem unnecessary).
 		return OK;
 	case THREAD_CMD_NOTIMERS:
 		g->AllowTimers = (aValue1.has_value() && *aValue1 == 0); // Double-negative NoTimers=false -> allow timers.
 		return OK;
+	case THREAD_CMD_TERMINATE: {
+		auto i = g_nThreads - 1;
+		if (i > 0 && (!aValue1.has_value() || *aValue1 == 0))
+			i = 1;
+		for (; i > 0; i--)
+			*(char*)&g_array[g_nThreads - 1 - i].IsPaused = -1;
+		return OK;
+	}
 	default:
 		return FR_E_ARG(0);
 	}
@@ -2635,7 +2727,7 @@ bif_impl FResult Thread(StrArg aCommand, optl<int> aValue1, optl<int> aValue2)
 bif_impl void OutputDebug(StrArg aText)
 {
 #ifdef CONFIG_DEBUGGER
-	if (!g_Debugger.OutputStdErr(aText))
+	if (!g_Debugger->OutputStdErr(aText))
 #endif
 		OutputDebugString(aText);
 }
@@ -2669,7 +2761,7 @@ bif_impl FResult OnMessage(UINT aNumber, IObject *aFunction, optl<int> aMaxThrea
 	}
 
 	// Check if this message already exists in the array:
-	MsgMonitorStruct *pmonitor = g_MsgMonitor.Find(aNumber, aFunction);
+	MsgMonitorStruct *pmonitor = g_MsgMonitor->Find(aNumber, aFunction);
 	bool item_already_exists = (pmonitor != NULL);
 	if (!item_already_exists)
 	{
@@ -2679,7 +2771,7 @@ bif_impl FResult OnMessage(UINT aNumber, IObject *aFunction, optl<int> aMaxThrea
 		if (fr != OK)
 			return fr;
 		// From this point on, it is certain that an item will be added to the array.
-		pmonitor = g_MsgMonitor.Add(aNumber, aFunction, call_it_last);
+		pmonitor = g_MsgMonitor->Add(aNumber, aFunction, call_it_last);
 		if (!pmonitor)
 			return FR_E_OUTOFMEM;
 	}
@@ -2700,7 +2792,7 @@ bif_impl FResult OnMessage(UINT aNumber, IObject *aFunction, optl<int> aMaxThrea
 			// The main disadvantage to deleting message filters from the array is that the deletion might
 			// occur while the monitor is currently running, which requires more complex handling within
 			// MsgMonitor() (see its comments for details).
-			g_MsgMonitor.Delete(pmonitor);
+			g_MsgMonitor->Delete(pmonitor);
 			return OK;
 		}
 		// Otherwise, an existing item is being assigned a new function or MaxThreads limit.
@@ -2920,22 +3012,22 @@ static FResult OnScriptEvent(IObject *aFunction, optl<int> aAddRemove, MsgMonito
 
 bif_impl FResult OnClipboardChange(IObject *aFunction, optl<int> aAddRemove)
 {
-	auto result = OnScriptEvent(aFunction, aAddRemove, g_script.mOnClipboardChange, 1);
+	auto result = OnScriptEvent(aFunction, aAddRemove, g_script->mOnClipboardChange, 1);
 	// Unlike SetClipboardViewer(), AddClipboardFormatListener() doesn't cause existing
 	// listeners to be called, so we can simply enable or disable our listener based on
 	// whether any handlers are registered.  This has no effect if already enabled:
-	g_script.EnableClipboardListener(g_script.mOnClipboardChange.Count() > 0);
+	g_script->EnableClipboardListener(g_script->mOnClipboardChange.Count() > 0);
 	return result;
 }
 
 bif_impl FResult OnError(IObject *aFunction, optl<int> aAddRemove)
 {
-	return OnScriptEvent(aFunction, aAddRemove, g_script.mOnError, 2);
+	return OnScriptEvent(aFunction, aAddRemove, g_script->mOnError, 2);
 }
 
 bif_impl FResult OnExit(IObject *aFunction, optl<int> aAddRemove)
 {
-	return OnScriptEvent(aFunction, aAddRemove, g_script.mOnExit, 2);
+	return OnScriptEvent(aFunction, aAddRemove, g_script->mOnExit, 2);
 }
 
 
@@ -2947,7 +3039,7 @@ bif_impl FResult OnExit(IObject *aFunction, optl<int> aAddRemove)
 
 bif_impl void MenuFromHandle(UINT_PTR aHandle, IObject *&aRetVal)
 {
-	if (aRetVal = g_script.FindMenu((HMENU)aHandle))
+	if (aRetVal = g_script->FindMenu((HMENU)aHandle))
 		aRetVal->AddRef();
 }
 
@@ -3126,7 +3218,7 @@ void Object::Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 	LPTSTR message;
 	TCHAR what_buf[MAX_NUMBER_SIZE], extra_buf[MAX_NUMBER_SIZE];
 	LPCTSTR what = ParamIndexToOptionalString(1, what_buf);
-	Line *line = g_script.mCurrLine;
+	Line *line = g_script->mCurrLine;
 
 	if (aID == M_OSError__New && (ParamIndexIsOmitted(0) || ParamIndexIsNumeric(0)))
 	{
@@ -3155,17 +3247,17 @@ void Object::Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 		what = g->CurrentFunc->mName;
 	SetOwnProp(_T("Stack"), _T("")); // Avoid "unknown property" in compiled scripts.
 #else
-	DbgStack::Entry *stack_top = g_Debugger.mStack.mTop - 1;
+	DbgStack::Entry *stack_top = g_Debugger->mStack.mTop - 1;
 	// I think this was originally intended to omit Exception(); doesn't seem to be needed anymore?
 	//if (stack_top->type == DbgStack::SE_BIF && _tcsicmp(what, stack_top->func->mName))
 	//	--stack_top;
-	if (g_script.mNewRuntimeException != this)
+	if (g_script->mNewRuntimeException != this)
 	{
 		// This Error is likely being constructed by the script with a call like Error(),
 		// but there may be additional calls to __new.  Find the stack entry corresponding
 		// to the initial call, so we have a predictable starting point for -What values
 		// and a good default Line.
-		for (auto se = stack_top; se >= g_Debugger.mStack.mBottom; --se)
+		for (auto se = stack_top; se >= g_Debugger->mStack.mBottom; --se)
 		{
 			if (se->type == DbgStack::SE_BIF && se->func == Object::sObjectCall)
 			{
@@ -3191,11 +3283,11 @@ void Object::Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 	else
 	{
 		int offset = ParamIndexIsNumeric(1) ? ParamIndexToInt(1) : 0;
-		for (auto se = stack_top; se >= g_Debugger.mStack.mBottom; --se)
+		for (auto se = stack_top; se >= g_Debugger->mStack.mBottom; --se)
 		{
 			if (++offset == 0 || *what && !_tcsicmp(se->Name(), what))
 			{
-				line = se > g_Debugger.mStack.mBottom ? se[-1].line : se->line;
+				line = se > g_Debugger->mStack.mBottom ? se[-1].line : se->line;
 				// se->line contains the line at the given offset from the top of the stack.
 				// Rather than returning the name of the function or sub which contains that
 				// line, return the name of the function or sub which that line called.
@@ -3264,6 +3356,15 @@ BOOL VarToBOOL(Var &aVar)
 	case PURE_FLOAT:
 		return aVar.ToDouble() != 0.0;
 	default:
+		if (auto obj = aVar.ToObject())
+		{
+#ifdef ENABLE_DECIMAL
+			if (auto d = Decimal::ToDecimal(obj))
+				return d->ToBOOL();
+#endif // ENABLE_DECIMAL
+			if (ComObject *aComObj = dynamic_cast<ComObject *>(obj))
+				return aComObj->mVarType == VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType != VT_NULL && aComObj->mVarType != VT_EMPTY;
+		}
 		// Even a string containing all whitespace would be considered non-numeric since it's a non-blank string
 		// that isn't equal to 0.
 		return TRUE;
@@ -3285,10 +3386,18 @@ BOOL TokenToBOOL(ExprTokenType &aToken)
 	case SYM_STRING:
 		return ResultToBOOL(aToken.marker)
 			|| aToken.marker_length && !*aToken.marker; // Consider any non-empty string beginning with \0 to be TRUE.
-	default:
+	case SYM_OBJECT:
+#ifdef ENABLE_DECIMAL
+		if (auto d = Decimal::ToDecimal(aToken.object))
+			return d->ToBOOL();
+#endif // ENABLE_DECIMAL
 		// The only remaining valid symbol is SYM_OBJECT, which is always TRUE.
+		if (ComObject *aComObj = dynamic_cast<ComObject *>(aToken.object))
+			return aComObj->mVarType==VT_BOOL ? aComObj->mVal64 != VARIANT_FALSE : aComObj->mVarType!=VT_NULL && aComObj->mVarType != VT_EMPTY;
+		return TRUE;
+	default:
 		// Check symbol anyway, in case SYM_MISSING or something else sneaks in.
-		return aToken.symbol == SYM_OBJECT;
+		return FALSE;
 	}
 }
 
@@ -3531,6 +3640,11 @@ ResultType TokenToDoubleOrInt64(const ExprTokenType &aInput, ExprTokenType &aOut
 		case SYM_STRING:   // v1.0.40.06: Fixed to be listed explicitly so that "default" case can return failure.
 			str = aInput.marker;
 			break;
+#ifdef ENABLE_DECIMAL
+		case SYM_OBJECT:
+			if (auto obj = Decimal::ToDecimal(aInput.object))
+				return obj->ToToken(aOutput);
+#endif // ENABLE_DECIMAL
 		//case SYM_OBJECT: // L31: Treat objects as empty strings (or TRUE where appropriate).
 		//case SYM_MISSING:
 		default:

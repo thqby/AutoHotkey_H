@@ -19,10 +19,10 @@ GNU General Public License for more details.
 #include "globaldata.h" // for g_script, so that errors can be centrally reported here.
 
 // Static member data:
-SimpleHeap *SimpleHeap::sFirst = NULL;
-SimpleHeap *SimpleHeap::sLast  = NULL;
-char *SimpleHeap::sMostRecentlyAllocated = NULL;
-UINT SimpleHeap::sBlockCount = 0;
+thread_local SimpleHeap *SimpleHeap::sFirst = NULL;
+thread_local SimpleHeap *SimpleHeap::sLast  = NULL;
+thread_local char *SimpleHeap::sMostRecentlyAllocated = NULL;
+//UINT SimpleHeap::sBlockCount = 0;
 
 LPTSTR SimpleHeap::strDup(LPCTSTR aBuf, size_t aLength)
 // v1.0.44.14: Added aLength to improve performance in cases where callers already know the length.
@@ -77,8 +77,19 @@ void* SimpleHeap::Malloc(size_t aSize)
 	if (aSize > sLast->mSpaceAvailable)
 	{
 		if (aSize > MAX_ALLOC_IN_NEW_BLOCK) // Also covers aSize > BLOCK_SIZE.
-			return malloc(aSize); // Avoid wasting the remainder of the block.
-		if (!(sLast->mNextBlock = CreateBlock()))
+			if (auto p = malloc(aSize))
+			{
+				auto block = sLast->mNextBlock = new SimpleHeap;
+				block->mBlock = (char *)p;
+				block->mFreeMarker = sLast->mFreeMarker;
+				block->mSpaceAvailable = sLast->mSpaceAvailable;
+				sLast = block;
+				return p;
+			}
+			else
+				return NULL;
+		auto &last_next = sLast->mNextBlock;
+		if (!(last_next = CreateBlock()))
 			return NULL;
 	}
 	sMostRecentlyAllocated = sLast->mFreeMarker; // THIS IS NOW THE NEWLY ALLOCATED BLOCK FOR THE CALLER, which is 32-bit aligned because the previous call to this function (i.e. the logic below) set it up that way.
@@ -126,18 +137,18 @@ void SimpleHeap::Delete(void *aPtr)
 
 
 
-// Commented out because not currently used:
-//void SimpleHeap::DeleteAll()
-//// See Hotkey::AllDestructAndExit for comments about why this isn't actually called.
-//{
-//	SimpleHeap *next, *curr;
-//	for (curr = sFirst; curr != NULL;)
-//	{
-//		next = curr->mNextBlock;  // Save this member's value prior to deleting the object.
-//		delete curr;
-//		curr = next;
-//	}
-//}
+void SimpleHeap::DeleteAll()
+{
+	SimpleHeap *next, *curr = sFirst;
+	while (curr)
+	{
+		next = curr->mNextBlock;  // Save this member's value prior to deleting the object.
+		delete curr;
+		curr = next;
+	}
+	sFirst = sLast = NULL;
+	sMostRecentlyAllocated = NULL;
+}
 
 
 
@@ -158,7 +169,7 @@ SimpleHeap *SimpleHeap::CreateBlock()
 	// Since above didn't return, block was successfully created:
 	block->mSpaceAvailable = BLOCK_SIZE;
 	sLast = block;  // Constructing a new block always results in it becoming the current block.
-	++sBlockCount;
+	//++sBlockCount;
 	return block;
 }
 
@@ -166,6 +177,7 @@ SimpleHeap *SimpleHeap::CreateBlock()
 
 SimpleHeap::SimpleHeap()  // Construct a new block.  Caller is responsible for initializing other members.
 	: mNextBlock(NULL)
+	, mBlock(NULL), mFreeMarker(NULL), mSpaceAvailable(0)
 {
 }
 

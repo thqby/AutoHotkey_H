@@ -70,7 +70,7 @@ ResultType Var::Assign(ExprTokenType &aToken)
 	if (mType == VAR_VIRTUAL)
 	{
 		if (aToken.symbol == SYM_MISSING)
-			return g_script.RuntimeError(ERR_INVALID_ASSIGNMENT);
+			return g_script->RuntimeError(ERR_INVALID_ASSIGNMENT);
 		return AssignVirtual(aToken);
 	}
 	switch (aToken.symbol)
@@ -95,7 +95,7 @@ ResultType Var::Assign(ExprTokenType &aToken)
 ResultType Var::AssignVirtual(ExprTokenType &aValue)
 {
 	if (!mVV->Set) // Might be impossible due to prior validation of assignments/output vars.
-		return g_script.VarIsReadOnlyError(this);
+		return g_script->VarIsReadOnlyError(this);
 	FuncResult result_token;
 	mVV->Set(result_token, mName, aValue);
 	return result_token.Result();
@@ -271,8 +271,8 @@ ResultType Var::GetClipboardAll(void **aData, size_t *aDataSize)
 	*aData = NULL; // Set default in case of early return or empty data.
 	*aDataSize = 0;
 
-	if (!g_clip.Open())
-		return g_script.RuntimeError(CANT_OPEN_CLIPBOARD_READ);
+	if (!g_clip->Open())
+		return g_script->RuntimeError(CANT_OPEN_CLIPBOARD_READ);
 
 	// Calculate the size needed:
 	// EnumClipboardFormats() retrieves all formats, including synthesized formats that don't
@@ -356,7 +356,7 @@ ResultType Var::GetClipboardAll(void **aData, size_t *aDataSize)
 		// text). Because of this example, it seems likely it can fail in other places or under
 		// other circumstances, perhaps by design of the app. Therefore, be tolerant of failures
 		// because partially saving the clipboard seems much better than aborting the operation.
-		if (hglobal = g_clip.GetClipboardDataTimeout(format, &save_null_data))
+		if (hglobal = g_clip->GetClipboardDataTimeout(format, &save_null_data))
 		{
 			space_needed += (VarSizeType)(sizeof(format) + sizeof(size) + GlobalSize(hglobal)); // The total amount of storage space required for this item.
 			if (!dib_format_to_omit)
@@ -382,7 +382,7 @@ ResultType Var::GetClipboardAll(void **aData, size_t *aDataSize)
 
 	if (space_needed == sizeof(format)) // This works because even a single empty format requires space beyond sizeof(format) for storing its format+size.
 	{
-		g_clip.Close();
+		g_clip->Close();
 		return OK;
 	}
 
@@ -396,7 +396,7 @@ ResultType Var::GetClipboardAll(void **aData, size_t *aDataSize)
 	
 	if (!binary_contents)
 	{
-		g_clip.Close();
+		g_clip->Close();
 		return MemoryError();
 	}
 
@@ -427,7 +427,7 @@ ResultType Var::GetClipboardAll(void **aData, size_t *aDataSize)
 		// size, it does happen, at least in MS Word and for CF_BITMAP.  Therefore, in order to save
 		// the clipboard as accurately as possible, also save formats whose size is zero.  Note that
 		// GlobalLock() fails to work on hglobals of size zero, so don't do it for them.
-		hglobal = g_clip.GetClipboardDataTimeout(format, &save_null_data);
+		hglobal = g_clip->GetClipboardDataTimeout(format, &save_null_data);
 		if (hglobal)
 			size = (UINT)GlobalSize(hglobal); // Data >= 4GB seems extremely unlikely, and couldn't be detected by 32-bit processes anyway, so there's no checking for overflow on x64.
 		else if (save_null_data)
@@ -459,7 +459,7 @@ ResultType Var::GetClipboardAll(void **aData, size_t *aDataSize)
 				GlobalUnlock(hglobal); // hglobal not hglobal_locked.
 		}
 	}
-	g_clip.Close();
+	g_clip->Close();
 	*(UINT *)binary_contents = 0; // Final termination (must be UINT, see above).
 
 	*aDataSize = (DWORD)actual_space_used;
@@ -470,8 +470,8 @@ ResultType Var::GetClipboardAll(void **aData, size_t *aDataSize)
 
 ResultType Var::SetClipboardAll(void *aData, size_t aDataSize)
 {
-	if (!g_clip.Open())
-		return g_script.RuntimeError(CANT_OPEN_CLIPBOARD_WRITE);
+	if (!g_clip->Open())
+		return g_script->RuntimeError(CANT_OPEN_CLIPBOARD_WRITE);
 	EmptyClipboard(); // Failure is not checked for since it's probably impossible under these conditions.
 
 	// In case the variable contents are incomplete or corrupted (such as having been read in from a
@@ -500,7 +500,7 @@ ResultType Var::SetClipboardAll(void *aData, size_t aDataSize)
 		// at least be more consistent than leaving it uninitialized, if anything ever uses it.
 		if (   !(hglobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, size + (size == 0)))   )
 		{
-			g_clip.Close();
+			g_clip->Close();
 			return MemoryError();
 		}
 		if (size) // i.e. Don't try to lock memory of size zero.  It's not needed.
@@ -508,8 +508,8 @@ ResultType Var::SetClipboardAll(void *aData, size_t aDataSize)
 			if (   !(hglobal_locked = GlobalLock(hglobal))   )
 			{
 				GlobalFree(hglobal);
-				g_clip.Close();
-				return g_script.RuntimeError(ERR_INTERNAL_CALL); // Generic msg since so rare.
+				g_clip->Close();
+				return g_script->RuntimeError(ERR_INTERNAL_CALL); // Generic msg since so rare.
 			}
 			memcpy(hglobal_locked, binary_contents, size);
 			GlobalUnlock(hglobal);
@@ -519,7 +519,7 @@ ResultType Var::SetClipboardAll(void *aData, size_t aDataSize)
 		SetClipboardData(format, hglobal); // The system now owns hglobal.
 	}
 
-	return g_clip.Close();
+	return g_clip->Close();
 }
 
 
@@ -580,7 +580,7 @@ ResultType Var::AssignString(LPCTSTR aBuf, VarSizeType aLength, bool aExactSize)
 		// writing the value into, and should call Close() in order to commit the actual value.
 	}
 	else if (mType == VAR_CONSTANT) // Might be impossible due to prior validation of assignments/output vars.
-		return g_script.VarIsReadOnlyError(this);
+		return g_script->VarIsReadOnlyError(this);
 
 	if (space_needed < 2) // Variable is being assigned the empty string (or a deref that resolves to it).
 	{
@@ -767,7 +767,7 @@ ResultType Var::AssignBinaryNumber(__int64 aNumberAsInt64, VarAttribType aAttrib
 		return AssignVirtual(value);
 	}
 	else if (mType == VAR_CONSTANT) // Might be impossible due to prior validation of assignments/output vars.
-		return g_script.VarIsReadOnlyError(this);
+		return g_script->VarIsReadOnlyError(this);
 
 	auto release_me = (mAttrib & VAR_ATTRIB_IS_OBJECT) ? mObject : nullptr;
 
@@ -1084,7 +1084,7 @@ void Var::SetLengthFromContents()
 		max_count = 1; // Contents() == Var::sEmptyString in this case, so check it hasn't been tampered with.
 	length = _tcsnlen(contents, max_count);
 	if (length == max_count)
-		g_script.CriticalError(ERR_STRING_NOT_TERMINATED, mName);
+		g_script->CriticalError(ERR_STRING_NOT_TERMINATED, mName);
 	mByteLength = _TSIZE(length);
 }
 
@@ -1173,6 +1173,8 @@ void Var::Restore(VarBkp &aVarBkp)
 
 void Var::FreeAndRestoreFunctionVars(UserFunc &aFunc, VarBkp *&aVarBackup, int &aVarBackupCount)
 {
+	if ((char)g->IsPaused == -1)
+		g->IsPaused = false;
 	int i;
 	for (i = 0; i < aFunc.mVars.mCount; ++i)
 		aFunc.mVars.mItem[i]->Free(VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES | VAR_REQUIRE_INIT); // Clear aliases, since their targets should not be freed (they don't belong to this function).
@@ -1226,7 +1228,7 @@ ResultType DisplayNameError(LPCTSTR aErrorFormat, int aDisplayError, LPCTSTR aNa
 	sntprintf(msg, _countof(msg), aErrorFormat
 		, sErrorSubject[VALIDATENAME_SUBJECT_INDEX(aDisplayError)]
 		, aName);
-	return g_script.ScriptError(msg);
+	return g_script->ScriptError(msg);
 }
 
 

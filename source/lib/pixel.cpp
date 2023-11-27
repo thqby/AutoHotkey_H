@@ -686,17 +686,17 @@ bif_impl FResult ImageSearch(ResultToken *aFoundX, ResultToken *aFoundY
 				// Since the first pixel is a match, check the other pixels.
 				for (found = true, x = 0, y = 0, j = 0, k = i; j < image_pixel_count; ++j)
 				{
-   					search_red = GetBValue(image_pixel[j]);
-	   				search_green = GetGValue(image_pixel[j]);
-		   			search_blue = GetRValue(image_pixel[j]);
+					search_red = GetBValue(image_pixel[j]);
+					search_green = GetGValue(image_pixel[j]);
+					search_blue = GetRValue(image_pixel[j]);
 					SET_COLOR_RANGE
-   					red = GetBValue(screen_pixel[k]);
-	   				green = GetGValue(screen_pixel[k]);
-		   			blue = GetRValue(screen_pixel[k]);
+					red = GetBValue(screen_pixel[k]);
+					green = GetGValue(screen_pixel[k]);
+					blue = GetRValue(screen_pixel[k]);
 
 					if (!(found = red >= red_low && red <= red_high
 						&& green >= green_low && green <= green_high
-                        && blue >= blue_low && blue <= blue_high
+						&& blue >= blue_low && blue <= blue_high
 							|| image_mask && image_mask[j]     // Or: It's an icon's transparent pixel, which matches any color.
 							|| image_pixel[j] == trans_color)) // This should be okay even if trans_color==CLR_NONE, since CLR_NONE should never occur naturally in the image.
 						break; // At least one pixel doesn't match, so this candidate is discarded.

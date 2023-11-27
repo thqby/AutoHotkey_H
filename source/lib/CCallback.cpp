@@ -45,6 +45,7 @@ struct RCCallbackFunc // Used by BIF_CallbackCreate() and related.
 #define CBF_PASS_PARAMS_POINTER	2
 	UCHAR flags; // Kept adjacent to above to conserve memory due to 4-byte struct alignment in 32-bit builds.
 	IObject *func; // The function object to be called whenever the callback's caller calls callfuncptr.
+	HWND hwnd;
 };
 
 #ifdef _WIN64
@@ -66,6 +67,14 @@ UINT_PTR CALLBACK RegisterCallbackCStub(UINT_PTR *params, char *address) // Used
 #endif
 
 	BOOL pause_after_execute;
+
+	if (g_hWnd != cb.hwnd)
+	{
+		DWORD_PTR result;
+		if (SendMessageTimeout(cb.hwnd, AHK_CALLBACK, (WPARAM)params, (LPARAM)address, SMTO_ABORTIFHUNG | SMTO_BLOCK, 2000, &result))
+			return result;
+		return 0;
+	}
 
 	// NOTES ABOUT INTERRUPTIONS / CRITICAL:
 	// An incoming call to a callback is considered an "emergency" for the purpose of determining whether
@@ -111,12 +120,12 @@ UINT_PTR CALLBACK RegisterCallbackCStub(UINT_PTR *params, char *address) // Used
 			// this whole situation is very rare, and the documentation advises against doing it.
 		}
 		//else the current thread wasn't paused, which is usually the case.
-		// TRAY ICON: g_script.UpdateTrayIcon() is not called because it's already in the right state
+		// TRAY ICON: g_script->UpdateTrayIcon() is not called because it's already in the right state
 		// except when pause_after_execute==true, in which case it seems best not to change the icon
 		// because it's likely to hurt any callback that's performance-sensitive.
 	}
 
-	g_script.mLastPeekTime = GetTickCount(); // Somewhat debatable, but might help minimize interruptions when the callback is called via message (e.g. subclassing a control; overriding a WindowProc).
+	g_script->mLastPeekTime = GetTickCount(); // Somewhat debatable, but might help minimize interruptions when the callback is called via message (e.g. subclassing a control; overriding a WindowProc).
 
 	__int64 number_to_return;
 	FuncResult result_token;
@@ -147,7 +156,7 @@ UINT_PTR CALLBACK RegisterCallbackCStub(UINT_PTR *params, char *address) // Used
 	}
 	else
 	{
-		if (g == g_array && !g_script.mAutoExecSectionIsRunning)
+		if (g == g_array && !g_script->mAutoExecSectionIsRunning)
 			// If the function just called used thread #0 and the AutoExec section isn't running, that means
 			// the AutoExec section definitely didn't launch or control the callback (even if it is running,
 			// it's not 100% certain it launched the callback). This can happen when a fast-mode callback has
@@ -222,6 +231,7 @@ bif_impl FResult CallbackCreate(IObject *func, optl<StrArg> aOptions, optl<int> 
 	if (!callbackfunc)
 		return FR_E_OUTOFMEM;
 	RCCallbackFunc &cb = *callbackfunc; // For convenience and possible code-size reduction.
+	cb.hwnd = g_hWnd;
 
 #ifdef WIN32_PLATFORM
 	cb.data1=0xE8;       // call +0 -- E8 00 00 00 00 ;get eip, stays on stack as parameter 2 for C function (char *address).

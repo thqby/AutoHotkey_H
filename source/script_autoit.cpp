@@ -89,9 +89,9 @@ ResultType Script::DoRunAs(LPTSTR aCommandLine, LPCTSTR aWorkingDir, bool aDispl
 
 bif_impl void RunAs(optl<StrArg> aUser, optl<StrArg> aPass, optl<StrArg> aDomain)
 {
-	StringTCharToWChar(aUser.value_or_empty(), g_script.mRunAsUser);
-	StringTCharToWChar(aPass.value_or_empty(), g_script.mRunAsPass);
-	StringTCharToWChar(aDomain.value_or_empty(), g_script.mRunAsDomain);
+	StringTCharToWChar(aUser.value_or_empty(), g_script->mRunAsUser);
+	StringTCharToWChar(aPass.value_or_empty(), g_script->mRunAsPass);
+	StringTCharToWChar(aDomain.value_or_empty(), g_script->mRunAsDomain);
 }
 
 
@@ -1125,7 +1125,7 @@ bif_impl FResult DirSelect(optl<StrArg> aRootDir, optl<int> aOptions, optl<StrAr
 	if (aGreeting.has_nonempty_value())
 		tcslcpy(greeting, aGreeting.value(), _countof(greeting));
 	else
-		sntprintf(greeting, _countof(greeting), _T("Select Folder - %s"), g_script.DefaultDialogTitle());
+		sntprintf(greeting, _countof(greeting), _T("Select Folder - %s"), g_script->DefaultDialogTitle());
 	bi.lpszTitle = greeting;
 
 	// Bitwise flags:

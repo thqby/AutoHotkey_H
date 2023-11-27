@@ -90,7 +90,7 @@ static FResult ProcessWait(StrArg aProcess, optl<double> aTimeout, UINT &aRetVal
 	bool wait_indefinitely;
 	int sleep_duration, remainder;
 	DWORD start_time = GetTickCount();
-	Line *waiting_line = g_script.mCurrLine;
+	Line *waiting_line = g_script->mCurrLine;
 	if (aTimeout.has_value()) // The param containing the timeout value was specified.
 	{
 		wait_indefinitely = false;
@@ -132,6 +132,8 @@ static FResult ProcessWait(StrArg aProcess, optl<double> aTimeout, UINT &aRetVal
 					// This process has closed, but we may need another iteration to verify that no other
 					// matching processes are running.
 				case WAIT_OBJECT_0 + 1:
+					if ((char)g->IsPaused == -1)
+						return FR_ABORTED;
 					MsgSleepWithListLines(-1, waiting_line, start_time);
 					continue;
 				case WAIT_TIMEOUT:
@@ -141,6 +143,8 @@ static FResult ProcessWait(StrArg aProcess, optl<double> aTimeout, UINT &aRetVal
 				}
 				// In case of failure, fall through:
 			}
+			if ((char)g->IsPaused == -1)
+				return FR_ABORTED;
 			MsgSleepWithListLines(100, waiting_line, start_time);  // For performance reasons, don't check as often as the WinWait family does.
 		}
 		else // Done waiting.
@@ -204,7 +208,7 @@ bif_impl FResult ProcessSetPriority(StrArg aPriority, optl<StrArg> aProcess, UIN
 bif_impl FResult Run(StrArg aTarget, optl<StrArg> aWorkingDir, optl<StrArg> aOptions, ResultToken *aOutPID)
 {
 	HANDLE hprocess;
-	auto result = g_script.ActionExec(aTarget, nullptr, aWorkingDir.value_or_null(), true
+	auto result = g_script->ActionExec(aTarget, nullptr, aWorkingDir.value_or_null(), true
 		, aOptions.value_or_null(), &hprocess, true, true);
 	if (aOutPID && hprocess)
 		aOutPID->SetValue((UINT)GetProcessId(hprocess));

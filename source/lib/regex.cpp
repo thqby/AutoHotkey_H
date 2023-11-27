@@ -258,7 +258,7 @@ int RegExCallout(pcret_callout_block *cb)
 	// may be different each time the pattern is executed.  Aside from potentially having the
 	// wrong nested function, AddRef/Release would be needed in places to support closures.
 	auto callout_name = *cb->user_callout ? cb->user_callout : _T("pcre_callout");
-	auto callout_var = g_script.FindVar(callout_name, 0, FINDVAR_FOR_READ);
+	auto callout_var = g_script->FindVar(callout_name, 0, FINDVAR_FOR_READ);
 	auto callout_func = callout_var ? callout_var->ToObject() : nullptr;
 	if (!callout_func)
 	{
@@ -340,6 +340,51 @@ int RegExCallout(pcret_callout_block *cb)
 	return (int)number_to_return;
 }
 
+
+// SET UP THE CACHE.
+// This is a very crude cache for linear search. Of course, hashing would be better in the sense that it
+// would allow the cache to get much larger while still being fast (I believe PHP caches up to 4096 items).
+// Binary search might not be such a good idea in this case due to the time required to find the right spot
+// to insert a new cache item (however, items aren't inserted often, so it might perform quite well until
+// the cache contained thousands of RegEx's, which is unlikely to ever happen in most scripts).
+struct pcre_cache_entry
+{
+	// For simplicity (and thus performance), the entire RegEx pattern including its options is cached
+	// is stored in re_raw and that entire string becomes the RegEx's unique identifier for the purpose
+	// of finding an entry in the cache.  Technically, this isn't optimal because some options like Study
+	// and aGetPositionsNotSubstrings don't alter the nature of the compiled RegEx.  However, the CPU time
+	// required to strip off some options prior to doing a cache search seems likely to offset much of the
+	// cache's benefit.  So for this reason, as well as rarity and code size issues, this policy seems best.
+	LPTSTR re_raw;      // The RegEx's literal string pattern such as "abc.*123".
+	pcret* re_compiled; // The RegEx in compiled form.
+	pcret_extra* extra; // NULL unless a study() was done (and NULL even then if study() didn't find anything).
+	// int pcre_options; // Not currently needed in the cache since options are implicitly inside re_compiled.
+	int options_length; // Lexikos: See aOptionsLength comment at beginning of this function.
+};
+#define PCRE_CACHE_SIZE 100 // Going too high would be counterproductive due to the slowness of linear search (and also the memory utilization of so many compiled RegEx's).
+thread_local static pcre_cache_entry sCache[PCRE_CACHE_SIZE] = { {0} };
+thread_local static int sLastInsert, sLastFound = -1; // -1 indicates "cache empty".
+
+void free_compiled_regex()
+{
+	for (int i = 0; i < PCRE_CACHE_SIZE; i++)
+	{
+		pcre_cache_entry& this_entry = sCache[i]; // For performance and convenience.
+		if (this_entry.re_compiled) // An existing cache item is being overwritten, so free it's attributes.
+		{
+			// Free the old cache entry's attributes
+			free(this_entry.re_raw);           // Free the uncompiled pattern.
+			pcret_free(this_entry.re_compiled); // Free the compiled pattern.
+			if (this_entry.extra)
+				pcret_free_study(this_entry.extra);
+			this_entry.re_compiled = NULL;
+			this_entry.re_raw = NULL;
+			this_entry.options_length = 0;
+		}
+	}
+	sLastFound = -1;
+}
+
 pcret *get_compiled_regex(LPCTSTR aRegEx, pcret_extra *&aExtra, int *aOptionsLength, ResultToken *aResultToken)
 // Returns the compiled RegEx, or NULL on failure.
 // This function is called by things other than built-in functions so it should be kept general-purpose.
@@ -367,30 +412,6 @@ pcret *get_compiled_regex(LPCTSTR aRegEx, pcret_extra *&aExtra, int *aOptionsLen
 	// so like performance, that's not a concern either.
 	EnterCriticalSection(&g_CriticalRegExCache); // Request ownership of the critical section. If another thread already owns it, this thread will block until the other thread finishes.
 
-	// SET UP THE CACHE.
-	// This is a very crude cache for linear search. Of course, hashing would be better in the sense that it
-	// would allow the cache to get much larger while still being fast (I believe PHP caches up to 4096 items).
-	// Binary search might not be such a good idea in this case due to the time required to find the right spot
-	// to insert a new cache item (however, items aren't inserted often, so it might perform quite well until
-	// the cache contained thousands of RegEx's, which is unlikely to ever happen in most scripts).
-	struct pcre_cache_entry
-	{
-		// For simplicity (and thus performance), the entire RegEx pattern including its options is cached
-		// is stored in re_raw and that entire string becomes the RegEx's unique identifier for the purpose
-		// of finding an entry in the cache.  Technically, this isn't optimal because some options like Study
-		// and aGetPositionsNotSubstrings don't alter the nature of the compiled RegEx.  However, the CPU time
-		// required to strip off some options prior to doing a cache search seems likely to offset much of the
-		// cache's benefit.  So for this reason, as well as rarity and code size issues, this policy seems best.
-		LPTSTR re_raw;      // The RegEx's literal string pattern such as "abc.*123".
-		pcret *re_compiled; // The RegEx in compiled form.
-		pcret_extra *extra; // NULL unless a study() was done (and NULL even then if study() didn't find anything).
-		// int pcre_options; // Not currently needed in the cache since options are implicitly inside re_compiled.
-		int options_length; // Lexikos: See aOptionsLength comment at beginning of this function.
-	};
-
-	#define PCRE_CACHE_SIZE 100 // Going too high would be counterproductive due to the slowness of linear search (and also the memory utilization of so many compiled RegEx's).
-	static pcre_cache_entry sCache[PCRE_CACHE_SIZE] = {{0}};
-	static int sLastInsert, sLastFound = -1; // -1 indicates "cache empty".
 	int insert_pos; // v1.0.45.03: This is used to avoid updating sLastInsert until an insert actually occurs (it might not occur if a compile error occurs in the regex, or something else stops it early).
 
 	// CHECK IF THIS REGEX IS ALREADY IN THE CACHE.

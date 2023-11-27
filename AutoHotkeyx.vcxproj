@@ -85,11 +85,11 @@
   <!-- platform: win32 & x64 (common) -->
   <ItemDefinitionGroup Condition="'$(Platform)'=='Win32' OR '$(Platform)'=='x64'">
     <ClCompile>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>ENABLE_TLS_CALLBACK;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>wsock32.lib;winmm.lib;version.lib;comctl32.lib;psapi.lib;wininet.lib;shlwapi.lib;uxtheme.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>crypt32.lib;wsock32.lib;winmm.lib;version.lib;comctl32.lib;psapi.lib;wininet.lib;shlwapi.lib;uxtheme.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <StackReserveSize>4194304</StackReserveSize>
       <TerminalServerAware Condition="!$(ConfigDll)">false</TerminalServerAware>
       <DataExecutionPrevention>false</DataExecutionPrevention>
@@ -120,7 +120,7 @@
     <IntDir>$(ProjectDir)temp\$(Platform)\$(Configuration)\</IntDir>
     <BinDir>bin</BinDir>
     <OutDir>$(BinDir)\</OutDir>
-    <OutDir Condition="$(ConfigDebug)">$(BinDir)_debug\</OutDir>
+    <OutDir Condition="$(ConfigDebug)">$(BinDir)_debug\$(Platform)\</OutDir>
     <OutDir Condition="$(ConfigMinSize)">$(BinDir)_minimal\</OutDir>
     <BinSuffixChar Condition="'$(CharacterSet)'=='MultiByte'">A</BinSuffixChar>
     <BinTypeWord>$(CharacterSet)</BinTypeWord>
@@ -131,6 +131,10 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
+      <!-- pre-processor definition: ENABLE_DECIMAL -->
+      <PreprocessorDefinitions Condition="Exists('$(ProjectDir)source\lib_mpir\win$(PlatformArchitecture)\mpir.lib')">ENABLE_DECIMAL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- pre-processor definition: ENABLE_VLD -->
+      <PreprocessorDefinitions Condition="$(ConfigDebug) AND Exists('$(ProjectDir)source\Visual Leak Detector\')">ENABLE_VLD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeader Condition="!$(ConfigDebug)">Use</PrecompiledHeader>
       <AdditionalIncludeDirectories>$(ProjectDir)source;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
@@ -149,6 +153,9 @@
     <ResourceCompile>
       <PreprocessorDefinitions>CONFIG_DLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
+    <Link>
+      <ModuleDefinitionFile>source\resources\COMServer.def</ModuleDefinitionFile>
+    </Link>
   </ItemDefinitionGroup>
   <!-- self-contained: required settings -->
   <PropertyGroup Condition="$(ConfigSC)">
@@ -282,6 +289,16 @@
     <ClCompile Include="source\var.cpp" />
     <ClCompile Include="source\window.cpp" />
     <ClCompile Include="source\WinGroup.cpp" />
+    <ClCompile Include="source\COMServer.cpp">
+      <ExcludedFromBuild Condition="!$(ConfigDll)">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="source\decimal.cpp" />
+    <ClCompile Include="source\exports.cpp" />
+    <ClCompile Include="source\LiteZip.cpp" />
+    <ClCompile Include="source\lowlevelbif.cpp" />
+    <ClCompile Include="source\MemoryModule.cpp" />
+    <ClCompile Include="source\MinHook.cpp" />
+    <ClCompile Include="source\script_h.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\abi.h" />
@@ -320,6 +337,11 @@
     <ClInclude Include="source\var.h" />
     <ClInclude Include="source\window.h" />
     <ClInclude Include="source\WinGroup.h" />
+    <ClInclude Include="source\decimal.h" />
+    <ClInclude Include="source\exports.h" />
+    <ClInclude Include="source\LiteZip.h" />
+    <ClInclude Include="source\MemoryModule.h" />
+    <ClInclude Include="source\MinHook.h" />
   </ItemGroup>
   <PropertyGroup>
     <Masm>ml /safeseh</Masm>
@@ -334,6 +356,7 @@
     </CustomBuild>
     <ClCompile>
       <TreatWarningAsError Condition="!$(ConfigDebug)">true</TreatWarningAsError>
+      <EnableFiberSafeOptimizations Condition="!$(ConfigDebug)">true</EnableFiberSafeOptimizations>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -400,7 +423,7 @@
       </ClCompile>
     </ItemGroup>
   </Target>
-  <Target Name="SetAhkVersion" Condition="Exists('@(AhkVersionInput)')" BeforeTargets="PrepareForBuild">
+  <Target Name="SetAhkVersion" Condition="!$(ConfigDebug) AND Exists('@(AhkVersionInput)')" BeforeTargets="PrepareForBuild">
     <Exec Condition="'$(RawAhkVersion)'==''" Command="git describe --dirty --match v*" ConsoleToMSBuild="true" IgnoreExitCode="true" EchoOff="true">
       <Output PropertyName="GitDescription" TaskParameter="ConsoleOutput" />
     </Exec>

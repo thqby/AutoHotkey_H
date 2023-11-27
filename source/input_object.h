@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 class InputObject : public Object
 {
@@ -10,7 +10,7 @@ class InputObject : public Object
 public:
 	IObject *onEnd = nullptr, *onKeyDown = nullptr, *onChar = nullptr, *onKeyUp = nullptr;
 
-	static Object *sPrototype;
+	thread_local static Object *sPrototype;
 	static ObjectMemberMd sMembers[];
 	static int sMemberCount;
 
@@ -43,6 +43,7 @@ public:
 	FResult get_EndMods(StrRet &aRetVal);
 	FResult get_Input(StrRet &aRetVal);
 	FResult get_Match(StrRet &aRetVal);
+	FResult set_Input(StrArg aInput);
 	
 	#define ONX_OPTION(X, N) \
 		FResult get_On##X(IObject *&aRetVal) { \

@@ -29,6 +29,7 @@ GNU General Public License for more details.
 #define  DC_BORLAND             0x0001      // Borland compat
 #define  DC_CALL_CDECL          0x0010      // __cdecl
 #define  DC_CALL_STD            0x0020      // __stdcall
+#define  DC_CALL_THISCALL       0x0040      // __thiscall
 #define  DC_RETVAL_MATH4        0x0100      // Return value in ST
 #define  DC_RETVAL_MATH8        0x0200      // Return value in ST
 
@@ -72,6 +73,7 @@ struct DYNAPARM
 			bool passed_by_address;
 			bool is_unsigned; // Allows return value and output parameters to be interpreted as unsigned vs. signed.
 			bool is_hresult; // Only used for the return value.
+			bool is_ptr;
 		};
 	};
 };
@@ -122,6 +124,15 @@ void DynaCall(void *aFunction, DYNAPARM aParam[], int aParamCount, DWORD &aExcep
 	DWORD esp_start, esp_end;
 	int i, esp_delta; // Declare this here rather than later to prevent C code from interfering with esp.
 
+	DWORD this_ptr; // holds the this parameter in case of calling convention __thiscall
+	if (aFlags & DC_CALL_THISCALL)
+	{
+		// do this early to remove the first parameter from consideration and avoid allocating stack space for it.
+		this_ptr = aParam[0].value_uintptr; // fetch the first parameter
+		aParam++;							// and "remove" it
+		aParamCount--;
+	}
+
 	// Reserve enough space on the stack to handle the worst case of our args (which is currently a
 	// maximum of 8 bytes per arg). This avoids any chance that compiler-generated code will use
 	// the stack in a way that disrupts our insertion of args onto the stack.
@@ -166,6 +177,9 @@ void DynaCall(void *aFunction, DYNAPARM aParam[], int aParamCount, DWORD &aExcep
 		// is performed instead. Pass the pointer as hidden arg.
 		*--our_stack = (DWORD)aRet;	// ESP = ESP - 4, SS:[ESP] = pMem
 	}
+
+	if (aFlags & DC_CALL_THISCALL) // pass the 'this' parameter in ecx register for __thiscall
+		_asm mov ecx, this_ptr
 
 	// Call the function.
 	__try // Each try/except section adds at most 240 bytes of uncompressed code, and typically doesn't measurably affect performance.
@@ -271,9 +285,9 @@ void DynaCall(void *aFunction, DYNAPARM aParam[], int aParamCount, DWORD &aExcep
 	{
 		_itot(esp_delta, buf, 10);
 		if (esp_delta > 0)
-			g_script.ThrowRuntimeException(_T("Parameter list too large."), buf);
+			g_script->ThrowRuntimeException(_T("Parameter list too large."), buf);
 		else
-			g_script.ThrowRuntimeException(_T("Parameter list too small."), buf);
+			g_script->ThrowRuntimeException(_T("Parameter list too small."), buf);
 	}
 	else
 #endif
@@ -285,13 +299,13 @@ void DynaCall(void *aFunction, DYNAPARM aParam[], int aParamCount, DWORD &aExcep
 		buf[0] = '0';
 		buf[1] = 'x';
 		_ultot(aException, buf + 2, 16);
-		g_script.ThrowRuntimeException(ERR_EXCEPTION, buf);
+		g_script->ThrowRuntimeException(ERR_EXCEPTION, buf);
 	}
 }
 
 
 
-void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam)
+void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam, int *aShortNameLen = nullptr)
 // Helper function for DllCall().  Updates aDynaParam's type and other attributes.
 {
 	LPTSTR type_string = aBuf;
@@ -313,6 +327,32 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam)
 	}
 
 	tcslcpy(buf, type_string, _countof(buf)); // Make a modifiable copy for easier parsing below.
+
+	if (aShortNameLen)
+	{
+		aDynaParam.is_ptr = aDynaParam.passed_by_address = false;
+		*aShortNameLen = aDynaParam.is_unsigned + 1;
+		switch (ctolower(*buf))
+		{
+		case 'i': if (buf[1] == '6') aDynaParam.type = DLL_ARG_INT64, ++(*aShortNameLen); else aDynaParam.type = DLL_ARG_INT; break;
+		case 's': aDynaParam.type = DLL_ARG_STR, aDynaParam.is_ptr = true; break;
+		case 'a': aDynaParam.type = DLL_ARG_ASTR, aDynaParam.is_ptr = true; break;
+		case 'w': aDynaParam.type = DLL_ARG_WSTR, aDynaParam.is_ptr = true; break;
+		case 't': aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64), aDynaParam.is_ptr = true; break;
+		case 'c': aDynaParam.type = DLL_ARG_CHAR; break;
+		case 'h': aDynaParam.type = DLL_ARG_SHORT; break;
+		case 'f': aDynaParam.type = DLL_ARG_FLOAT; break;
+		case 'd': aDynaParam.type = DLL_ARG_DOUBLE; break;
+		default: aDynaParam.type = DLL_ARG_INVALID, *aShortNameLen = 0; return;
+		}
+		while (IS_SPACE_OR_TAB(aBuf[*aShortNameLen])) ++(*aShortNameLen);
+		if (aBuf[*aShortNameLen] && _tcschr(_T("*pP"), aBuf[*aShortNameLen]))
+		{
+			++(*aShortNameLen);
+			aDynaParam.passed_by_address = true;
+		}
+		return;
+	}
 
 	// v1.0.30.02: The addition of 'P'.
 	// However, the current detection below relies upon the fact that none of the types currently
@@ -351,7 +391,7 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam)
 			return;
 		}
 		break;
-	case 'p': if (!_tcsicmp(buf, _T("Ptr")))	{ aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64); return; } break;
+	case 'p': if (!_tcsicmp(buf, _T("Ptr")))	{ aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64), aDynaParam.is_ptr = true; return; } break;
 	case 's': if (!_tcsicmp(buf, _T("Str")))	{ aDynaParam.type = DLL_ARG_STR; return; }
 			  if (!_tcsicmp(buf, _T("Short")))	{ aDynaParam.type = DLL_ARG_SHORT; return; } break;
 	case 'd': if (!_tcsicmp(buf, _T("Double")))	{ aDynaParam.type = DLL_ARG_DOUBLE; return; } break;
@@ -361,6 +401,21 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam)
 	case 'c': if (!_tcsicmp(buf, _T("Char")))	{ aDynaParam.type = DLL_ARG_CHAR; return; } break;
 	}
 	aDynaParam.type = DLL_ARG_INVALID;
+}
+
+
+int ConvertDllArgTypes(LPTSTR& aBuf, DYNAPARM *aDynaParam, int aParamCount)
+{
+	int len, arg_count = 0;
+	while (*aBuf)
+	{
+		if (arg_count == aParamCount) return 1;
+		ConvertDllArgType(aBuf, aDynaParam[arg_count], &len);
+		if (len == 0) break;
+		arg_count++;
+		aBuf = omit_leading_whitespace(aBuf + len);
+	}
+	return arg_count - aParamCount;
 }
 
 
@@ -427,7 +482,7 @@ void *GetDllProcAddress(LPCTSTR aDllFileFunc, HMODULE *hmodule_to_free) // L31: 
 			if (   !hmodule_to_free  ||  !(hmodule = *hmodule_to_free = LoadLibrary(dll_name))   )
 			{
 				if (hmodule_to_free) // L31: BIF_DllCall wants us to set throw.  ExpressionToPostfix passes NULL.
-					g_script.ThrowRuntimeException(_T("Failed to load DLL."), dll_name);
+					g_script->ThrowRuntimeException(_T("Failed to load DLL."), dll_name);
 				return NULL;
 			}
 		if (   !(function = (void *)GetProcAddress(hmodule, function_name))   )
@@ -450,7 +505,7 @@ void *GetDllProcAddress(LPCTSTR aDllFileFunc, HMODULE *hmodule_to_free) // L31: 
 		// This must be done here since only we know for certain that the dll
 		// was loaded okay (if GetModuleHandle succeeded, nothing is passed
 		// back to the caller).
-		g_script.ThrowRuntimeException(ERR_NONEXISTENT_FUNCTION, _tfunction_name);
+		g_script->ThrowRuntimeException(ERR_NONEXISTENT_FUNCTION, _tfunction_name);
 	}
 
 	return function;
@@ -482,8 +537,11 @@ BIF_DECL(BIF_DllCall)
 	LPTSTR function_name = NULL;
 	void *function = NULL; // Will hold the address of the function to be called.
 	int vf_index = -1; // Set default: not ComCall.
+	int aID = aResultToken.func ? _f_callee_id : FID_DynaCall, arg_count, i, *param_shift = nullptr;
+	DynaToken* dt = aID == FID_DynaCall ? (DynaToken*)aResultToken.object : nullptr;
+	char step;
 
-	if (_f_callee_id == FID_ComCall)
+	if (aID == FID_ComCall)
 	{
 		function = NULL;
 		if (!ParamIndexIsNumeric(0))
@@ -496,7 +554,7 @@ BIF_DECL(BIF_DllCall)
 		static ExprTokenType t_this_arg_type = _T("Ptr");
 		aParam[0] = &t_this_arg_type;
 	}
-	else
+	else if (!dt)
 	{
 		// Check that the mandatory first parameter (DLL+Function) is valid.
 		// (load-time validation has ensured at least one parameter is present).
@@ -537,6 +595,7 @@ BIF_DECL(BIF_DllCall)
 
 	// Determine the type of return value.
 	DYNAPARM return_attrib = {0}; // Init all to default in case ConvertDllArgType() isn't called below. This struct holds the type and other attributes of the function's return value.
+	DYNAPARM* dyna_param;
 	void* return_struct_ptr = nullptr;
 	Object *return_class = nullptr, *return_proto = nullptr;
 	int return_struct_size = 0;
@@ -567,80 +626,116 @@ BIF_DECL(BIF_DllCall)
 		}
 	} free_after_exit{0};	// Avoid memory leaks when _f_throw_xxx
 #undef UorA_
-	int arg_count = aParamCount/2;
+
+	if (dt)
+	{
+		aResultToken.SetValue(0), step = 1;
+		function = dt->mFunction;
+		auto p = (DYNAPARM*)dt->mData;
+		return_attrib = *p++;
+		arg_count = dt->mParamCount;
+		dyna_param = (DYNAPARM*)_alloca(arg_count * sizeof(DYNAPARM));
+		param_shift = (int*)(p + arg_count);
+		memcpy(dyna_param, p, arg_count * sizeof(DYNAPARM));
+#ifdef WIN32_PLATFORM
+		dll_call_mode = dt->mDllCallMode;
+#endif
+	}
+	else
+	{
+		arg_count = aParamCount / 2, step = 2;
+
+		if (!(aParamCount % 2)) // An even number of parameters indicates the return type has been omitted. aParamCount excludes DllCall's first parameter at this point.
+		{
+			return_attrib.type = DLL_ARG_INT;
+			if (vf_index >= 0) // Default to HRESULT for ComCall.
+				return_attrib.is_hresult = true;
+			// Otherwise, assume normal INT (also covers BOOL).
+		}
+		else
+		{
+			// Check validity of this arg's return type:
+			ExprTokenType &token = *aParam[aParamCount - 1];
+			LPTSTR return_type_string = TokenToString(token); // If non-numeric it will return "", which is detected as invalid below.
+
+			// 64-bit note: The calling convention detection code is preserved here for script compatibility.
+			bool is_thiscall = false;
+			if (!_tcsnicmp(return_type_string, _T("CDecl"), 5) || (is_thiscall = !_tcsnicmp(return_type_string, _T("Thiscall"), 8))) // Alternate calling convention.
+			{
+#ifdef WIN32_PLATFORM
+				if (is_thiscall)
+				{
+					if (aParamCount > 2)
+						ConvertDllArgType(ParamIndexToString(0), return_attrib);
+					if (return_attrib.type != DLL_ARG_INT)
+						_f_throw_value(aParamCount < 3 ? ERR_INVALID_ARG_TYPE : _T("Invalid calling convention."));
+					dll_call_mode = DC_CALL_THISCALL;
+				}
+				else dll_call_mode = DC_CALL_CDECL;
+#endif
+				return_type_string = omit_leading_whitespace(return_type_string + (is_thiscall ? 8 : 5));
+				if (!*return_type_string)
+				{	// Take a shortcut since we know this empty string will be used as "Int":
+					return_attrib.type = DLL_ARG_INT;
+					goto has_valid_return_type;
+				}
+			}
+			if (!_tcsicmp(return_type_string, _T("HRESULT")))
+			{
+				return_attrib.type = DLL_ARG_INT;
+				return_attrib.is_hresult = true;
+				//return_attrib.is_unsigned = true; // Not relevant since an exception is thrown for any negative value.
+			}
+			else if (IObject *obj = TokenToObject(token))
+			{
+				if (obj->IsOfType(Object::sPrototype))
+				{
+					return_class = (Object*)obj;
+					obj = return_class->GetOwnPropObj(_T("Prototype"));
+					if (obj && obj->IsOfType(Object::sPrototype))
+					{
+						return_proto = (Object*)obj;
+						if (return_struct_size = (int)return_proto->LockStructSize())
+							return_attrib.type = DLL_ARG_STRUCT;
+					}
+				}
+			}
+			else
+			{
+				ConvertDllArgType(return_type_string, return_attrib);
+			}
+			if (return_attrib.type == DLL_ARG_INVALID)
+				_f_throw_value(ERR_INVALID_RETURN_TYPE);
+
+has_valid_return_type:
+			--aParamCount;  // Remove the last parameter from further consideration.
+#ifdef WIN32_PLATFORM
+			if (!return_attrib.passed_by_address) // i.e. the special return flags below are not needed when an address is being returned.
+			{
+				if (return_attrib.type == DLL_ARG_DOUBLE)
+					dll_call_mode |= DC_RETVAL_MATH8;
+				else if (return_attrib.type == DLL_ARG_FLOAT)
+					dll_call_mode |= DC_RETVAL_MATH4;
+			}
+#endif
+		}
+
+		// Using stack memory, create an array of dll args large enough to hold the actual number of args present.
+		dyna_param = arg_count ? (DYNAPARM*)_alloca(arg_count * sizeof(DYNAPARM)) : NULL;
+		// Above: _alloca() has been checked for code-bloat and it doesn't appear to be an issue.
+		// Above: Fix for v1.0.36.07: According to MSDN, on failure, this implementation of _alloca() generates a
+		// stack overflow exception rather than returning a NULL value.  Therefore, NULL is no longer checked,
+		// nor is an exception block used since stack overflow in this case should be exceptionally rare (if it
+		// does happen, it would probably mean the script or the program has a design flaw somewhere, such as
+		// infinite recursion).
+	}
+
 	auto pStr = UorA(CStringA**, CStringW**)_alloca(arg_count * sizeof(void*)); // _alloca vs malloc can make a significant difference to performance in some cases.
 	auto pObj = (IObject**)_alloca((arg_count + 1) * sizeof(IObject*)); // The complexity of combining this with pStr to reduce stack usage doesn't seem worth it.
 	free_after_exit.pStr = pStr;
 	free_after_exit.pObj = pObj;
 	auto &nStr = free_after_exit.nStr;
 	auto &nObj = free_after_exit.nObj;
-
-	if ( !(aParamCount % 2) ) // An even number of parameters indicates the return type has been omitted. aParamCount excludes DllCall's first parameter at this point.
-	{
-		return_attrib.type = DLL_ARG_INT;
-		if (vf_index >= 0) // Default to HRESULT for ComCall.
-			return_attrib.is_hresult = true;
-		// Otherwise, assume normal INT (also covers BOOL).
-	}
-	else
-	{
-		// Check validity of this arg's return type:
-		ExprTokenType &token = *aParam[aParamCount - 1];
-		LPTSTR return_type_string = TokenToString(token); // If non-numeric it will return "", which is detected as invalid below.
-
-		// 64-bit note: The calling convention detection code is preserved here for script compatibility.
-
-		if (!_tcsnicmp(return_type_string, _T("CDecl"), 5)) // Alternate calling convention.
-		{
-#ifdef WIN32_PLATFORM
-			dll_call_mode = DC_CALL_CDECL;
-#endif
-			return_type_string = omit_leading_whitespace(return_type_string + 5);
-			if (!*return_type_string)
-			{	// Take a shortcut since we know this empty string will be used as "Int":
-				return_attrib.type = DLL_ARG_INT;
-				goto has_valid_return_type;
-			}
-		}
-		if (!_tcsicmp(return_type_string, _T("HRESULT")))
-		{
-			return_attrib.type = DLL_ARG_INT;
-			return_attrib.is_hresult = true;
-			//return_attrib.is_unsigned = true; // Not relevant since an exception is thrown for any negative value.
-		}
-		else if (IObject *obj = TokenToObject(token))
-		{
-			if (obj->IsOfType(Object::sPrototype))
-			{
-				return_class = (Object*)obj;
-				obj = return_class->GetOwnPropObj(_T("Prototype"));
-				if (obj && obj->IsOfType(Object::sPrototype))
-				{
-					return_proto = (Object*)obj;
-					if (return_struct_size = (int)return_proto->LockStructSize())
-						return_attrib.type = DLL_ARG_STRUCT;
-				}
-			}
-		}
-		else
-		{
-			ConvertDllArgType(return_type_string, return_attrib);
-		}
-		if (return_attrib.type == DLL_ARG_INVALID)
-			_f_throw_value(ERR_INVALID_RETURN_TYPE);
-
-has_valid_return_type:
-		--aParamCount;  // Remove the last parameter from further consideration.
-#ifdef WIN32_PLATFORM
-		if (!return_attrib.passed_by_address) // i.e. the special return flags below are not needed when an address is being returned.
-		{
-			if (return_attrib.type == DLL_ARG_DOUBLE)
-				dll_call_mode |= DC_RETVAL_MATH8;
-			else if (return_attrib.type == DLL_ARG_FLOAT)
-				dll_call_mode |= DC_RETVAL_MATH4;
-		}
-#endif
-	}
 
 	if (return_struct_size)
 	{
@@ -654,26 +749,38 @@ has_valid_return_type:
 		aResultToken.symbol = SYM_INTEGER; // Ensure it is not SYM_OBJECT, for maintainability (in case of early exit due to an error).
 	}
 
-	// Using stack memory, create an array of dll args large enough to hold the actual number of args present.
-	DYNAPARM *dyna_param = arg_count ? (DYNAPARM *)_alloca(arg_count * sizeof(DYNAPARM)) : NULL;
-	// Above: _alloca() has been checked for code-bloat and it doesn't appear to be an issue.
-	// Above: Fix for v1.0.36.07: According to MSDN, on failure, this implementation of _alloca() generates a
-	// stack overflow exception rather than returning a NULL value.  Therefore, NULL is no longer checked,
-	// nor is an exception block used since stack overflow in this case should be exceptionally rare (if it
-	// does happen, it would probably mean the script or the program has a design flaw somewhere, such as
-	// infinite recursion).
-	LPTSTR arg_type_string;
-	int i;
 	// Above has already ensured that after the first parameter, there are either zero additional parameters
 	// or an even number of them.  In other words, each arg type will have an arg value to go with it.
 	// It has also verified that the dyna_param array is large enough to hold all of the args.
-	for (arg_count = 0, i = 0; i < aParamCount; ++arg_count, i += 2)  // Same loop as used later below, so maintain them together.
+	for (auto arg_count = 0, i = step - 1; i < aParamCount; ++arg_count, i += step)  // Same loop as used later below, so maintain them together.
 	{
 		// Store each arg into a dyna_param struct, using its arg type to determine how.
-		DYNAPARM &this_dyna_param = dyna_param[arg_count];
+		DYNAPARM &this_dyna_param = dyna_param[param_shift ? param_shift[arg_count] : arg_count];
 		Object *param_class = nullptr, *param_proto = nullptr;
 
-		if (IObject *obj = TokenToObject(*aParam[i]))
+		if (dt)
+		{
+			if (aParam[i]->symbol == SYM_MISSING)
+				continue;
+			else
+			{
+				SymbolType tp = TypeOfToken(*aParam[i]);
+				if (tp == SYM_INTEGER)
+				{
+					if (this_dyna_param.is_ptr || this_dyna_param.type == DLL_ARG_INT || this_dyna_param.type == DLL_ARG_INT64)
+					{
+						this_dyna_param.value_int64 = ParamIndexToInt64(i);
+						continue;
+					}
+				}
+				else if (tp == SYM_STRING && this_dyna_param.is_ptr && this_dyna_param.type != DLL_ARG_xSTR)
+				{
+					this_dyna_param.ptr = ParamIndexToString(i);
+					continue;
+				}
+			}
+		}
+		else if (IObject *obj = TokenToObject(*aParam[i - 1]))
 		{
 			this_dyna_param.type = DLL_ARG_INVALID;
 			if (obj->IsOfType(Object::sPrototype))
@@ -690,23 +797,23 @@ has_valid_return_type:
 		}
 		else
 		{
-			arg_type_string = TokenToString(*aParam[i]); // aBuf not needed since floating-point and "" are equally invalid.
-			ConvertDllArgType(arg_type_string, this_dyna_param);
+			// aBuf not needed since floating-point and "" are equally invalid.
+			ConvertDllArgType(TokenToString(*aParam[i - 1]), this_dyna_param);
 		}
 		if (this_dyna_param.type == DLL_ARG_INVALID)
 			_f_throw_value(ERR_INVALID_ARG_TYPE);
 
-		IObject *this_param_obj = TokenToObject(*aParam[i + 1]);
+		IObject *this_param_obj = TokenToObject(*aParam[i]);
 		if (this_param_obj && this_dyna_param.type != DLL_ARG_STRUCT)
 		{
 			if ((this_dyna_param.passed_by_address || this_dyna_param.type == DLL_ARG_STR)
 				&& dynamic_cast<VarRef*>(this_param_obj))
 			{
-				aParam[i + 1] = (ExprTokenType *)_alloca(sizeof(ExprTokenType));
-				aParam[i + 1]->SetVarRef(static_cast<VarRef*>(this_param_obj));
+				aParam[i] = (ExprTokenType *)_alloca(sizeof(ExprTokenType));
+				aParam[i]->SetVarRef(static_cast<VarRef*>(this_param_obj));
 				this_param_obj = nullptr;
 			}
-			else if (ctoupper(*arg_type_string) == 'P')
+			else if (this_dyna_param.is_ptr)
 			{
 				// Support Buffer.Ptr, but only for "Ptr" type.  All other types are reserved for possible
 				// future use, which might be general like obj.ToValue(), or might be specific to DllCall
@@ -717,7 +824,7 @@ has_valid_return_type:
 				continue;
 			}
 		}
-		ExprTokenType &this_param = *aParam[i + 1];
+		ExprTokenType &this_param = *aParam[i];
 		if (this_param.symbol == SYM_MISSING && this_dyna_param.type != DLL_ARG_STRUCT) // Permit struct classes with __value to handle unset.
 			_f_throw(ERR_PARAM_REQUIRED);
 
@@ -789,20 +896,20 @@ has_valid_return_type:
 				aResultToken.symbol = SYM_STRING; // Set default for Invoke.
 				aResultToken.marker = _T("");
 				auto obj = Object::Create();
-				if (!obj->New(aResultToken, aParam + i, 1))
+				if (!obj->New(aResultToken, aParam + i - 1, 1))
 					return; // New releases obj on failure.
 				pObj[nObj++] = this_param_obj = obj;
 				aResultToken.symbol = SYM_STRING; // Set default for Invoke (New set aResultToken to obj without calling AddRef).
 				aResultToken.marker = _T("");
 				auto result = obj->Invoke(aResultToken, IT_SET | IF_BYPASS_METAFUNC | IF_NO_NEW_PROPS
-					, _T("__value"), ExprTokenType(obj), aParam + i + 1, 1);
+					, _T("__value"), ExprTokenType(obj), aParam + i, 1);
 				if (result == INVOKE_NOT_HANDLED)
 				{
 					if (this_param.symbol == SYM_MISSING)
 						_f_throw(ERR_PARAM_REQUIRED);
 					ExprTokenType tn;
 					_f_throw_type(param_proto->GetOwnProp(tn, _T("__Class")) && tn.symbol == SYM_STRING
-						? tn.marker : _T("Object"), *aParam[i + 1]);
+						? tn.marker : _T("Object"), *aParam[i]);
 				}
 				if (aResultToken.Exited())
 					return;
@@ -897,7 +1004,7 @@ has_valid_return_type:
 		// Don't bother with freeing hmodule_to_free since a critical error like this calls for minimal cleanup.
 		// The OS almost certainly frees it upon termination anyway.
 		// Call CriticalError() so that the user knows *which* DllCall is at fault:
-		g_script.CriticalError(_T("An invalid write to an empty variable was detected."));
+		g_script->CriticalError(_T("An invalid write to an empty variable was detected."));
 		// CriticalError always terminates the process.
 	}
 
@@ -905,7 +1012,7 @@ has_valid_return_type:
 	{
 		if (!g->ThrownToken)
 			// "Error values (as defined by the FAILED macro) are never returned"; so FAIL, not FAIL_OR_OK.
-			g_script.Win32Error((DWORD)return_value.Int, FAIL);
+			g_script->Win32Error((DWORD)return_value.Int, FAIL);
 		// If a script exception was thrown by DynaCall(), it was either because the called function threw
 		// a SEH exception or because the stdcall parameter list was the wrong size.  In any of these cases,
 		// set FAIL result to ensure control is transferred as expected (exiting the thread or TRY block).
@@ -1048,15 +1155,15 @@ has_valid_return_type:
 
 	// Store any output parameters back into the input variables.  This allows a function to change the
 	// contents of a variable for the following arg types: String and Pointer to <various number types>.
-	for (arg_count = 0, i = 0; i < aParamCount; ++arg_count, i += 2) // Same loop as used above, so maintain them together.
+	for (arg_count = 0, i = step - 1; i < aParamCount; ++arg_count, i += step) // Same loop as used above, so maintain them together.
 	{
-		ExprTokenType &this_param = *aParam[i + 1];  // Resolved for performance and convenience.
-		DYNAPARM &this_dyna_param = dyna_param[arg_count];
+		ExprTokenType &this_param = *aParam[i];  // Resolved for performance and convenience.
+		DYNAPARM &this_dyna_param = dyna_param[param_shift ? param_shift[arg_count] : arg_count];
 
 		if (IObject * obj = TokenToObject(this_param)) // Implies the type is "Ptr" or "Ptr*".
 		{
 			if (this_dyna_param.passed_by_address)
-				SetObjectIntProperty(obj, _T("Ptr"), this_dyna_param.value_int64, aResultToken);
+				SetObjectIntProperty(obj, _T("Ptr"), this_dyna_param.value_uintptr, aResultToken);
 			continue;
 		}
 
@@ -1141,6 +1248,366 @@ has_valid_return_type:
 			aResultToken.SetValue(pObj[0]);
 			pObj[0]->AddRef();
 		}
+	}
+}
+
+
+BIF_DECL(BIF_DynaCall)
+{
+	DynaToken* obj = new DynaToken();
+	if (!obj)
+		_o_throw_oom;
+	obj->SetBase(DynaToken::sPrototype);
+
+	IObjPtr dyobj{ obj };
+	ExprTokenType token{}, miss(0);
+	DYNAPARM return_attrib, *dyna_param = nullptr;
+	int* param_shift = nullptr, i;
+	char* param_free = nullptr;
+
+	switch (TypeOfToken(*aParam[0]))
+	{
+	case SYM_STRING:
+		obj->mFunction = (void*)GetDllProcAddress(ParamIndexToString(0));
+		break;
+	case SYM_INTEGER:
+		obj->mFunction = (void*)ParamIndexToInt64(0);
+		break;
+	case SYM_OBJECT:
+		size_t n;
+		GetBufferObjectPtr(aResultToken, ParamIndexToObject(0), n);
+		if (aResultToken.Exited())
+			return;
+		obj->mFunction = (void*)n;
+		break;
+	default:
+		_o_throw(ERR_PARAM1_INVALID, ErrorPrototype::Type);
+	}
+	if (!obj->mFunction)
+		_o_throw(ERR_NONEXISTENT_FUNCTION);
+	else if (obj->mFunction < (void*)65536)
+		_o_throw_param(0);
+
+#ifdef WIN32_PLATFORM
+	obj->mDllCallMode = 0; // Set default.  Can be overridden to DC_CALL_CDECL and flags can be OR'd into it.
+#endif
+	return_attrib.type = DLL_ARG_INT;
+	// Check validity of this arg's return type:
+	Array* arr = nullptr;
+	if (aParamCount > 1)
+	{
+		LPTSTR return_type_string;
+		switch (TypeOfToken(*aParam[1]))
+		{
+		case SYM_STRING:
+			return_type_string = ParamIndexToString(1);
+			break;
+		case SYM_OBJECT:
+			if ((arr = dynamic_cast<Array*>(ParamIndexToObject(1))) && arr->ItemToToken(0, token) && token.symbol == SYM_STRING) {
+				return_type_string = token.marker;
+				break;
+			}
+		default:
+			_o_throw(ERR_PARAM2_INVALID, ErrorPrototype::Type);
+		}
+
+		return_type_string = omit_leading_whitespace(return_type_string);
+
+		// 64-bit note: The calling convention detection code is preserved here for script compatibility.
+		LPTSTR equ;
+		if (equ = _tcschr(return_type_string, '=')) {
+			if (equ != return_type_string) {
+				ConvertDllArgType(return_type_string, return_attrib, &i);
+				if (return_type_string + i != equ && !IS_SPACE_OR_TAB(return_type_string[i]))
+					_f_throw_value(ERR_INVALID_RETURN_TYPE, return_type_string);
+			}
+			return_type_string = omit_leading_whitespace(equ + (equ[1] == '=' || equ[1] == '@' ? 2 : 1));
+#ifdef WIN32_PLATFORM
+			if (equ[1] == '=')
+				obj->mDllCallMode = DC_CALL_CDECL;
+			else if (equ[1] == '@')
+				obj->mDllCallMode = DC_CALL_THISCALL;
+
+			if (!return_attrib.passed_by_address) // i.e. the special return flags below are not needed when an address is being returned.
+			{
+				if (return_attrib.type == DLL_ARG_DOUBLE)
+					obj->mDllCallMode |= DC_RETVAL_MATH8;
+				else if (return_attrib.type == DLL_ARG_FLOAT)
+					obj->mDllCallMode |= DC_RETVAL_MATH4;
+			}
+#endif
+		}
+
+		for (i = 0; return_type_string[i]; i++)
+			if (!_tcschr(_T("UP*0123456789 \t"), ctoupper(return_type_string[i])))
+				obj->mParamCount++;
+
+		obj->mData = malloc(sizeof(DYNAPARM) + obj->mParamCount * (sizeof(DYNAPARM) + sizeof(int) + sizeof(char)));
+		if (!(dyna_param = (DYNAPARM*)obj->mData))
+			_o_throw_oom;
+		*dyna_param = return_attrib;
+		if (i = ConvertDllArgTypes(return_type_string, ++dyna_param, obj->mParamCount))
+			_o_throw_value(i > 0 ? ERR_PARAM_COUNT_INVALID : ERR_INVALID_ARG_TYPE, return_type_string);
+#ifdef WIN32_PLATFORM
+		if (obj->mDllCallMode & DC_CALL_THISCALL)
+			if (!obj->mParamCount)
+				_f_throw_value(_T("Invalid calling convention."));
+			else if (dyna_param[0].type != DLL_ARG_INT)
+				_f_throw_value(ERR_INVALID_ARG_TYPE, return_type_string);
+#endif
+		param_shift = (int*)(dyna_param + obj->mParamCount);
+		param_free = (char*)(param_shift + obj->mParamCount);
+		memset(param_free, 0, obj->mParamCount);
+	}
+
+	ResultToken temp{};
+	aParamCount -= 2, aParam += 2;
+	for (i = 0; i < obj->mParamCount; i++)  // Same loop as used in DynaToken::Create below, so maintain them together.
+	{
+		DYNAPARM& this_dyna_param = dyna_param[i];
+		ExprTokenType& this_param = i < aParamCount ? *aParam[i] : miss;
+		IObject* this_param_obj = TokenToObject(this_param);
+		if (this_param_obj)
+		{
+			// Support Buffer.Ptr, but only for "Ptr" type.  All other types are reserved for possible
+			// future use, which might be general like obj.ToValue(), or might be specific to DllCall
+			// or the particular type of this arg (Int, Float, etc.).
+			if (this_dyna_param.is_ptr || this_dyna_param.type == DLL_ARG_STR || this_dyna_param.type == DLL_ARG_xSTR)
+			{
+				GetDllArgObjectPtr(aResultToken, this_param_obj, this_dyna_param.value_uintptr);
+				if (aResultToken.Exited())
+					return;
+				continue;
+			}
+		}
+
+		SymbolType tp = TypeOfToken(this_param);
+		switch (this_dyna_param.type)
+		{
+		case DLL_ARG_STR:
+		case DLL_ARG_xSTR:
+			if (tp == SYM_INTEGER)
+				this_dyna_param.ptr = (void*)TokenToInt64(this_param);
+			else if (tp == SYM_STRING) {
+				size_t len;
+				this_dyna_param.ptr = TokenToString(this_param, NULL, &len);
+				param_free[i] = 1;
+				if (len) {
+					if (this_dyna_param.type == DLL_ARG_xSTR) {
+#ifdef UNICODE
+						this_dyna_param.ptr = CStringCharFromWChar((LPTSTR)this_dyna_param.ptr).DetachBuffer();
+#else
+						this_dyna_param.ptr = CStringWCharFromChar((LPTSTR)this_dyna_param.ptr).DetachBuffer();
+#endif // UNICODE
+					}
+					else
+						this_dyna_param.ptr = temp.Malloc((LPTSTR)this_dyna_param.ptr, len);
+				}
+				else this_dyna_param.ptr = L"", param_free[i] = 2;
+			}
+			else
+				_o_throw_type(_T("String"), this_param);
+			break;
+
+		case DLL_ARG_DOUBLE:
+		case DLL_ARG_FLOAT:
+			// This currently doesn't validate that this_dyna_param.is_unsigned==false, since it seems
+			// too rare and mostly harmless to worry about something like "Ufloat" having been specified.
+			if (!TokenIsNumeric(this_param))
+				_f_throw_type(_T("Number"), this_param);
+			this_dyna_param.value_double = TokenToDouble(this_param);
+			if (this_dyna_param.type == DLL_ARG_FLOAT)
+				this_dyna_param.value_float = (float)this_dyna_param.value_double;
+			break;
+
+		default: // Namely:
+			//case DLL_ARG_INT:
+			//case DLL_ARG_SHORT:
+			//case DLL_ARG_CHAR:
+			//case DLL_ARG_INT64:
+			if (tp == SYM_STRING && this_dyna_param.is_ptr == 1) {
+				this_dyna_param.ptr = TokenToString(this_param);
+				if (this_param.symbol == SYM_VAR)
+					this_dyna_param.ptr = _tcsdup((LPTSTR)this_dyna_param.ptr), param_free[i] = true;
+			}
+			else if (!TokenIsNumeric(this_param))
+				_f_throw_type(_T("Number"), this_param);
+			else this_dyna_param.value_int64 = TokenToInt64(this_param);
+		} // switch (this_dyna_param.type)
+	} // for() each arg.
+
+	for (i = 0; i < obj->mParamCount; i++)
+		param_shift[i] = i;
+	UINT arrLen;
+	if (arr && (arrLen = arr->Length()) > 1)
+	{
+		// Set shift info for parameters, -1 for definition in first item.
+		memset(param_shift, -1, obj->mParamCount * sizeof(int));
+		bool* paramslist = (bool*)_alloca(obj->mParamCount);
+		memset(paramslist, 0, obj->mParamCount);
+		for (UINT i = 1; i < arrLen; i++) {
+			arr->ItemToToken(i, token);
+			if (token.symbol != SYM_INTEGER)
+				_o_throw_type(_T("Integer"), token);
+			else if (token.value_int64 < 1 || token.value_int64 > obj->mParamCount || paramslist[token.value_int64 - 1])
+				_o_throw(ERR_INVALID_INDEX, TokenToString(token, _f_number_buf), ErrorPrototype::Index);
+			param_shift[i] = (int)(token.value_int64 - 1);
+			paramslist[token.value_int64 - 1] = true;
+		}
+		for (i = 0; i < obj->mParamCount; i++) {
+			if (paramslist[i]) continue;
+			for (int j = 0; j < obj->mParamCount; j++)
+				if (param_shift[j] == -1) {
+					param_shift[j] = i;
+					goto next;
+				}
+		next:;
+		}
+	}
+	dyobj.obj = nullptr;
+	_o_return(obj);
+}
+
+DynaToken* DynaToken::Create(ExprTokenType* aParam[], int aParamCount)
+{
+	ResultToken result{};
+	TCHAR buf[MAX_NUMBER_SIZE];
+	result.InitResult(buf);
+	BIF_DynaCall(result, aParam, aParamCount);
+	return result.symbol == SYM_OBJECT ? (DynaToken*)result.object : nullptr;
+}
+
+DynaToken::~DynaToken()
+{
+	if (!mData)
+		return;
+	auto param = (DYNAPARM*)mData + 1;
+	char* param_free = ((char*)param + mParamCount * (sizeof(DYNAPARM) + sizeof(int)));
+	for (int i = 0; i < mParamCount; i++)
+		if (param_free[i] == 1)
+			free(param[i].ptr);
+	free(mData);
+}
+
+void DynaToken::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount)
+{
+	switch (aID)
+	{
+	case P_MinParams:
+	case P_MaxParams:
+		_o_return(aID == P_MinParams ? 0 : mParamCount);
+
+	case P_Param: {
+		auto dyna_param = (DYNAPARM*)mData + 1;
+		auto param_shift = (int*)(dyna_param + mParamCount);
+		ExprTokenType* val;
+		SymbolType symbol;
+		if (IS_INVOKE_SET)
+			val = aParam[0], symbol = TypeOfToken(*val), aParam++, aParamCount--;
+		auto index = ParamIndexToInt64(0);
+		if (index < 1 || index > mParamCount)
+			_o_throw(ERR_INVALID_INDEX, ParamIndexToString(0, _f_number_buf), ErrorPrototype::Index);
+		auto& param = dyna_param[index = param_shift[--index]];
+		char& f = ((char*)((char*)mData + mParamCount * (sizeof(DYNAPARM) + sizeof(int))))[index];
+		switch (param.type)
+		{
+		case DLL_ARG_STR:
+		case DLL_ARG_xSTR:
+			if (IS_INVOKE_GET) {
+				if (f) _o_return((LPTSTR)param.ptr);
+				else _o_return(param.value_int64);
+			}
+			else {
+				UINT_PTR ptr;
+				size_t len;
+				if (symbol == SYM_OBJECT) {
+					GetBufferObjectPtr(aResultToken, TokenToObject(*val), ptr);
+					if (aResultToken.Exited())
+						return;
+				}
+				else if (symbol == SYM_INTEGER)
+					ptr = (UINT_PTR)TokenToInt64(*val);
+				else if (symbol == SYM_STRING)
+					ptr = (UINT_PTR)TokenToString(*val, NULL, &len);
+				else _o_throw_type(_T("String"), *val);
+				if (f == 1) free(param.ptr);
+				param.ptr = (void*)ptr, f = 0;;
+				if (symbol == SYM_STRING) {
+					f = 1;
+					if (len) {
+						if (param.type == DLL_ARG_xSTR) {
+#ifdef UNICODE
+							param.ptr = CStringCharFromWChar((LPTSTR)param.ptr).DetachBuffer();
+#else
+							param.ptr = CStringWCharFromChar((LPTSTR)param.ptr).DetachBuffer();
+#endif // UNICODE
+						}
+						else
+							param.ptr = ResultToken().Malloc((LPTSTR)param.ptr, len);
+					}
+					else param.ptr = L"", f = 2;
+				}
+			}
+			break;
+
+		case DLL_ARG_FLOAT:
+			if (IS_INVOKE_GET)
+				_o_return(param.value_float);
+			else if (TokenIsNumeric(*val))
+				param.value_float = (float)TokenToDouble(*val);
+			else
+				_o_throw_type(_T("Number"), *val);
+			break;
+
+		case DLL_ARG_DOUBLE:
+			if (IS_INVOKE_GET)
+				_o_return(param.value_double);
+			else if (TokenIsNumeric(*val))
+				param.value_double = TokenToDouble(*val);
+			else
+				_o_throw_type(_T("Number"), *val);
+			break;
+
+		default:
+			if (IS_INVOKE_GET) {
+				if (param.type == DLL_ARG_INT64)
+					_o_return(param.value_int64);
+				if (param.type == DLL_ARG_INT)
+					_o_return(param.is_unsigned ? (UINT)param.value_int : param.value_int);
+				if (param.type == DLL_ARG_SHORT)
+					_o_return(param.is_unsigned ? param.value_int & 0x0000FFFF : (SHORT)(WORD)param.value_int);
+				if (param.type == DLL_ARG_CHAR)
+					_o_return(param.is_unsigned ? param.value_int & 0x000000FF : (char)(BYTE)param.value_int);
+			}
+			else if (IS_NUMERIC(symbol))
+				param.value_int64 = TokenToInt64(*val);
+			else
+				_o_throw_type(_T("Number"), *val);
+			break;
+		}
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+MdType ConvertDllArgType(LPTSTR aBuf, bool &aPassedByAddr) {
+	DYNAPARM dyna_token;
+	int len = 0;
+	ConvertDllArgType(aBuf, dyna_token, &len);
+	if (aBuf[len])
+		ConvertDllArgType(aBuf, dyna_token);
+	aPassedByAddr = dyna_token.passed_by_address;
+	switch (dyna_token.type)
+	{
+	case DLL_ARG_INT: return dyna_token.is_unsigned ? MdType::UInt32 : MdType::Int32;
+	case DLL_ARG_SHORT: return dyna_token.is_unsigned ? MdType::UInt16 : MdType::Int16;
+	case DLL_ARG_CHAR: return dyna_token.is_unsigned ? MdType::UInt8 : MdType::Int8;
+	case DLL_ARG_INT64: return dyna_token.is_unsigned ? MdType::UInt64 : MdType::Int64;
+	case DLL_ARG_FLOAT: return MdType::Float32;
+	case DLL_ARG_DOUBLE: return MdType::Float64;
+	default: return MdType::Void;
 	}
 }
 

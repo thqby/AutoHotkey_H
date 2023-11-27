@@ -22,15 +22,15 @@ GNU General Public License for more details.
 #include "application.h" // For MsgSleep().
 
 // Declare static variables (global to only this file/module, i.e. no external linkage):
-static HANDLE sKeybdMutex = NULL;
-static HANDLE sMouseMutex = NULL;
+thread_local static HANDLE sKeybdMutex = NULL;
+thread_local static HANDLE sMouseMutex = NULL;
 #define KEYBD_MUTEX_NAME _T("AHK Keybd")
 #define MOUSE_MUTEX_NAME _T("AHK Mouse")
 
 // It's done the following way because:
 // It's unclear that zero is always an invalid thread ID (not even GetWindowThreadProcessId's
 // documentation gives any hint), so its safer to assume that a thread ID can be zero and yet still valid.
-static HANDLE sThreadHandle = NULL;
+thread_local static HANDLE sThreadHandle = NULL;
 
 // Whether to disguise the next up-event for lwin/rwin to suppress Start Menu.
 // There is only one variable because even if multiple modifiers are pressed
@@ -41,8 +41,8 @@ static HANDLE sThreadHandle = NULL;
 // These are made global, rather than static inside the hook function, so that
 // we can ensure they are initialized by the keyboard init function every
 // time it's called (currently it can be only called once):
-static bool sDisguiseNextMenu;          // Initialized by ResetHook().
-static bool sUndisguisedMenuInEffect;	//
+thread_local static bool sDisguiseNextMenu;          // Initialized by ResetHook().
+thread_local static bool sUndisguisedMenuInEffect;	//
 
 // Whether the alt-tab menu was shown by an AltTab hotkey or alt-tab was detected
 // by the hook.  This might be inaccurate if the menu was displayed before the hook
@@ -50,13 +50,13 @@ static bool sUndisguisedMenuInEffect;	//
 // be a problem, the accuracy could be improved by additional checks with FindWindow(),
 // keeping in mind that there are at least 3 different window classes to check,
 // depending on OS and the "AltTabSettings" registry value.
-static bool sAltTabMenuIsVisible;       // Initialized by ResetHook().
+thread_local static bool sAltTabMenuIsVisible;       // Initialized by ResetHook().
 
 // The prefix key that's currently down (i.e. in effect).
 // It's tracked this way, rather than as a count of the number of prefixes currently down, out of
 // concern that such a count might accidentally wind up above zero (due to a key-up being missed somehow)
 // and never come back down, thus penalizing performance until the program is restarted:
-key_type *pPrefixKey;  // Initialized by ResetHook().
+thread_local key_type *pPrefixKey;  // Initialized by ResetHook().
 
 // Less memory overhead (space and performance) to allocate a solid block for multidimensional arrays:
 // These store all the valid modifier+suffix combinations (those that result in hotkey actions) except
@@ -65,11 +65,11 @@ key_type *pPrefixKey;  // Initialized by ResetHook().
 // this way makes the performance impact of adding many additional hotkeys of this type exactly zero
 // once the program has started up and initialized.  The main alternative is a binary search on an
 // array of keyboard-hook hotkeys (similar to how the mouse is done):
-static HotkeyIDType *kvkm = NULL;
-static HotkeyIDType *kscm = NULL;
-static HotkeyIDType *hotkey_up = NULL;
-static key_type *kvk = NULL;
-static key_type *ksc = NULL;
+thread_local static HotkeyIDType *kvkm = NULL;
+thread_local static HotkeyIDType *kscm = NULL;
+thread_local static HotkeyIDType *hotkey_up = NULL;
+thread_local static key_type *kvk = NULL;
+thread_local static key_type *ksc = NULL;
 // Macros for convenience in accessing the above arrays as multidimensional objects.
 // When using them, be sure to consistently access the first index as ModLR (i.e. the rows)
 // and the second as VK or SC (i.e. the columns):
@@ -126,7 +126,7 @@ static key_type *ksc = NULL;
 // 6B  04E	 	d	0.00	Num +          	
 
 
-static bool sHookSyncd; // Only valid while in WaitHookIdle().
+thread_local static bool sHookSyncd; // Only valid while in WaitHookIdle().
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -170,6 +170,8 @@ LRESULT CALLBACK LowLevelKeybdProc(int aCode, WPARAM wParam, LPARAM lParam)
 	else if (event.dwExtraInfo == KEY_BLOCK_THIS)
 		return TRUE;
 
+	AutoTLS atls;
+	atls.Enter(g_enter_tls);
 	// Make all keybd events physical to try to fool the system into accepting CTRL-ALT-DELETE.
 	// This didn't work, which implies that Ctrl-Alt-Delete is trapped at a lower level than
 	// this hook (folks have said that it's trapped in the keyboard driver itself):
@@ -234,6 +236,8 @@ LRESULT CALLBACK LowLevelMouseProc(int aCode, WPARAM wParam, LPARAM lParam)
 		return CallNextHookEx(g_MouseHook, aCode, wParam, lParam);
 
 	MSLLHOOKSTRUCT &event = *(PMSLLHOOKSTRUCT)lParam;  // For convenience, maintainability, and possibly performance.
+	AutoTLS atls;
+	atls.Enter(g_enter_tls);
 
 	// Make all mouse events physical to try to simulate mouse clicks in games that normally ignore
 	// artificial input.
@@ -2181,7 +2185,7 @@ LRESULT AllowIt(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lParam, cons
 		{
 			// This is a key-down hotkey being triggered by releasing a prefix key.
 			// There's also a corresponding key-up hotkey, so fire it too:
-    		PostMessage(g_hWnd, AHK_HOOK_HOTKEY, hotkey_up[aHotkeyIDToPost & HOTKEY_ID_MASK], MAKELONG(pKeyHistoryCurr->sc, input_level));
+			PostMessage(g_hWnd, AHK_HOOK_HOTKEY, hotkey_up[aHotkeyIDToPost & HOTKEY_ID_MASK], MAKELONG(pKeyHistoryCurr->sc, input_level));
 		}
 	}
 	if (hs_wparam_to_post != HOTSTRING_INDEX_INVALID)
@@ -2236,10 +2240,10 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 	if (aKeyUp)
 		return true;
 
-	static vk_type sPendingDeadKeyVK = 0;
-	static sc_type sPendingDeadKeySC = 0; // Need to track this separately because sometimes default VK-to-SC mapping isn't correct.
-	static bool sPendingDeadKeyUsedShift = false;
-	static bool sPendingDeadKeyUsedAltGr = false;
+	thread_local static vk_type sPendingDeadKeyVK = 0;
+	thread_local static sc_type sPendingDeadKeySC = 0; // Need to track this separately because sometimes default VK-to-SC mapping isn't correct.
+	thread_local static bool sPendingDeadKeyUsedShift = false;
+	thread_local static bool sPendingDeadKeyUsedAltGr = false;
 	
 	bool transcribe_key = true;
 	
@@ -2286,8 +2290,8 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 	//  - Pressing a non-dead key disregards any dead key which was placed into the buffer by
 	//    calling ToUnicodeEx, and it is left in the buffer.  To get the correct result for the
 	//    next call, we must NOT reinsert it into the buffer (see dead_key_sequence_complete).
-	static bool sUwpAppFocused = false;
-	static HWND sUwpHwndChecked = 0;
+	thread_local static bool sUwpAppFocused = false;
+	thread_local static HWND sUwpHwndChecked = 0;
 	if (sUwpHwndChecked != active_window)
 	{
 		sUwpHwndChecked = active_window;
@@ -3955,7 +3959,7 @@ void AddRemoveHooks(HookType aHooksToBeActive, bool aChangeIsTemporary)
 		// memory used by the hook thread.  The XP Task Manager's "VM Size" column (which seems much
 		// more accurate than "Mem Usage") indicates that a new thread consumes 28 KB + its stack size.
 		if (!aChangeIsTemporary) // Caller has ensured that thread already exists when aChangeIsTemporary==true.
-			if (sThreadHandle = CreateThread(NULL, 8*1024, HookThreadProc, NULL, 0, &g_HookThreadID))
+			if (sThreadHandle = CreateThread(NULL, 8*1024, HookThreadProc, ((PMYTEB)NtCurrentTeb())->ThreadLocalStoragePointer, 0, &g_HookThreadID))
 				SetThreadPriority(sThreadHandle, THREAD_PRIORITY_TIME_CRITICAL); // See below for explanation.
 			// The above priority level seems optimal because if some other process has high priority,
 			// the keyboard and mouse hooks will still take precedence, which avoids the mouse cursor
@@ -4169,12 +4173,23 @@ bool SystemHasAnotherMouseHook()
 
 
 
-DWORD WINAPI HookThreadProc(LPVOID aUnused)
+DWORD WINAPI HookThreadProc(LPVOID aTls)
 // The creator of this thread relies on the fact that this function always exits its thread
 // when both hooks are deactivated.
 {
 	MSG msg;
 	bool problem_activating_hooks;
+
+	// Inherid thread local storage from main thread
+	auto myteb = (PMYTEB)NtCurrentTeb();
+	auto mytls = myteb->ThreadLocalStoragePointer;
+	myteb->ThreadLocalStoragePointer = g_enter_tls = aTls;
+	// Gets variables for the main thread
+	auto &mainThreadID = g_MainThreadID;
+	auto &KeybdHook = g_KeybdHook, &MouseHook = g_MouseHook;
+	auto &HookSyncd = sHookSyncd;
+	// teb must be restored, otherwise it may crash.
+	myteb->ThreadLocalStoragePointer = mytls;
 
 	for (;;) // Infinite loop for pumping messages in this thread. This thread will exit via any use of "return" below.
 	{
@@ -4225,6 +4240,8 @@ DWORD WINAPI HookThreadProc(LPVOID aUnused)
 					if (UnhookWindowsHookEx(g_MouseHook) || GetLastError() == ERROR_INVALID_HOOK_HANDLE) // Check last error in case the OS has already removed the hook.
 						g_MouseHook = NULL;
 
+			// Also sets the value of the main thread
+			KeybdHook = g_KeybdHook, MouseHook = g_MouseHook;
 			// Upon failure, don't display MsgBox here because although MsgBox's own message pump would
 			// service the hook that didn't fail (if it's active), it's best to avoid any blocking calls
 			// here so that this event loop will continue to run.  For example, the script or OS might
@@ -4235,7 +4252,7 @@ DWORD WINAPI HookThreadProc(LPVOID aUnused)
 			// will discard the message unless the caller has timed out, which seems impossible
 			// in this case).
 			if (msg.wParam) // The caller wants a reply only when it didn't ask us to terminate via deactivating both hooks.
-				PostThreadMessage(g_MainThreadID, AHK_CHANGE_HOOK_STATE, problem_activating_hooks, 0);
+				PostThreadMessage(mainThreadID, AHK_CHANGE_HOOK_STATE, problem_activating_hooks, 0);
 			//else this is WM_QUIT or the caller wanted this thread to terminate.  Send no reply.
 
 			// If caller passes true for msg.lParam, it wants a permanent change to hook state; so in that case, terminate this
@@ -4249,11 +4266,13 @@ DWORD WINAPI HookThreadProc(LPVOID aUnused)
 			break;
 
 		case AHK_HOOK_SYNC:
-			sHookSyncd = true;
+			HookSyncd = true;
 			break;
 
 		case AHK_HOOK_SET_KEYHISTORY:
+			myteb->ThreadLocalStoragePointer = aTls;
 			SetKeyHistoryMax((int)msg.wParam);
+			myteb->ThreadLocalStoragePointer = mytls;
 			break;
 
 		} // switch (msg.message)
@@ -4265,6 +4284,8 @@ DWORD WINAPI HookThreadProc(LPVOID aUnused)
 void ResetHook(bool aAllModifiersUp, HookType aWhichHook, bool aResetKVKandKSC)
 // Caller should ensure that aWhichHook indicates at least one of the hooks (not none).
 {
+	AutoTLS atls;
+	atls.Enter(g_enter_tls);
 	if (pPrefixKey)
 	{
 		// Reset pPrefixKey only if the corresponding hook is being reset.  This fixes

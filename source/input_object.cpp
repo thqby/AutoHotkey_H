@@ -35,6 +35,7 @@ ObjectMemberMd InputObject::sMembers[] =
 	md_property_get(InputObject, InProgress, Bool32),
 	md_property_get(InputObject, Input, String),
 	md_property_get(InputObject, Match, String),
+	md_property_set(InputObject, Input, String),
 	
 	md_property(InputObject, MinSendLevel, Int32),
 	
@@ -49,7 +50,7 @@ ObjectMemberMd InputObject::sMembers[] =
 };
 int InputObject::sMemberCount = _countof(sMembers);
 
-Object *InputObject::sPrototype;
+thread_local Object *InputObject::sPrototype;
 
 InputObject::InputObject()
 {
@@ -74,7 +75,8 @@ FResult InputObject::Start()
 {
 	if (!input.InProgress())
 	{
-		input.Buffer[input.BufferLength = 0] = '\0';
+		if (!input.AppendText)
+			input.Buffer[input.BufferLength = 0] = '\0';
 		InputStart(input);
 	}
 	return OK;
@@ -136,6 +138,16 @@ FResult InputObject::get_EndMods(StrRet &aRetVal)
 FResult InputObject::get_Input(StrRet &aRetVal)
 {
 	aRetVal.SetTemp(input.Buffer, input.BufferLength);
+	return OK;
+}
+
+FResult InputObject::set_Input(StrArg aInput)
+{
+	auto len = _tcslen(aInput);
+	if (len > (size_t)input.BufferLengthMax)
+		return FR_E_OUTOFMEM;
+	_tcscpy(input.Buffer, aInput);
+	input.BufferLength = (int)len;
 	return OK;
 }
 
