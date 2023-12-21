@@ -3330,7 +3330,11 @@ bool isUTF8(BYTE* mBuffer, DWORD mLength) {
 	BYTE c;
 	while (i < mLength) {
 		c = mBuffer[i];
-		if (c < 0x80) { i++; continue; }
+		if (c < 0x80) {
+			if (!c && i + 1 < mLength)
+				return false;
+			i++; continue;
+		}
 		else if (c >= 0xc0 && c < 0xff) {
 			l = c < 0xe0 ? 1 : c < 0xf0 ? 2 : c < 0xf8 ? 3 : c < 0xfc ? 4 : c < 0xfe ? 5 : 6;
 			if (i + l >= mLength) break;
@@ -3524,20 +3528,18 @@ DWORD DecompressBuffer(void *aBuffer,LPVOID &aDataBuf,DWORD sz, LPTSTR pwd) // L
 				free(aDataBuf);
 				return 0;
 			}
-			ze.CompressedSize = aSizeDeCompressed;
+			ze.CompressedSize = aSizeCompressed;
 			ze.UncompressedSize = aSizeDeCompressed;
-			if ((result = UnzipItemToBuffer(huz, aDataBuf, aSizeDeCompressed, &ze)))
+			if ((result = UnzipItemToBuffer(huz, aDataBuf, &ze)))
 				free(aDataBuf);
 			else
 			{
 				UnzipClose(huz);
-				if (aDataEncrypted)
-					free(aDataEncrypted);
+				free(aDataEncrypted);
 				return aSizeDeCompressed;
 			}
 			UnzipClose(huz);
-			if (aDataEncrypted)
-				free(aDataEncrypted);
+			free(aDataEncrypted);
 		}
 	}
 	return 0;

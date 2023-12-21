@@ -56,7 +56,7 @@ extern "C" {
 #define UnzipItemToFile UnzipItemToFileW
 
 	DWORD WINAPI UnzipItemToHandle(HUNZIP, HANDLE, ZIPENTRY *);
-	DWORD WINAPI UnzipItemToBuffer(HUNZIP, void *, ULONGLONG, ZIPENTRY *);
+	DWORD WINAPI UnzipItemToBuffer(HUNZIP, void *, ZIPENTRY *);
 
 	// Function to set the base directory
 	DWORD WINAPI UnzipSetBaseDirW(HUNZIP, const WCHAR *);

@@ -582,7 +582,7 @@ BIF_DECL(BIF_UnZipBuffer)
 		UnzipClose(huz);
 		_o_throw_oom;
 	}
-	if (err = UnzipItemToBuffer(huz, buf, ze.UncompressedSize, &ze))
+	if (err = UnzipItemToBuffer(huz, buf, &ze))
 	{
 		free(buf);
 		goto errorclose;

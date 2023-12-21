@@ -3869,7 +3869,6 @@ size_t Script::GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aInBlo
 					free(aDataBuf);
 				}
 				else {
-					free(aDataBuf);
 					free(data);
 					return -1;
 				}
@@ -10346,9 +10345,15 @@ standard_pop_into_postfix: // Use of a goto slightly reduces code size.
 				|| stack_symbol == SYM_POST_INCREMENT || stack_symbol == SYM_POST_DECREMENT)
 				return LineError(ERR_INVALID_ASSIGNMENT, FAIL, (*stk)->error_reporting_marker);
 			if (  !(stack_symbol == SYM_FUNC || stack_symbol == SYM_MAYBE
-				|| IS_OPAREN_LIKE(stack_symbol) || stack_symbol == SYM_BEGIN)  )
+				|| IS_OPAREN_LIKE(stack_symbol) || stack_symbol == SYM_BEGIN
+				|| stack_symbol == SYM_REF && (stk < stack + stack_count - 1) && stk[1]->symbol == SYM_ASSIGN)  )
 				return LineError(_T("This operator's right operand must not be unset."), FAIL, (*stk)->error_reporting_marker);
 			this_postfix->circuit_token = postfix[postfix_count - 1]; // Update the final jump target (has no effect unless chain_end is followed by the else branch of a ternary).
+			// For each MAYBE at the top of the stack, pop it off and update its jump target too.
+			// Since this MAYBE passed validation, so should those others; but they wouldn't pass
+			// the function parameter check in a case like f(a?.b?).  This fixes that.
+			while (stack[stack_count - 1]->symbol == SYM_MAYBE)
+				stack[--stack_count]->circuit_token = postfix[postfix_count - 1];
 			continue; // This token was already put into postfix by an earlier stage, so skip it this time.
 		}
 

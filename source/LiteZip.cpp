@@ -3441,7 +3441,7 @@ static DWORD unzipEntry(TUNZIP *tunzip, void *dst, ZIPENTRY *ze, DWORD flags)
 			tunzip->CurrentEntryInfo.internal_fa = 1;
 		}
 
-		ze->CompressedSize = readEntry(tunzip, dst, ze->CompressedSize);
+		ze->UncompressedSize = readEntry(tunzip, dst, ze->UncompressedSize);
 		if (tunzip->LastErr || !tunzip->EntryReadVars.RemainingUncompressed)
 		{
 			tunzip->CurrentEntryInfo.internal_fa = 0;
@@ -3529,9 +3529,8 @@ DWORD WINAPI UnzipItemToFileW(HUNZIP tunzip, const WCHAR *fn, ZIPENTRY *ze)
 	return(unzipEntry((TUNZIP*)tunzip, (void *)fn, ze, UNZIP_FILENAME));
 }
 
-DWORD WINAPI UnzipItemToBuffer(HUNZIP tunzip, void *z, ULONGLONG len, ZIPENTRY *ze)
+DWORD WINAPI UnzipItemToBuffer(HUNZIP tunzip, void *z, ZIPENTRY *ze)
 {
-	ze->CompressedSize = len;
 	return(unzipEntry((TUNZIP*)tunzip, z, ze, UNZIP_MEMORY));
 }
 
