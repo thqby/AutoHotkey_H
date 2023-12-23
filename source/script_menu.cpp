@@ -492,7 +492,7 @@ UserMenuItem *UserMenu::FindItem(LPCTSTR aNameOrPos, UserMenuItem *&aPrevItem, b
 		; menu_item
 		; menu_item_prev = menu_item, menu_item = menu_item->mNextMenuItem, ++current_index)
 		if (current_index == index_to_find // Found by index.
-			|| !lstrcmpi(menu_item->mName, aNameOrPos)) // Found by case-insensitive text match.
+			|| !_tcsicmp(menu_item->mName, aNameOrPos)) // Found by case-insensitive text match.
 			break;
 	aPrevItem = menu_item_prev;
 	return menu_item;
@@ -1243,6 +1243,15 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 		// This is necessary to ensure the menu/window style changes made below are reverted.
 		EndMenu();
 		MsgSleep(-1);
+	}
+	// This works around an issue observed on Windows 10, where the menu doesn't respond to
+	// keyboard input if none of the script's windows have previously received input:
+	static bool sAppliedWorkaround = false;
+	if (!sAppliedWorkaround)
+	{
+		sAppliedWorkaround = true;
+		PostMessage(change_fore ? g_hWnd : fore_win, WM_KEYUP, 0, 0);
+		SLEEP_WITHOUT_INTERRUPTION(-1);
 	}
 	MENUINFO mi;
 	mi.cbSize = sizeof(mi);
