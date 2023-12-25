@@ -60,6 +60,9 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - After 2.0.5
   - Merge alpha.2
 
+- After 2.0.11
+  - Revert merge alpha.2
+
 ## Classes List
 ```typescript
 class Decimal {

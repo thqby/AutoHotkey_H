@@ -255,7 +255,10 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			{
 				do_special_msg_filter = false; // Set default.
 				if (g_nFileDialogs) // v1.0.44.12: Also do the special Peek/msg filter below for FileSelect because testing shows that frequently-running timers disrupt the ability to double-click.
-					do_special_msg_filter = IsWindowStandardDialog(fore_window);  // Due to checking g_nFileDialogs above, this means that this dialog is probably FileSelect rather than MsgBox/InputBox/DirSelect (even if this guess is wrong, it seems fairly inconsequential to filter the messages since other pump beneath us on the call-stack will handle them ok).
+				{
+					GetClassName(fore_window, wnd_class_name, _countof(wnd_class_name));
+					do_special_msg_filter = !_tcscmp(wnd_class_name, _T("#32770"));  // Due to checking g_nFileDialogs above, this means that this dialog is probably FileSelect rather than MsgBox/InputBox/DirSelect (even if this guess is wrong, it seems fairly inconsequential to filter the messages since other pump beneath us on the call-stack will handle them ok).
+				}
 				if (!do_special_msg_filter && (focused_control = GetFocus()))
 				{
 					GetClassName(focused_control, wnd_class_name, _countof(wnd_class_name));
@@ -1448,7 +1451,8 @@ break_out_of_main_switch:
 		if ((fore_window = GetForegroundWindow()) != NULL  // There is a foreground window.
 			&& GetWindowThreadProcessId(fore_window, NULL) == g_MainThreadID) // And it belongs to our main thread (the main thread is the only one that owns any windows).
 		{
-			if (IsWindowStandardDialog(fore_window))  // MsgBox, InputBox, FileSelect, DirSelect dialog.
+			GetClassName(fore_window, wnd_class_name, _countof(wnd_class_name));
+			if (!_tcscmp(wnd_class_name, _T("#32770")))  // MsgBox, InputBox, FileSelect, DirSelect dialog.
 			{
 				g->CalledByIsDialogMessageOrDispatch = true; // In case there is any way IsDialogMessage() can call one of our own window proc's rather than that of a MsgBox, etc.
 				g->CalledByIsDialogMessageOrDispatchMsg = msg.message; // Added in v1.0.44.11 because it's known that IsDialogMessage can change the message number (e.g. WM_KEYDOWN->WM_NOTIFY for UpDowns)
@@ -2033,24 +2037,6 @@ BOOL IsInterruptible()
 	}
 	//else g->AllowThreadToBeInterrupted is already up-to-date.
 	return (BOOL)g->AllowThreadToBeInterrupted;
-}
-
-
-
-bool MsgWaitUnpause()
-{
-	auto &g = *::g;
-	auto aThreadID = CURRENT_THREADID;
-	while (g.IsPaused)
-	{
-		MsgWaitForMultipleObjects(0, nullptr, FALSE, INFINITE, QS_ALLINPUT);
-		if ((char)g.IsPaused == -1)	// thqby: Used to terminate a thread
-			return true;
-		else if (g_MainThreadID != aThreadID)
-			Sleep(SLEEP_INTERVAL);
-		else MsgSleep(-1);
-	}
-	return false;
 }
 
 

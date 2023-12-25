@@ -926,7 +926,7 @@ void Object::CallBuiltin(int aID, ResultToken &aResultToken, ExprTokenType *aPar
 
 ObjectMember Map::sMembers[] =
 {
-	Object_Member(__Item, __Item, 0, IT_SET | BIMF_UNSET_ARG_1, 1, 1),
+	Object_Member(__Item, __Item, 0, IT_SET, 1, 1),
 	Object_Member(Capacity, Capacity, 0, IT_SET),
 	Object_Member(CaseSense, CaseSense, 0, IT_SET),
 	Object_Member(Count, Count, 0, IT_GET),
@@ -951,7 +951,7 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 			{
 				auto result = Invoke(aResultToken, IT_GET | IF_IGNORE_DEFAULT, _T("Default"), ExprTokenType { this }, nullptr, 0);
 				if (result == INVOKE_NOT_HANDLED)
-					_o_return_unset;
+					_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
 				return;
 			}
 			// Otherwise, caller provided a default value.
@@ -963,8 +963,6 @@ void Map::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 	}
 	else
 	{
-		if (aParam[0]->symbol == SYM_MISSING)
-			return Delete(aResultToken, aID, aFlags, aParam + 1, 1);
 		if (!SetItem(*aParam[1], *aParam[0]))
 			_o_throw_oom;
 	}
@@ -1245,13 +1243,13 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 			prop->SetGetter(func);
 			func->Release();
 			
-			if ((member.invokeType & IT_BITMASK) == IT_SET) // & allows for additional flags.
+			if (member.invokeType == IT_SET)
 			{
 				_tcscpy(op_name, _T(".Set"));
 				func = new BuiltInMethod(SimpleHeap::Alloc(full_name));
 				func->mBIM = member.method;
 				func->mMID = member.id;
-				func->mMIT = member.invokeType;
+				func->mMIT = IT_SET;
 				func->mMinParams = member.minParams + 2; // Includes `this` and `value`.
 				func->mParamCount = member.maxParams + 2;
 				func->mIsVariadic = member.maxParams == MAXP_VARIADIC;
@@ -1320,8 +1318,8 @@ void Map::Delete(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 	if (!item) // Nothing to remove.
 	{
 		// Our return value when only one arg is given is supposed to be the value
-		// removed from this[arg], but there wasn't one.
-		_o_return_unset;
+		// removed from this[arg].  Since this[arg] would throw an exception...
+		_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
 	}
 	// Set return value to the removed item.
 	item->ReturnMove(aResultToken);
@@ -2108,7 +2106,7 @@ bool Array::ItemToToken(index_t aIndex, ExprTokenType &aToken)
 
 ObjectMember Array::sMembers[] =
 {
-	Object_Member(__Item, Invoke, P___Item, IT_SET | BIMF_UNSET_ARG_1, 1, 1),
+	Object_Property_get_set(__Item, 1, 1),
 	Object_Property_get_set(Capacity),
 	Object_Property_get_set(Length),
 	Object_Member(__New, Invoke, M_Push, IT_CALL, 0, MAXP_VARIADIC),
@@ -2160,7 +2158,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 			auto result = Object::Invoke(aResultToken, IT_GET | IF_IGNORE_DEFAULT, _T("Default"), ExprTokenType{this}, nullptr, 0);
 			if (result != INVOKE_NOT_HANDLED)
 				_o_return_retval;
-			_o_return_unset;
+			_o_throw(ERR_ITEM_UNSET, *aParam[0], ErrorPrototype::UnsetItem);
 		}
 		item.ReturnRef(aResultToken);
 		_o_return_retval;
