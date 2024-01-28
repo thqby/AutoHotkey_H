@@ -17,8 +17,8 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - The object structure is the same as the AHK_L version
 - Remove built-in variable `NULL`
 - Remove standard library in autohotkey.exe resource, but libraries can still be loaded from resources.
-- Remove `CriticalObject`, in some cases, it is not a safe way to use objects in multithreading
-- Remove the same hot string that defined in multiple threads firing at the same time
+- Remove `CriticalObject`, in some cases, a program exception may be thrown
+- Remove the same hotstring that defined in multiple threads firing at the same time
 - `DynaCall` object has `Param[index]` property, used to retrieve and set default parameters, the index is the same as the position of the argument when it is called.
 - `CryptAES` and Zip functions, parameter `Size` is not needed when previous parameter is an `Object` with `Ptr` and `Size` properties.
 - `ahkExec(LPTSTR script, DWORD aThreadID = 0)` Inherits the current scope variable when aThreadID is `0`
@@ -28,8 +28,8 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - COM interface in dll module rather than in exe module.
 - Added `IAhkApi` export class for developing AHK bindings for third-party libraries, the header file is [ahkapi.h](https://github.com/thqby/AutoHotkey_H/blob/alpha/source/ahkapi.h).
 - Added `__thiscall` calling conventions supported by `DllCall` and `DynaCall`, eg. `DllCall(func, params, 'thiscall')`, `DynaCall(func, 'ret_type=@params_type')`.
-- Added parameter type `struct` supported by `DllCall` and `DynaCall`, eg. Calls a function that needs a 10-byte structure argument and returns a 12-byte structure, `DllCall(func, 'struct10', Buffer(10), '12')`, `DynaCall(func, 'b12=b10')(Buffer(10))`.
-- Added support for custom types of `DllCall` and `ComCall`, `ComCall({index: 5, iid: '{xxxx...}'}, coclassptr, mytype := {ArgPassInfo: {NativeType: 'ptr', ScriptToNative: (v) => nativetype, NativeToScript: (v) => scripttype}}, param)`, the current type object can be obtained from `A_EventInfo` within the conversion function.
+- Added parameter type `struct` supported by `DllCall` and `DynaCall`, eg. Calls a function that needs a 10-byte structure argument and returns a 12-byte structure, `DllCall(func, 'struct10', Buffer(10), '12')`, `DynaCall(func, 'b12=b10')(Buffer(10))`. (Removed in v2.1)
+- Added support for custom types of `DllCall` and `ComCall`, `ComCall({index: 5, iid: '{xxxx...}'}, coclassptr, mytype := {ArgPassInfo: {NativeType: 'ptr', ScriptToNative: (v) => nativetype, NativeToScript: (v) => scripttype}}, param)`, the current type object can be obtained from `A_EventInfo` within the conversion function. (Removed in v2.1)
 
 - After beta.12
   - Change `OnMessage(..., hwnd)` to `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, is similar to `Gui.Prototype.OnEvent(...)`
