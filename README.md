@@ -62,6 +62,7 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 
 - After 2.0.11
   - Revert merge alpha.2
+  - Support the use of `u8str`(utf8 string) in DllCall and `us` in DynaCall
 
 ## Classes List
 ```typescript

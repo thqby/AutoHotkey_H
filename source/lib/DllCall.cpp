@@ -324,7 +324,7 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM& aDynaParam, int* aShortNameLen)
 		switch (ctolower(*buf))
 		{
 		case 'i': if (buf[1] == '6') aDynaParam.type = DLL_ARG_INT64, ++(*aShortNameLen); else aDynaParam.type = DLL_ARG_INT; break;
-		case 's': aDynaParam.type = DLL_ARG_STR, aDynaParam.is_ptr = 1; break;
+		case 's': aDynaParam.type = aDynaParam.is_unsigned ? DLL_ARG_U8STR : DLL_ARG_STR, aDynaParam.is_ptr = 1; break;
 		case 'a': aDynaParam.type = DLL_ARG_ASTR, aDynaParam.is_ptr = 1; break;
 		case 'w': aDynaParam.type = DLL_ARG_WSTR, aDynaParam.is_ptr = 1; break;
 		case 'o': aDynaParam.type = DLL_ARG_OBJPTR, aDynaParam.is_ptr = 2; break;
@@ -401,6 +401,7 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM& aDynaParam, int* aShortNameLen)
 	case 'a': if (!_tcsicmp(buf, _T("AStr")))	{ aDynaParam.type = DLL_ARG_ASTR; return; } break;
 	case 'w': if (!_tcsicmp(buf, _T("WStr")))	{ aDynaParam.type = DLL_ARG_WSTR; return; } break;
 	case 'c': if (!_tcsicmp(buf, _T("Char")))	{ aDynaParam.type = DLL_ARG_CHAR; return; } break;
+	case '8': if (aDynaParam.is_unsigned && !_tcsicmp(buf, _T("8Str"))) { aDynaParam.type = DLL_ARG_U8STR; return; } break;
 	}
 	// Since above didn't "return", the type is invalid.
 	aDynaParam.type = DLL_ARG_INVALID;
@@ -655,7 +656,7 @@ BIF_DECL(BIF_DllCall)
 		ResultToken result;
 		ExprTokenType token;
 		TCHAR buf[MAX_NUMBER_LENGTH];
-		Object* arginfo;
+		Object* arginfo = nullptr;
 		result.InitResult(buf);
 		tp->Invoke(result, IT_GET, _T("ArgPassInfo"), ExprTokenType(tp), nullptr, 0);
 		if (result.symbol == SYM_OBJECT && (arginfo = dynamic_cast<Object*>(result.object)) && arginfo->GetOwnProp(token, _T("NativeType")))
@@ -910,12 +911,14 @@ BIF_DECL(BIF_DllCall)
 			if (IS_NUMERIC(this_param.symbol) || this_param_obj)
 				_f_throw_type(_T("String"), this_param);
 			// String needing translation: ASTR on Unicode build, WSTR on ANSI build.
-			p_str_or_obj[arg_count] = this_dyna_param.ptr =
-#ifdef _UNICODE
-				CStringCharFromWChar(TokenToString(this_param)).DetachBuffer();
-#else
-				CStringWCharFromChar(TokenToString(this_param)).DetachBuffer();
-#endif
+			p_str_or_obj[arg_count] = this_dyna_param.ptr = (UorA(CStringCharFromWChar, CStringWCharFromChar)(TokenToString(this_param))).DetachBuffer();
+			break;
+		case DLL_ARG_U8STR:
+			// See the section above for comments.
+			if (IS_NUMERIC(this_param.symbol) || this_param_obj)
+				_f_throw_type(_T("String"), this_param);
+			// String needing translation: ASTR on Unicode build, WSTR on ANSI build.
+			p_str_or_obj[arg_count] = this_dyna_param.ptr = (UorA(CStringUTF8FromWChar, CStringUTF8FromChar)(TokenToString(this_param))).DetachBuffer();
 			break;
 
 		case DLL_ARG_DOUBLE:
@@ -1147,6 +1150,7 @@ BIF_DECL(BIF_DllCall)
 #ifdef _WIN64 // fincs: pointers are 64-bit on x64.
 			case DLL_ARG_WSTR:
 			case DLL_ARG_ASTR:
+			case DLL_ARG_U8STR:
 #endif
 				// Same as next section but for eight bytes:
 				return_value.Int64 = *(__int64 *)return_value.Pointer;
@@ -1201,6 +1205,7 @@ BIF_DECL(BIF_DllCall)
 			//result := DllCall("CharLower", "int", DllCall("CharUpper", "str", MyVar, "str"), "str")
 			break;
 		case DLL_ARG_xSTR:
+		case DLL_ARG_U8STR:
 			{	// String needing translation: ASTR on Unicode build, WSTR on ANSI build.
 #ifdef UNICODE
 				LPCSTR result = (LPCSTR)return_value.Pointer;
@@ -1210,9 +1215,9 @@ BIF_DECL(BIF_DllCall)
 				if (result && *result)
 				{
 #ifdef UNICODE		// Perform the translation:
-					CStringWCharFromChar result_buf(result);
+					CStringWCharFromChar result_buf(result, -1, return_attrib.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
 #else
-					CStringCharFromWChar result_buf(result);
+					CStringCharFromWChar result_buf(result, -1, return_attrib.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
 #endif
 					// Store the length of the translated string first since DetachBuffer() clears it.
 					aResultToken.marker_length = result_buf.GetLength();
@@ -1354,8 +1359,9 @@ BIF_DECL(BIF_DllCall)
 				aResultToken.SetExitResult(FAIL);
 			break;
 		case DLL_ARG_xSTR: // AStr* on Unicode builds and WStr* on ANSI builds.
+		case DLL_ARG_U8STR:
 			if (this_dyna_param.ptr != output_var.Contents(FALSE)
-				&& !output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr))
+				&& !output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr, -1, this_dyna_param.type == DLL_ARG_U8STR ? CP_UTF8 : 0))
 				aResultToken.SetExitResult(FAIL);
 		}
 		if (p_type[arg_count]) {
