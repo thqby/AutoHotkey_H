@@ -1509,19 +1509,22 @@ void Promise::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTy
 	if (!ValidateFunctor(callback, 1, aResultToken))
 		return;
 	EnterCriticalSection(&mCritical);
-	callback->AddRef();
-	if (aID == M_Then) {
-		if (mComplete)
-			mComplete->Release();
-		mComplete = callback;
-		if (!(mState & 1)) callback = nullptr;
+	auto &stream_to_set = mStream[aID - 1];
+	auto &callback_to_set = aID == M_Then ? mComplete : mError;
+	IStream *pstm = nullptr;
+	if (!(mState & aID)) {
+		if (FAILED(CoMarshalInterThreadInterfaceInStream(IID_IDispatch, callback, &pstm))) {
+			LeaveCriticalSection(&mCritical);
+			_o_throw_oom;
+		}
+		callback = nullptr;
 	}
-	else {
-		if (mError)
-			mError->Release();
-		mError = callback;
-		if (!(mState & 2)) callback = nullptr;
+	if (stream_to_set) {
+		CoReleaseMarshalData(stream_to_set);
+		stream_to_set->Release();
 	}
+	stream_to_set = pstm;
+	callback_to_set = callback;
 	LeaveCriticalSection(&mCritical);
 	if (callback) {
 		AddRef();

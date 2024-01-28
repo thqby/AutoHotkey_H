@@ -604,10 +604,10 @@ Script::~Script() // Destructor.
 		g_SoundWasPlayed = 0;
 	}
 
-	IAhkApi::Finalize();
-	g_script = NULL;
 	for (Line *line = mLastLine; line; line = line->mPrevLine)
 		line->Free();
+	IAhkApi::Finalize();
+	g_script = NULL;
 
 	// PeekMessage is required to make sure that Ole/CoUninitialize does not hang
 	PeekMessage(&MSG(), NULL, 0, 0, PM_REMOVE);

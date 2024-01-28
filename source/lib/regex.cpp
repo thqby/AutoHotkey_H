@@ -334,6 +334,7 @@ int RegExCallout(pcret_callout_block *cb)
 		cd.result_token->SetExitResult(result);
 	}
 	
+	match_object->Release();
 	g->EventInfo = EventInfo_saved;
 
 	// Behaviour of return values is defined by PCRE.

@@ -3976,7 +3976,7 @@ void Object::CreateRootPrototypes()
 #ifdef ENABLE_DLLCALL
 	DynaToken::sPrototype = Object::CreatePrototype(_T("DynaCall"), Object::sPrototype, DynaToken::sMembers, _countof(DynaToken::sMembers));
 #endif
-	Promise::sPrototype = Object::CreatePrototype(_T("Promise"), Object::sPrototype, Promise::sMembers, _countof(Promise::sMembers));
+	Promise::sPrototype = Object::CreatePrototype(_T("Promise"), sAnyPrototype, Promise::sMembers, _countof(Promise::sMembers));
 	if (auto var = g_script->FindOrAddVar(_T("JSON"), 4, VAR_DECLARE_GLOBAL))
 	{
 		auto obj = new Object();
