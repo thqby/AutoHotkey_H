@@ -3616,7 +3616,7 @@ void Object::CreateRootPrototypes()
 		{_T("Worker"), &Worker::sPrototype, NewObject<Worker>
 		, Worker::sMembers, _countof(Worker::sMembers) }
 	});
-	Promise::sPrototype = Object::CreatePrototype(_T("Promise"), Object::sPrototype, Promise::sMembers, _countof(Promise::sMembers));
+	Promise::sPrototype = Object::CreatePrototype(_T("Promise"), sAnyPrototype, Promise::sMembers, _countof(Promise::sMembers));
 	Struct::sPrototype = Object::CreatePrototype(_T("Struct"), Object::sPrototype, Struct::sMembers, _countof(Struct::sMembers));
 #ifdef ENABLE_DLLCALL
 	DynaToken::sPrototype = Object::CreatePrototype(_T("DynaCall"), Object::sPrototype, DynaToken::sMembers, _countof(DynaToken::sMembers));

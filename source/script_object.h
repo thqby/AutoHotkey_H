@@ -1107,30 +1107,33 @@ private:
 	}
 };
 
-class Promise : public Object
+class Promise : public ObjectBase
 {
 public:
 	Promise(IObject* aFunc, bool aMarshal): mFunc(aFunc), mMarshal(aMarshal), mComplete(nullptr), mError(nullptr)
 		, mParam(nullptr), mParamToken(nullptr), mParamCount(0), mMaxParamCount(0), mState(0), mPriority(0) {
 		if (!mMarshal)
 			mFunc->AddRef();
-		SetBase(sPrototype);
 		InitializeCriticalSection(&mCritical);
 	}
 	~Promise() {
 		FreeParams();
 		FreeResult();
+		free(mParamToken);
 		if (!mMarshal)
 			mFunc->Release();
-		if (mParamToken) free(mParamToken);
-		if (mError) mError->Release();
-		if (mComplete) mComplete->Release();
+		for (auto p : mStream) {
+			if (!p)continue;
+			CoReleaseMarshalData(p);
+			p->Release();
+		}
 		DeleteCriticalSection(&mCritical);
 	}
 
 	IObject* mFunc;
 	IObject* mComplete;
 	IObject* mError;
+	IStream *mStream[2]{ 0 };
 	ResultToken* mParamToken;
 	ResultToken** mParam;
 	ResultToken mResult;
@@ -1144,7 +1147,7 @@ public:
 	
 	enum MemberID
 	{
-		M_Then,
+		M_Then = 1,
 		M_Catch
 	};
 	static ObjectMember sMembers[];
@@ -1158,6 +1161,8 @@ public:
 	void FreeResult();
 	void UnMarshal();
 	Func* ToBoundFunc();
+	Object *Base() { return sPrototype; };
+	LPTSTR Type() { return _T("Promise"); };
 };
 
 class Worker : public Object
