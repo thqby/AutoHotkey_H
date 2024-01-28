@@ -335,7 +335,7 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam, int *aShortNameLen = n
 		switch (ctolower(*buf))
 		{
 		case 'i': if (buf[1] == '6') aDynaParam.type = DLL_ARG_INT64, ++(*aShortNameLen); else aDynaParam.type = DLL_ARG_INT; break;
-		case 's': aDynaParam.type = DLL_ARG_STR, aDynaParam.is_ptr = true; break;
+		case 's': aDynaParam.type = aDynaParam.is_unsigned ? DLL_ARG_U8STR : DLL_ARG_STR, aDynaParam.is_ptr = true; break;
 		case 'a': aDynaParam.type = DLL_ARG_ASTR, aDynaParam.is_ptr = true; break;
 		case 'w': aDynaParam.type = DLL_ARG_WSTR, aDynaParam.is_ptr = true; break;
 		case 't': aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64), aDynaParam.is_ptr = true; break;
@@ -399,6 +399,7 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam, int *aShortNameLen = n
 	case 'a': if (!_tcsicmp(buf, _T("AStr")))	{ aDynaParam.type = DLL_ARG_ASTR; return; } break;
 	case 'w': if (!_tcsicmp(buf, _T("WStr")))	{ aDynaParam.type = DLL_ARG_WSTR; return; } break;
 	case 'c': if (!_tcsicmp(buf, _T("Char")))	{ aDynaParam.type = DLL_ARG_CHAR; return; } break;
+	case '8': if (aDynaParam.is_unsigned && !_tcsicmp(buf, _T("8Str"))) { aDynaParam.type = DLL_ARG_U8STR; return; } break;
 	}
 	aDynaParam.type = DLL_ARG_INVALID;
 }
@@ -878,6 +879,14 @@ has_valid_return_type:
 			pStr[nStr++] = new UorA(CStringCharFromWChar,CStringWCharFromChar)(TokenToString(this_param));
 			this_dyna_param.ptr = pStr[nStr-1]->GetBuffer();
 			break;
+		case DLL_ARG_U8STR:
+			// See the section above for comments.
+			if (IS_NUMERIC(this_param.symbol) || this_param_obj)
+				_f_throw_type(_T("String"), this_param);
+			// String needing translation: ASTR on Unicode build, WSTR on ANSI build.
+			pStr[nStr++] = new UorA(CStringUTF8FromWChar, CStringUTF8FromChar)(TokenToString(this_param));
+			this_dyna_param.ptr = pStr[nStr - 1]->GetBuffer();
+			break;
 
 		case DLL_ARG_DOUBLE:
 		case DLL_ARG_FLOAT:
@@ -1035,6 +1044,7 @@ has_valid_return_type:
 #ifdef _WIN64 // fincs: pointers are 64-bit on x64.
 			case DLL_ARG_WSTR:
 			case DLL_ARG_ASTR:
+			case DLL_ARG_U8STR:
 #endif
 				// Same as next section but for eight bytes:
 				return_value.Int64 = *(__int64 *)return_value.Pointer;
@@ -1089,6 +1099,7 @@ has_valid_return_type:
 			//result := DllCall("CharLower", "int", DllCall("CharUpper", "str", MyVar, "str"), "str")
 			break;
 		case DLL_ARG_xSTR:
+		case DLL_ARG_U8STR:
 			{	// String needing translation: ASTR on Unicode build, WSTR on ANSI build.
 #ifdef UNICODE
 				LPCSTR result = (LPCSTR)return_value.Pointer;
@@ -1098,9 +1109,9 @@ has_valid_return_type:
 				if (result && *result)
 				{
 #ifdef UNICODE		// Perform the translation:
-					CStringWCharFromChar result_buf(result);
+					CStringWCharFromChar result_buf(result, -1, return_attrib.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
 #else
-					CStringCharFromWChar result_buf(result);
+					CStringCharFromWChar result_buf(result, -1, return_attrib.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
 #endif
 					// Store the length of the translated string first since DetachBuffer() clears it.
 					aResultToken.marker_length = result_buf.GetLength();
@@ -1232,8 +1243,9 @@ has_valid_return_type:
 				aResultToken.SetExitResult(FAIL);
 			break;
 		case DLL_ARG_xSTR: // AStr* on Unicode builds and WStr* on ANSI builds.
+		case DLL_ARG_U8STR:
 			if (this_dyna_param.ptr != output_var.Contents(FALSE)
-				&& !output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr))
+				&& !output_var.AssignStringFromCodePage(UorA(LPSTR, LPWSTR)this_dyna_param.ptr, -1, this_dyna_param.type == DLL_ARG_U8STR ? CP_UTF8 : 0))
 				aResultToken.SetExitResult(FAIL);
 		}
 	}

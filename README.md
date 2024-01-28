@@ -43,6 +43,7 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - Added `GuiControl.Prototype.OnMessage(Msg, Callback [, AddRemove])`, and `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, the parameter of the callback has changed, `Callback(GuiObj, wParam, lParam, Msg)`, `A_EventInfo` is the message posted time.
 - Added `Object.Prototype.__Item[Prop]`, it's same as `Obj.%Prop%`
 - Added `Object.Prototype.Get(Prop [, Default])`
+- Support the use of `u8str`(utf8 string) in DllCall and `us` in DynaCall
 
 ## Classes List
 ```typescript
@@ -152,7 +153,7 @@ class Worker {
    */
   Wait(Timeout := 0) => Integer
 
-  class Promise {
+  class Promise extends Any {
     /**
      * Execute the callback after the asynchronous call completes.
      */
