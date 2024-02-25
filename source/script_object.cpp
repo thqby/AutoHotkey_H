@@ -3712,7 +3712,6 @@ thread_local Object *UserMenu::sBarPrototype;
 
 thread_local Object* Struct::sPrototype;
 thread_local Object* Promise::sPrototype;
-thread_local Func* Promise::sCaller = nullptr;
 thread_local Object* Worker::sPrototype;
 #ifdef ENABLE_DLLCALL
 thread_local Object* DynaToken::sPrototype;

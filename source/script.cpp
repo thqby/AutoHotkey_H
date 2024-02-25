@@ -654,8 +654,6 @@ Script::~Script() // Destructor.
 #endif
 	Free_Prototype(Promise::sPrototype);
 	Free_Prototype(Struct::sPrototype);
-	if (Promise::sCaller)
-		Free_Prototype(Promise::sCaller);
 
 	for (int i = _countof(GuiControlType::sPrototypes) - 1; i; i--) {
 		if (GuiControlType::sPrototypes[i])

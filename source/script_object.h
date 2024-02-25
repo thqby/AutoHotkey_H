@@ -1110,9 +1110,11 @@ private:
 class Promise : public ObjectBase
 {
 public:
-	Promise(IObject* aFunc, bool aMarshal): mFunc(aFunc), mMarshal(aMarshal), mComplete(nullptr), mError(nullptr)
-		, mParam(nullptr), mParamToken(nullptr), mParamCount(0), mMaxParamCount(0), mState(0), mPriority(0) {
-		if (!mMarshal)
+	Promise(IObject *aFunc, Var *aVar, bool aMarshal) : mFunc(aFunc), mVar(aVar), mMarshal(aMarshal)
+		, mComplete(nullptr), mError(nullptr)
+		, mParam(nullptr), mParamToken(nullptr)
+		, mParamCount(0), mState(0), mPriority(0) {
+		if (mFunc)
 			mFunc->AddRef();
 		InitializeCriticalSection(&mCritical);
 	}
@@ -1120,7 +1122,7 @@ public:
 		FreeParams();
 		FreeResult();
 		free(mParamToken);
-		if (!mMarshal)
+		if (mFunc)
 			mFunc->Release();
 		for (auto p : mStream) {
 			if (!p)continue;
@@ -1130,37 +1132,32 @@ public:
 		DeleteCriticalSection(&mCritical);
 	}
 
-	IObject* mFunc;
-	IObject* mComplete;
-	IObject* mError;
+	Var *mVar;
+	IObject *mFunc, *mComplete, *mError;
 	IStream *mStream[2]{ 0 };
-	ResultToken* mParamToken;
-	ResultToken** mParam;
-	ResultToken mResult;
+	ResultToken *mParamToken, **mParam, mResult;
 	CRITICAL_SECTION mCritical;
-	HWND mReply = NULL;
-	int mParamCount;
-	int mMaxParamCount;
-	int mPriority;
+	HWND mReply;
+	int mParamCount, mPriority;
 	SHORT mState;
 	bool mMarshal;
-	
+
 	enum MemberID
 	{
 		M_Then = 1,
 		M_Catch
 	};
 	static ObjectMember sMembers[];
-	thread_local static Object* sPrototype;
-	thread_local static Func* sCaller;
+	thread_local static Object *sPrototype;
 
-	void Init(int aParamCount);
-	void Init(ExprTokenType* aParam[], int aParamCount);
-	void Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount);
+	bool Init(ExprTokenType *aParam[], int aParamCount);
+	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	void Call();
+	void OnFinish();
 	void FreeParams();
 	void FreeResult();
 	void UnMarshal();
-	Func* ToBoundFunc();
+	Func *ToBoundFunc();
 	Object *Base() { return sPrototype; };
 	LPTSTR Type() { return _T("Promise"); };
 };

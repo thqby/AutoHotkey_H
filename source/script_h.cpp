@@ -3485,43 +3485,34 @@ void JSON::append(IObject *obj, bool is_enum_base) {
 	g->ExcptMode = prev_excpt;
 }
 
-
-void Promise::Init(int aParamCount) {
+bool Promise::Init(ExprTokenType *aParam[], int aParamCount) {
 	if (!aParamCount)
-		return;
-	if (mParamToken = (ResultToken*)malloc(aParamCount * (sizeof(ResultToken*) + sizeof(ResultToken)))) {
-		mParamCount = mMaxParamCount = aParamCount;
-		mParam = (ResultToken**)(mParamToken + mParamCount);
-		for (int i = 0; i < mParamCount; i++)
-			mParam[i] = &mParamToken[i], mParamToken[i].mem_to_free = nullptr;
-	}
-}
-
-void Promise::Init(ExprTokenType* aParam[], int aParamCount) {
-	if (!aParamCount)
-		return;
-	if (mParamToken = (ResultToken*)malloc(aParamCount * (sizeof(ResultToken*) + sizeof(ResultToken)))) {
-		mParamCount = mMaxParamCount = aParamCount;
-		mParam = (ResultToken**)(mParamToken + mParamCount);
-		for (int i = 0; i < mParamCount; i++) {
-			mParam[i] = &mParamToken[i];
-			if (aParam[i]->symbol == SYM_STRING)
-				mParamToken[i].Malloc(aParam[i]->marker, aParam[i]->marker_length);
-			else {
-				mParamToken[i].mem_to_free = nullptr;
-				mParamToken[i].CopyValueFrom(*aParam[i]);
-				if (mParamToken[i].symbol == SYM_OBJECT) {
-					if (mMarshal)
-						MarshalObjectToToken(mParamToken[i].object, mParamToken[i]);
-					else
-						mParamToken[i].object->AddRef();
-				}
+		return true;
+	mParamToken = (ResultToken *)malloc(aParamCount * (sizeof(ResultToken *) + sizeof(ResultToken)));
+	if (!mParamToken)
+		return false;
+	mParam = (ResultToken **)(mParamToken + aParamCount);
+	for (auto &i = mParamCount; i < aParamCount; i++) {
+		auto &token = mParamToken[i];
+		mParam[i] = &token;
+		token.CopyExprFrom(*aParam[i]);
+		if (token.symbol == SYM_VAR)
+			token.var->ToTokenSkipAddRef(token);
+		if (token.symbol == SYM_STRING)
+			token.Malloc(token.marker, token.marker_length);
+		else {
+			token.mem_to_free = nullptr;
+			if (token.symbol == SYM_OBJECT) {
+				if (!mMarshal)
+					token.object->AddRef();
+				else if (!MarshalObjectToToken(token.object, token))
+					return false;
 			}
 		}
 	}
+	return true;
 }
 
-void callPromise(Promise* aPromise, HWND replyHwnd);
 void Promise::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount)
 {
 	Object *callback = dynamic_cast<Object *>(TokenToObject(*aParam[0]));
@@ -3549,18 +3540,20 @@ void Promise::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTy
 	LeaveCriticalSection(&mCritical);
 	if (callback) {
 		AddRef();
-		callPromise(this, (HWND)-1);
+		mReply = (HWND)-1;
+		OnFinish();
 	}
 	AddRef();
-	_f_return(this);
+	_o_return(this);
 }
 
 void Promise::FreeParams() {
 	LPSTREAM stream;
 	for (int i = 0; i < mParamCount; i++) {
 		if (mParam[i]->symbol == SYM_STREAM) {
-			if (stream = (LPSTREAM)mParam[i]->value_int64)
-				CoReleaseMarshalData(stream), stream->Release();
+			stream = (LPSTREAM)mParam[i]->value_int64;
+			CoReleaseMarshalData(stream);
+			stream->Release();
 		}
 		else mParam[i]->Free();
 	}
@@ -3570,8 +3563,9 @@ void Promise::FreeParams() {
 void Promise::FreeResult() {
 	LPSTREAM stream;
 	if (mResult.symbol == SYM_STREAM) {
-		if (stream = (LPSTREAM)mResult.value_int64)
-			CoReleaseMarshalData(stream), stream->Release();
+		stream = (LPSTREAM)mResult.value_int64;
+		CoReleaseMarshalData(stream);
+		stream->Release();
 	}
 	else mResult.Free();
 	mResult.InitResult(_T(""));
@@ -3587,14 +3581,66 @@ void Promise::UnMarshal() {
 			else mParam[i]->SetValue(_T(""));
 }
 
-Func* Promise::ToBoundFunc() {
-	if (!sCaller)
-		sCaller = new BuiltInFunc(_T(""), [](BIF_DECL_PARAMS) {
-		auto promise = (Promise*)aParam[0]->object;
-		callPromise(promise, promise->mReply);
-			}, 1, 1);
+static BuiltInFunc sPromiseCaller(_T(""), [](BIF_DECL_PARAMS) {
+	auto p = (Promise *)aParam[0]->object;
+	if (p->mState)
+		p->OnFinish();
+	else p->Call();
+	}, 1, 1);
+Func *Promise::ToBoundFunc() {
 	ExprTokenType t_this(this), *param[] = { &t_this };
-	return BoundFunc::Bind(sCaller, IT_CALL, nullptr, param, 1);
+	return BoundFunc::Bind(&sPromiseCaller, IT_CALL, nullptr, param, 1);
+}
+
+void callFuncDll(FuncAndToken &aToken, bool throwerr);
+void Promise::Call()
+{
+	UnMarshal();
+	FuncAndToken token = { mFunc,&mResult,(ExprTokenType **)mParam,mParamCount };
+	callFuncDll(token, false);
+	FreeParams();
+	EnterCriticalSection(&mCritical);
+	mState = mResult.Result() == FAIL ? 2 : 1;
+	mFunc->Release();
+	mFunc = nullptr;
+	if (auto hwnd = mReply) {
+		if (mMarshal && mResult.symbol == SYM_OBJECT) {
+			auto obj = mResult.object;
+			if (!MarshalObjectToToken(obj, mResult))
+				mResult.SetValue(_T(""));
+			obj->Release();
+		}
+		else if (mResult.symbol == SYM_STRING && !mResult.mem_to_free)
+			mResult.Malloc(mResult.marker, mResult.marker_length);
+		mReply = (HWND)-1;
+		LeaveCriticalSection(&mCritical);
+		DWORD_PTR res;
+		if (SendMessageTimeout(hwnd, AHK_EXECUTE_FUNCTION, 0, (LPARAM)this, SMTO_ABORTIFHUNG, 5000, &res))
+			return;
+	}
+	else
+		LeaveCriticalSection(&mCritical);
+	FreeResult();
+	Release();
+}
+
+void Promise::OnFinish()
+{
+	if (mResult.symbol == SYM_STREAM) {
+		if (auto pobj = UnMarshalObjectFromStream((LPSTREAM)mResult.value_int64))
+			mResult.SetValue(pobj);
+		else mResult.SetValue(_T(""));
+	}
+	if (IObject *callback = (mState & 2) ? mError : mComplete) {
+		ExprTokenType *param[] = { &mResult };
+		ResultToken result;
+		TCHAR buf[MAX_INTEGER_LENGTH];
+		mState |= 4;
+		result.InitResult(buf);
+		callback->Invoke(result, IT_CALL, nullptr, ExprTokenType(callback), param, 1);
+		result.Free();
+	}
+	Release();
 }
 
 Worker* Worker::Create()
@@ -3784,12 +3830,12 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 		_f_return(addScript(ParamIndexToString(0), ParamIndexToOptionalInt(1, 0), mThreadID));
 	case M_AsyncCall:
 	{
-		Object* func = nullptr;
+		IObject* func = nullptr;
 		Var* var = nullptr;
 		if (mThreadID != ThreadID)
 			atls.Lock(mIndex);
 		else
-			func = dynamic_cast<Object*>(TokenToObject(*aParam[0]));
+			func = TokenToObject(*aParam[0]);
 		if (!func) {
 			if (*(name = TokenToString(*aParam[0])))
 				var = g_ahkThreads[mIndex].Script->FindGlobalVar(name);
@@ -3797,29 +3843,30 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 				atls.~AutoTLS();
 				_f_throw(ERR_DYNAMIC_NOT_FOUND, name);
 			}
-			func = dynamic_cast<Object*>(var->ToObject());
+			if (!atls.teb && !(func = var->ToObject()))
+				_o_throw(ERR_INVALID_FUNCTOR);
 		}
-		if (!func || !func->HasMethod(_T("Call"))) {
-			atls.~AutoTLS();
-			ExprTokenType func_token;
-			if (var)
-				func_token.SetVar(var);
-			else func_token.SetValue(func);
-			aResultToken.UnknownMemberError(func_token, IT_CALL, nullptr);
-			return;
-		}
-		aParam++, aParamCount--;
 		atls.~AutoTLS();
-		auto promise = new Promise(func, !!atls.teb);
-		promise->Init(aParam, aParamCount);
+		auto promise = new Promise(func, var, !!atls.teb);
 		promise->mPriority = g->Priority;
-		if (!SendMessage(mHwnd, AHK_EXECUTE_FUNCTION, (WPARAM)g_hWnd, (LPARAM)promise)) {
+		promise->mReply = g_hWnd;
+		if (!promise->Init(++aParam, --aParamCount)) {
+			promise->Release();
+			_o_throw_oom;
+		}
+
+		DWORD_PTR res;
+		if (!SendMessageTimeout(mHwnd, AHK_EXECUTE_FUNCTION, 0, (LPARAM)promise, SMTO_ABORTIFHUNG, 5000, &res)) {
 			auto err = GetLastError();
 			promise->Release();
-			_f_throw_win32(err);
+			_o_throw_win32(err);
+		}
+		if (!res) {
+			promise->Release();
+			_o_throw(ERR_INVALID_FUNCTOR);
 		}
 		promise->AddRef();
-		_f_return(promise);
+		_o_return(promise);
 	}
 	case M_Exec:
 		_f_return(ahkExec(ParamIndexToString(0), atls.tls ? mThreadID : ParamIndexToOptionalBOOL(1, TRUE) ? 0 : mThreadID));
@@ -3831,9 +3878,7 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 	case M_Pause:
 		_f_return(ahkPause(ParamIndexToBOOL(0), mThreadID));
 	case M_Reload:
-		if (!PostMessage(mHwnd, WM_COMMAND, ID_FILE_RELOADSCRIPT, 0))
-			_f_return(0);
-		_f_return(1);
+		_f_return(PostMessage(mHwnd, WM_COMMAND, ID_FILE_RELOADSCRIPT, 0));
 	case P_Ready:
 		_f_return(script ? script->mIsReadyToExecute : 0);
 	case P_ThreadID:
@@ -3846,11 +3891,11 @@ void Worker::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTyp
 		for (int start_time = GetTickCount(); WaitForSingleObject(mThread, 0) == WAIT_TIMEOUT;) {
 			if ((char)g->IsPaused == -1)	// thqby: Used to terminate a thread
 				_f_return_retval;
+			if (timeout && (int)(timeout - (GetTickCount() - start_time)) <= SLEEP_INTERVAL_HALF)
+				_f_return(0);
 			if (g_MainThreadID != ThreadID)
 				Sleep(SLEEP_INTERVAL);
 			else MsgSleep(INTERVAL_UNSPECIFIED);
-			if (timeout && (int)(timeout - (GetTickCount() - start_time)) <= SLEEP_INTERVAL_HALF)
-				_f_return(0);
 		}
 		_f_return(1);
 	}

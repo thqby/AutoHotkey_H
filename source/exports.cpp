@@ -50,79 +50,34 @@
 	g_script->mCombinedLineNumber = aCombinedLineNumber;
 
 
-void callFuncDll(FuncAndToken * aToken, bool throwerr)
+void callFuncDll(FuncAndToken &aToken, bool throwerr)
 {
-	IObject* func = aToken->mFunc;
-	TCHAR buf[MAX_NUMBER_SIZE];
-	aToken->mResult->InitResult(buf);
 	if (g_nThreads >= g_MaxThreadsTotal) {
-		aToken->mResult->SetResult(FAIL);
+		aToken.mResult->SetResult(FAIL);
 		return;
 	}
+	IObject *func = aToken.mFunc;
+	TCHAR buf[MAX_NUMBER_SIZE];
+	aToken.mResult->InitResult(buf);
 
 	// See MsgSleep() for comments about the following section.
 	InitNewThread(0, false, true);
 	g->ExcptMode = EXCPTMODE_CATCH;
-	func->Invoke(*aToken->mResult, IT_CALL, nullptr, ExprTokenType(func), aToken->mParam, aToken->mParamCount);
+	func->Invoke(*aToken.mResult, IT_CALL, nullptr, ExprTokenType(func), aToken.mParam, aToken.mParamCount);
 	if (g->ThrownToken) {
 		if (throwerr)
 			g_script->UnhandledException(NULL);
 		else {
-			aToken->mResult->CopyValueFrom(*g->ThrownToken);
-			aToken->mResult->mem_to_free = g->ThrownToken->mem_to_free;
+			aToken.mResult->CopyValueFrom(*g->ThrownToken);
+			aToken.mResult->mem_to_free = g->ThrownToken->mem_to_free;
 			g->ThrownToken->symbol = SYM_INTEGER;
 			g->ThrownToken->mem_to_free = nullptr;
 		}
 	}
-	if (aToken->mResult->symbol == SYM_STRING && !aToken->mResult->mem_to_free)
-		aToken->mResult->Malloc(aToken->mResult->marker, aToken->mResult->marker_length);
+	if (aToken.mResult->symbol == SYM_STRING && !aToken.mResult->mem_to_free)
+		aToken.mResult->Malloc(aToken.mResult->marker, aToken.mResult->marker_length);
 	ResumeUnderlyingThread();
 	return;
-}
-
-void callPromise(Promise * promise, HWND replyHwnd) {
-	if (replyHwnd == (HWND)-1) {
-		if (promise->mResult.symbol == SYM_STREAM) {
-			if (auto pobj = UnMarshalObjectFromStream((LPSTREAM)promise->mResult.value_int64))
-				promise->mResult.SetValue(pobj);
-			else promise->mResult.SetValue(_T(""));
-		}
-		if (IObject* callback = (promise->mState & 2) ? promise->mError : promise->mComplete) {
-			ExprTokenType* param[] = { &promise->mResult };
-			ResultToken result;
-			TCHAR buf[MAX_INTEGER_LENGTH];
-			promise->mState |= 4;
-			result.InitResult(buf);
-			callback->Invoke(result, IT_CALL, nullptr, ExprTokenType(callback), param, 1);
-			result.Free();
-		}
-	}
-	else {
-		promise->UnMarshal();
-		FuncAndToken token = { promise->mFunc,&promise->mResult,(ExprTokenType**)promise->mParam,promise->mParamCount };
-		callFuncDll(&token, false);
-		promise->FreeParams();
-		if (replyHwnd) {
-			bool fail = promise->mResult.Result() == FAIL;
-			EnterCriticalSection(&promise->mCritical);
-			if (fail)
-				promise->mState = 2;
-			else
-				promise->mState = 1;
-			if (promise->mMarshal && promise->mResult.symbol == SYM_OBJECT) {
-				auto obj = promise->mResult.object;
-				MarshalObjectToToken(obj, promise->mResult);
-				obj->Release();
-			}
-			else if (promise->mResult.symbol == SYM_STRING && !promise->mResult.mem_to_free)
-				promise->mResult.Malloc(promise->mResult.marker, promise->mResult.marker_length);
-			LeaveCriticalSection(&promise->mCritical);
-			if (PostMessage(replyHwnd, AHK_EXECUTE_FUNCTION, -1, (LPARAM)promise))
-				return;
-		}
-		promise->FreeResult();
-	}
-	promise->Release();
 }
 
 EXPORT(int) ahkReady(DWORD aThreadID) // HotKeyIt check if dll is ready to execute
@@ -558,66 +513,64 @@ LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPT
 		return NULL;
 	Var* aVar = g_script->FindGlobalVar(func);
 	Func* aFunc = aVar ? dynamic_cast<Func*>(aVar->ToObject()) : nullptr;
-	if (aFunc)
+	if (!aFunc)
+		return NULL;
+	int aParamsCount = 10;
+	LPTSTR *params[10] = { &param1,&param2,&param3,&param4,&param5,&param6,&param7,&param8,&param9,&param10 };
+	for (; aParamsCount > 0; aParamsCount--)
+		if (*params[aParamsCount - 1])
+			break;
+	if (aParamsCount < aFunc->mMinParams)
 	{
-		int aParamsCount = 10;
-		LPTSTR* params[10] = { &param1,&param2,&param3,&param4,&param5,&param6,&param7,&param8,&param9,&param10 };
-		for (; aParamsCount > 0; aParamsCount--)
-			if (*params[aParamsCount - 1])
-				break;
-		if (aParamsCount < aFunc->mMinParams)
-		{
-			g_script->RuntimeError(ERR_TOO_FEW_PARAMS);
+		g_script->RuntimeError(ERR_TOO_FEW_PARAMS);
+		return NULL;
+	}
+	Promise *promise = nullptr;
+	ExprTokenType paramtoken[10];
+	ExprTokenType *param[10] = { 0 };
+	HWND hwnd = g_hWnd;
+	aParamsCount = aFunc->mParamCount < aParamsCount && !aFunc->mIsVariadic ? aFunc->mParamCount : aParamsCount;
+
+	for (int i = 0; i < aParamsCount; i++) {
+		param[i] = &paramtoken[i];
+		if (*params[i])
+			paramtoken[i].SetValue(*params[i]);
+		else paramtoken[i].symbol = SYM_MISSING;
+	}
+	atls.~AutoTLS();
+	if (sendOrPost) {
+		FuncResult result;
+		FuncAndToken token = { aFunc, &result, param, aParamsCount };
+		DWORD_PTR res;
+		if (!hwnd || !atls.teb) {
+			callFuncDll(token, true);
+			if (result.symbol == SYM_OBJECT)
+				result.object->Release();
+		}
+		else if (!SendMessageTimeout(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0, SMTO_ABORTIFHUNG, 5000, &res))
+			return NULL;
+		if (result.Exited()) {
+			free(result.mem_to_free);
 			return NULL;
 		}
-		Promise* promise = nullptr;
-		ExprTokenType paramtoken[10];
-		ExprTokenType* param[10] = { 0 };
-		HWND hwnd = g_hWnd;
-		aParamsCount = aFunc->mParamCount < aParamsCount && !aFunc->mIsVariadic ? aFunc->mParamCount : aParamsCount;
-		
-		if (sendOrPost) {
-			for (int i = 0; aParamsCount > i; i++) {
-				param[i] = &paramtoken[i];
-				if (*params[i])
-					paramtoken[i].SetValue(*params[i]);
-				else paramtoken[i].symbol = SYM_MISSING;
-			}
-			ResultToken result;
-			FuncAndToken aFuncAndToken = { aFunc, &result, param, aParamsCount };
-			atls.~AutoTLS();
-			if (!hwnd || !atls.teb) {
-				callFuncDll(&aFuncAndToken, true);
-				if (result.symbol == SYM_OBJECT)
-					result.object->Release();
-			}
-			else SendMessage(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&aFuncAndToken, 0);
-			if (result.Result() == FAIL) {
-				free(result.mem_to_free);
-				return NULL;
-			}
-			TCHAR buf[MAX_INTEGER_LENGTH];
-			auto str = TokenToString(result, buf);
-			if (!result.mem_to_free)
-				str = _tcsdup(str);
-			return str;
-		}
-		else {
-			atls.~AutoTLS();
-			promise = new Promise(aFunc, false);
-			promise->Init(aParamsCount);
-			if (g) promise->mPriority = g->Priority;
-			for (int i = 0; i < aParamsCount; i++)
-				if (*params[i])
-					promise->mParam[i]->Malloc(*params[i], -1);
-				else promise->mParam[i]->symbol = SYM_MISSING;
-			bool ret;
-			if (!(ret = PostMessage(hwnd, AHK_EXECUTE_FUNCTION, 0, (LPARAM)promise)))
-				promise->Release();
-			return (LPTSTR)ret;
-		}
+		auto str = TokenToString(result, result.buf);
+		if (!result.mem_to_free)
+			str = _tcsdup(str);
+		return str;
 	}
-	return NULL;
+	else {
+		promise = new Promise(atls.teb ? nullptr : aFunc, aVar, false);
+		if (!promise->Init(param, aParamsCount))
+		{
+			promise->Release();
+			return 0;
+		}
+		if (g) promise->mPriority = g->Priority;
+		bool ret;
+		if (!(ret = PostMessage(hwnd, AHK_EXECUTE_FUNCTION, 0, (LPARAM)promise)))
+			promise->Release();
+		return (LPTSTR)ret;
+	}
 }
 
 EXPORT(LPTSTR) ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPTSTR param4, LPTSTR param5, LPTSTR param6, LPTSTR param7, LPTSTR param8, LPTSTR param9, LPTSTR param10, DWORD aThreadID)

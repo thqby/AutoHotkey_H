@@ -138,8 +138,7 @@ bif_impl FResult TrayTip(optl<StrArg> aText, optl<StrArg> aTitle, optl<StrArg> a
 // Main Window //
 /////////////////
 
-void callFuncDll(FuncAndToken* aFuncAndToken, bool throwerr);
-void callPromise(Promise* aPromise, HWND replyHwnd);
+void callFuncDll(FuncAndToken &aToken, bool throwerr);
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 {
 	// Detect Explorer crashes so that tray icon can be recreated.  I think this only works on Win98
@@ -477,11 +476,14 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		return 0;
 
 	case AHK_EXECUTE_FUNCTION:
-		if (!lParam) {
+		if ((UINT_PTR)lParam < 65536) {
 			if (auto token = (FuncAndToken*)wParam) {
-				callFuncDll(token, true);
-				if (token->mResult->symbol == SYM_OBJECT)
-					token->mResult->object->Release();
+				callFuncDll(*token, true);
+				auto &result = *token->mResult;
+				if (result.symbol == SYM_OBJECT)
+					result.object->Release();
+				else if (result.symbol == SYM_STRING && !result.mem_to_free)
+					result.Malloc(result.marker, result.marker_length);
 			}
 		}
 		else {
@@ -489,8 +491,12 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			if (p->mState & 4)
 				p->Release();
 			else {
+				if (!p->mState && !p->mFunc) {
+					if (p->mFunc = p->mVar->ToObject())
+						p->mFunc->AddRef();
+					else return 0;
+				}
 				auto fn = p->ToBoundFunc();
-				p->mReply = (HWND)wParam;
 				g_script->UpdateOrCreateTimer(fn, true, -1, true, p->mPriority);
 				fn->Release();
 			}
