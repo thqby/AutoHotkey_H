@@ -223,10 +223,12 @@ class Property
 	}
 
 public:
-	// MaxParams is cached for performance.  It is used in cases like x.y[z]:=v to
-	// determine whether to GET and then apply the parameters to the result, or just
-	// invoke SET with parameters.
-	int MinParams = -1, MaxParams = -1;
+	// Whether the property should be skipped by OwnProps two-param mode; i.e. because it requires parameters.
+	// Should be false if MinParams is non-zero or undetermined.
+	bool NoEnumGet = false;
+	// Whether to invoke the getter without parameters first, then invoke the returned value with parameters.
+	// Should be false if MaxParams is non-zero or undetermined, or IsVariadic is true.
+	bool NoParamSet = false, NoParamGet = false;
 
 	Property() {}
 	~Property()
@@ -1198,28 +1200,3 @@ private:
 };
 
 bool MarshalObjectToToken(IObject* obj, ResultToken& token);
-
-class Module : public Object
-{
-	LPTSTR mName;
-public:
-	~Module() { if (mName) free(mName); }
-	static Object* Create(LPTSTR aName = nullptr) {
-		auto obj = new Module;
-		obj->SetBase(Object::sPrototype);
-		if (aName && *aName)
-			obj->mName = _tcsdup(aName);
-		else obj->mName = nullptr;
-		return obj;
-	}
-
-	LPTSTR Type() { return mName ? mName : _T("Module"); }
-	ResultType Invoke(IObject_Invoke_PARAMS_DECL) {
-		if (aFlags & IT_CALL) {
-			ResultToken this_token{};
-			if (aName && GetOwnProp(this_token, aName) && this_token.symbol == SYM_OBJECT)
-				return this_token.object->Invoke(aResultToken, IT_CALL, nullptr, this_token, aParam, aParamCount);
-		}
-		return Object::Invoke(IObject_Invoke_PARAMS);
-	}
-};

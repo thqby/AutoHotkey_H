@@ -1709,8 +1709,8 @@ void KeyEvent(KeyEventTypes aEventType, vk_type aVK, sc_type aSC, HWND aTargetWi
 		sPrevEventType = aEventType;
 		sPrevVK = aVK;
 
-		ResultType target_layout_has_altgr = caller_is_keybd_hook ? LayoutHasAltGr(GetFocusedKeybdLayout())
-			: sTargetLayoutHasAltGr;
+		bool target_layout_has_altgr = (caller_is_keybd_hook ? LayoutHasAltGr(GetFocusedKeybdLayout())
+			: sTargetLayoutHasAltGr) == CONDITION_TRUE; // i.e. not CONDITION_FALSE (which is nonzero) or FAIL (zero).
 		bool hookable_altgr = aVK == VK_RMENU && target_layout_has_altgr && !put_event_into_array && g_KeybdHook;
 
 		// Calculated only once for performance (and avoided entirely if not needed):
@@ -3557,7 +3557,17 @@ modLR_type GetModifierLRState(bool aExplicitlyGet)
 		// detected would usually mean that the previous call to the hook has finished (although
 		// the hook can be called recursively with artificial input).
 		if (g_modifiersLR_last_pressed && GetTickCount() - g_modifiersLR_last_pressed_time < 20)
-			modifiers_wrongly_down &= ~g_modifiersLR_last_pressed;
+		{
+			if (modifiers_wrongly_down & g_modifiersLR_last_pressed)
+			{
+				// It's logically down according to the hook, but not according to IsKeyDownAsync().
+				// Trust the hook in this case.
+				modifiers_wrongly_down &= ~g_modifiersLR_last_pressed;
+				// v2.0.12: Report that the modifier is down, consistent with g_modifiersLR_logical.
+				// This fixes an issue where Send erroneously releases modifiers in {Blind} mode.
+				modifiersLR |= g_modifiersLR_last_pressed;
+			}
+		}
 		if (modifiers_wrongly_down)
 		{
 			// Adjust the physical and logical hook state to release the keys that are wrongly down.

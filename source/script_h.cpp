@@ -3234,7 +3234,7 @@ bool JSON::append(Variant &field, Object *obj) {
 		str += numbuf;
 		break;
 	case SYM_DYNAMIC:
-		if (obj && field.prop->Getter() && field.prop->MaxParams <= 0 && !((Object *)obj)->IsClassPrototype()) {
+		if (obj && field.prop->Getter() && !field.prop->NoEnumGet && !obj->IsClassPrototype()) {
 			ResultToken result_token;
 			ExprTokenType getter(field.prop->Getter());
 			ExprTokenType object(obj);

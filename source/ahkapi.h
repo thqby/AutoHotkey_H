@@ -119,12 +119,7 @@ template <typename T, typename index_t>
 typename FlatVector<T, index_t>::OneT FlatVector<T, index_t>::Empty;
 
 
-class Property
-{
-public:
-	IObject* mGet, * mSet, * mCall;
-	int MinParams, MaxParams;
-};
+class Property;
 
 class Var;
 class Func;

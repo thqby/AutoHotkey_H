@@ -393,7 +393,7 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM& aDynaParam, int* aShortNameLen)
 		}
 		break;
 	case 'p': if (!_tcsicmp(buf, _T("Ptr")))	{ aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64), aDynaParam.is_ptr = 1; return; } break;
-	case 's': if (!_tcsicmp(buf, _T("Str")))	{ aDynaParam.type = DLL_ARG_STR; return; }
+	case 's': if (!_tcsicmp(buf, _T("Str")))	{ aDynaParam.type = aDynaParam.is_unsigned ? DLL_ARG_INVALID : DLL_ARG_STR; return; }
 			if (!_tcsicmp(buf, _T("Short")))	{ aDynaParam.type = DLL_ARG_SHORT; return; }
 			if (!_tcsnicmp(buf, _T("Struct"), 6)) { tcslcpy(buf, buf + 6, _countof(buf) - 6); } break;
 	case 'd': if (!_tcsicmp(buf, _T("Double")))	{ aDynaParam.type = DLL_ARG_DOUBLE; return; } break;

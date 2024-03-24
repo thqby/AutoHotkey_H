@@ -696,7 +696,7 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 			field = nullptr;
 			continue;
 		}
-		if (actual_param_count > 0 && field->prop->MaxParams == 0) // Prop cannot accept parameters.
+		if (actual_param_count > 0 && (setting ? field->prop->NoParamSet : field->prop->NoParamGet)) // Prop cannot accept parameters.
 		{
 			setting = false; // GET this property's value.
 			handle_params_recursively = true; // Apply parameters by passing them to value->Invoke().
@@ -1226,8 +1226,8 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 		else
 		{
 			auto prop = obj->DefineProperty(name);
-			prop->MinParams = member.minParams;
-			prop->MaxParams = member.maxParams;
+			prop->NoParamGet = prop->NoParamSet = member.maxParams == 0;
+			prop->NoEnumGet = member.minParams > 0;
 			
 			auto op_name = _tcschr(name, '\0');
 
@@ -1569,17 +1569,37 @@ Property *Object::DefineProperty(name_t aName)
 	return field->prop;
 }
 
-ResultType GetObjMaxParams(IObject *aObj, int &aMaxParams, ResultToken &aResultToken)
+ResultType FillPropertyFlags(IObject *aObj, bool aSetter, Property &aProp, ResultToken &aResultToken)
 {
-	__int64 propval = 0;
-	auto result = GetObjectIntProperty(aObj, _T("MaxParams"), propval, aResultToken, true);
+	bool &no_param = aSetter ? aProp.NoParamSet : aProp.NoParamGet;
+	no_param = false; // Reset to default, in case of error or undefined MaxParams.
+	__int64 propval;
+	ResultType result;
+	if (!aSetter)
+	{
+		aProp.NoEnumGet = false; // Reset to default, in case of error or undefined MaxParams.
+		propval = 0;
+		result = GetObjectIntProperty(aObj, _T("MinParams"), propval, aResultToken, true);
+		switch (result)
+		{
+		case FAIL:
+		case EARLY_EXIT:
+			return result;
+		case OK:
+			aProp.NoEnumGet = propval > 1;
+		}
+	}
+	propval = 0;
+	result = GetObjectIntProperty(aObj, _T("MaxParams"), propval, aResultToken, true);
 	switch (result)
 	{
 	case FAIL:
 	case EARLY_EXIT:
 		return result;
 	case OK:
-		aMaxParams = (int)propval;
+		no_param = propval == (aSetter ? 2 : 1);
+		if (!no_param)
+			break; // No need to query IsVariadic.
 		propval = 0;
 		result = GetObjectIntProperty(aObj, _T("IsVariadic"), propval, aResultToken, true);
 		switch (result)
@@ -1587,14 +1607,12 @@ ResultType GetObjMaxParams(IObject *aObj, int &aMaxParams, ResultToken &aResultT
 		case FAIL:
 		case EARLY_EXIT:
 			return result;
-		case INVOKE_NOT_HANDLED:
-			return OK;
 		case OK:
 			if (propval)
-				aMaxParams = INT_MAX;
+				no_param = false; // Reset to false; property accepts parameters.
 		}
 	}
-	return result;
+	return OK;
 }
 
 void Object::DefineProp(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
@@ -1627,34 +1645,19 @@ void Object::DefineProp(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 	auto prop = DefineProperty(name);
 	if (!prop)
 		_o_throw_oom;
-	if (getter.symbol == SYM_OBJECT) prop->SetGetter(getter.object);
-	if (setter.symbol == SYM_OBJECT) prop->SetSetter(setter.object);
-	if (method.symbol == SYM_OBJECT) prop->SetMethod(method.object);
-	prop->MaxParams = -1;
-	if (auto obj = prop->Getter())
+	if (getter.symbol == SYM_OBJECT)
 	{
-		int max_params;
-		switch (GetObjMaxParams(obj, max_params, aResultToken))
-		{
-		case FAIL:
-		case EARLY_EXIT:
-			return;
-		case OK:
-			prop->MaxParams = max_params - 1;
-		}
+		prop->SetGetter(getter.object);
+		FillPropertyFlags(getter.object, false, *prop, aResultToken);
 	}
-	if (auto obj = prop->Setter())
+	if (setter.symbol == SYM_OBJECT)
 	{
-		int max_params;
-		switch (GetObjMaxParams(obj, max_params, aResultToken))
-		{
-		case FAIL:
-		case EARLY_EXIT:
-			return;
-		case OK:
-			if (prop->MaxParams < max_params - 2)
-				prop->MaxParams = max_params - 2;
-		}
+		prop->SetSetter(setter.object);
+		FillPropertyFlags(setter.object, true, *prop, aResultToken);
+	}
+	if (method.symbol == SYM_OBJECT)
+	{
+		prop->SetMethod(method.object);
 	}
 	AddRef();
 	_o_return(this);
@@ -1870,10 +1873,10 @@ bool Object::Variant::InitCopy(Variant &val)
 		(object = val.object)->AddRef();
 		break;
 	case SYM_DYNAMIC:
-		prop = new Property();
-		prop->SetGetter(val.prop->Getter());
-		prop->SetSetter(val.prop->Setter());
-		prop->SetMethod(val.prop->Method());
+		prop = new Property(*val.prop);
+		if (auto obj = prop->Getter()) obj->AddRef();
+		if (auto obj = prop->Setter()) obj->AddRef();
+		if (auto obj = prop->Method()) obj->AddRef();
 		break;
 	//case SYM_INTEGER:
 	//case SYM_FLOAT:
@@ -2547,7 +2550,7 @@ ResultType Object::GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCoun
 				// (consistent with inherited properties that have neither getter nor setter defined here).
 				// Also skip if this is a class prototype, since that isn't an instance of the class and
 				// therefore isn't a valid target for a method/property call.
-				if (field.prop->MaxParams > 0 || !field.prop->Getter() || IsClassPrototype())
+				if (field.prop->NoEnumGet || !field.prop->Getter() || IsClassPrototype())
 					continue;
 
 				FuncResult result_token;
@@ -2718,17 +2721,14 @@ char Object::HasProp(name_t name)
 {
 	if (auto field = FindField(name)) {
 		if (field->symbol == SYM_DYNAMIC) {
-			auto& prop = field->prop;
+			auto &prop = field->prop;
 			char kind = 0;
 			if (prop->Method())
 				kind |= 8;
-			if (prop->MaxParams > 0) {
-				if (prop->Getter())
-					kind |= 2;
-				if (prop->Setter())
-					kind |= 4;
-			}
-			else kind |= 1;
+			if (prop->Getter())
+				kind |= prop->NoParamGet ? 1 : 2;
+			if (prop->Setter())
+				kind |= prop->NoParamSet ? 1 : 4;
 			return kind;
 		}
 		return 1;
@@ -3541,8 +3541,7 @@ void Object::CreateRootPrototypes()
 	for (int i = 0; i < _countof(sFuncs); ++i)
 		sAnyPrototype->DefineMethod(sFuncs[i], g_script->FindGlobalFunc(sFuncs[i]));
 	auto prop = sAnyPrototype->DefineProperty(_T("Base"));
-	prop->MinParams = 0;
-	prop->MaxParams = 0;
+	prop->NoParamGet = prop->NoParamSet = true;
 	prop->SetGetter(g_script->FindGlobalFunc(_T("ObjGetBase")));
 	prop->SetSetter(g_script->FindGlobalFunc(_T("ObjSetBase")));
 
@@ -3765,8 +3764,7 @@ void Object::DefineClass(name_t aName, Object *aClass)
 	aClass->AddRef();
 
 	auto get = new BuiltInFunc { _T(""), Class_GetNestedClass, 1, 1, false, info };
-	prop->MinParams = 0;
-	prop->MaxParams = 0;
+	prop->NoParamGet = prop->NoParamSet = true;
 	prop->SetGetter(get);
 	get->Release();
 

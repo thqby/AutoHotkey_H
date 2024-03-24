@@ -861,11 +861,15 @@ Func* STDMETHODCALLTYPE IAhkApi::Method_New(LPTSTR aFullName, ObjectMember& aMem
 		func->mParamCount = aMember.maxParams + n;
 		if (aPrototype) {
 			auto prop = aPrototype->DefineProperty(aMember.name);
-			prop->MinParams = aMember.minParams;
-			prop->MaxParams = aMember.maxParams;
-			if (func->mMIT == IT_GET)
+			if (func->mMIT == IT_GET) {
 				prop->SetGetter(func);
-			else prop->SetSetter(func);
+				prop->NoParamGet = aMember.maxParams == 0;
+				prop->NoEnumGet = aMember.minParams > 0;
+			}
+			else {
+				prop->SetSetter(func);
+				prop->NoParamSet = aMember.maxParams == 0;
+			}
 		}
 	}
 	return func;
@@ -905,8 +909,8 @@ Object* STDMETHODCALLTYPE IAhkApi::Class_New(LPTSTR aClassName, size_t aClassSiz
 			else
 			{
 				auto prop = aPrototype->DefineProperty(name);
-				prop->MinParams = member.minParams;
-				prop->MaxParams = member.maxParams;
+				prop->NoParamGet = prop->NoParamSet = member.maxParams == 0;
+				prop->NoEnumGet = member.minParams > 0;
 
 				auto op_name = _tcschr(name, '\0');
 
@@ -949,6 +953,31 @@ IObject* STDMETHODCALLTYPE IAhkApi::GetEnumerator(IObject* aObj, int aVarCount) 
 bool STDMETHODCALLTYPE IAhkApi::CallEnumerator(IObject* aEnumerator, ExprTokenType* aParam[], int aParamCount) {
 	return ::CallEnumerator(aEnumerator, aParam, aParamCount, false) == CONDITION_TRUE;
 }
+
+class Module : public Object
+{
+	LPTSTR mName;
+public:
+	~Module() { if (mName) free(mName); }
+	static Object *Create(LPTSTR aName = nullptr) {
+		auto obj = new Module;
+		obj->SetBase(Object::sPrototype);
+		if (aName && *aName)
+			obj->mName = _tcsdup(aName);
+		else obj->mName = nullptr;
+		return obj;
+	}
+
+	LPTSTR Type() { return mName ? mName : _T("Module"); }
+	ResultType Invoke(IObject_Invoke_PARAMS_DECL) {
+		if (aFlags & IT_CALL) {
+			ResultToken this_token{};
+			if (aName && GetOwnProp(this_token, aName) && this_token.symbol == SYM_OBJECT)
+				return this_token.object->Invoke(aResultToken, IT_CALL, nullptr, this_token, aParam, aParamCount);
+		}
+		return Object::Invoke(IObject_Invoke_PARAMS);
+	}
+};
 
 IObject* STDMETHODCALLTYPE IAhkApi::Object_New(ObjectType aType, ExprTokenType* aParam[], int aParamCount) {
 	if (!Object::sPrototype || aType >= ObjectType::MAXINDEX || aType < ObjectType::Object)
