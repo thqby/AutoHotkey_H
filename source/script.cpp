@@ -153,6 +153,7 @@ FuncEntry g_BIF[] =
 	BIFn(StrPut, 1, 4, BIF_StrGetPut),
 	BIF1(StrReplace, 2, 6, {5}),
 	BIFn(StrTitle, 1, 1, BIF_StrCase),
+	BIF1(StructFromPtr, 2, 2),
 	BIFn(StrUpper, 1, 1, BIF_StrCase),
 	BIF1(SubStr, 2, 3),
 	BIF1(Swap, 2, 2,),
@@ -5788,7 +5789,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 
 	if (aActionType == ACT_BLOCK_END)
 	{
-		if (!mLineParent || mLineParent->mActionType != ACT_BLOCK_BEGIN)
+		if (!line.mParentLine || line.mParentLine->mActionType != ACT_BLOCK_BEGIN)
 			return line.LineUnexpectedError();
 		mPendingRelatedLine = mLineParent; // The next line will be the block-begin's mRelatedLine, and possibly its parent's mRelatedLine.
 
@@ -6837,11 +6838,12 @@ ResultType Script::DefineClassPropertyXet(LPTSTR aBuf, LPTSTR aEnd)
 	// happen anyway when DefineFunc() finds a syntax error in the parameter list.)
 	if (!DefineFunc(mClassPropertyDef, mClassPropertyStatic))
 		return FAIL;
-	if (mClassProperty->MinParams == -1)
+	if (g->CurrentFunc == mClassProperty->Setter())
+		mClassProperty->NoParamSet = g->CurrentFunc->mParamCount == 2 && !g->CurrentFunc->mIsVariadic;
+	else
 	{
-		int hidden_params = g->CurrentFunc == mClassProperty->Setter() ? 2 : 1;
-		mClassProperty->MinParams = g->CurrentFunc->mMinParams - hidden_params;
-		mClassProperty->MaxParams = g->CurrentFunc->mIsVariadic ? INT_MAX : g->CurrentFunc->mParamCount - hidden_params;
+		mClassProperty->NoParamGet = g->CurrentFunc->mParamCount == 1 && !g->CurrentFunc->mIsVariadic;
+		mClassProperty->NoEnumGet = g->CurrentFunc->mMinParams > 1;
 	}
 	if (*aEnd && !AddLine(ACT_BLOCK_BEGIN)) // *aEnd is '{' or '='.
 		return FAIL;
@@ -6864,8 +6866,8 @@ ResultType Script::DefineClassVars(LPTSTR aBuf, bool aStatic)
 	LPTSTR item, item_end;
 	TCHAR orig_char, buf[LINE_SIZE], type_buf[LINE_SIZE];
 	size_t buf_used = 0;
-	ExprTokenType empty_token;
-	empty_token.symbol = SYM_MISSING;
+	ExprTokenType unset_token;
+	unset_token.symbol = SYM_MISSING;
 
 	for (item = omit_leading_whitespace(aBuf); *item;) // FOR EACH COMMA-SEPARATED ITEM IN THE DECLARATION LIST.
 	{
@@ -6961,13 +6963,9 @@ ResultType Script::DefineClassVars(LPTSTR aBuf, bool aStatic)
 						return FAIL;
 					*type_name_end = type_end_char;
 				}
-				else
-				{
-					// Assign prototype[item] := "" to mark it as a value property
-					// and allow duplicate declarations to be detected:
-					if (!prototype->SetOwnProp(item, empty_token))
-						return ScriptError(ERR_OUTOFMEM);
-				}
+				// Store the unset marker in prototype.%item% to allow duplicate declarations to be detected:
+				if (!prototype->SetOwnProp(item, unset_token))
+					return ScriptError(ERR_OUTOFMEM);
 				*name_end = orig_char; // Undo termination.
 			}
 		}
@@ -10233,7 +10231,7 @@ standard_pop_into_postfix: // Use of a goto slightly reduces code size.
 					// be ternary with an object literal, and it currently works that way.
 					// If this is ever changed, it should probably require this_postfix >= chain_end
 					// when `?` is used in the sense of "omit the parameter".
-					if (  !(mActionType == ACT_RETURN || mActionType == ACT_EXPRESSION || mActionType == ACT_ASSIGNEXPR)  )
+					if (  !(mActionType == ACT_RETURN || mActionType == ACT_EXPRESSION || mActionType == ACT_ASSIGNEXPR || mActionType == ACT_STATIC)  )
 						return LineError(_T("This statement's parameters cannot be unset."), FAIL, this_postfix->error_reporting_marker);
 				}
 			}
@@ -11959,8 +11957,12 @@ bool Line::EvaluateLoopUntil(ResultType &aResult)
 	aResult = ExpandArgs();
 	if (aResult != OK)
 		return true; // i.e. if it fails, break the loop.
-	aResult = LOOP_BREAK; // Break out of any recursive PerformLoopXxx() calls.
-	return ResultToBOOL(ARG1); // See PerformLoopWhile() above for comments about this line.
+	if (ResultToBOOL(ARG1))
+	{
+		aResult = LOOP_BREAK; // Break out of any recursive PerformLoopXxx() calls.
+		return true;
+	}
+	return false;
 }
 
 

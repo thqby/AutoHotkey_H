@@ -221,10 +221,12 @@ class Property
 	}
 
 public:
-	// MaxParams is cached for performance.  It is used in cases like x.y[z]:=v to
-	// determine whether to GET and then apply the parameters to the result, or just
-	// invoke SET with parameters.
-	int MinParams = -1, MaxParams = -1;
+	// Whether the property should be skipped by OwnProps two-param mode; i.e. because it requires parameters.
+	// Should be false if MinParams is non-zero or undetermined.
+	bool NoEnumGet = false;
+	// Whether to invoke the getter without parameters first, then invoke the returned value with parameters.
+	// Should be false if MaxParams is non-zero or undetermined, or IsVariadic is true.
+	bool NoParamSet = false, NoParamGet = false;
 
 	Property() {}
 	~Property()
@@ -346,7 +348,8 @@ protected:
 		DataIsAllocatedFlag = 0x08,
 		DataIsStructInfo = 0x10,
 		StructInfoLocked = 0x20,
-		LastObjectFlag = 0x20
+		NoCallDelete = 0x40,
+		LastObjectFlag = 0x40
 	};
 
 	Object *CloneTo(Object &aTo);
@@ -391,9 +394,11 @@ public:
 
 	static Object *Create();
 	static Object *Create(ExprTokenType *aParam[], int aParamCount, ResultToken *apResultToken = nullptr, bool aUnsorted = false);
+	static Object *CreateStructPtr(UINT_PTR aPtr, Object *aBase, ResultToken &aResultToken);
 
 	ResultType New(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, Object *aOuter = nullptr);
 	ResultType Construct(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount);
+	ResultType ConstructNoInit(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, ExprTokenType &aThisToken);
 
 	char HasProp(name_t aName);
 	bool HasMethod(name_t aName);
@@ -1150,28 +1155,3 @@ private:
 };
 
 bool MarshalObjectToToken(IObject *obj, ResultToken &token);
-
-class Module : public Object
-{
-	LPTSTR mName;
-public:
-	~Module() { if (mName) free(mName); }
-	static Object *Create(LPTSTR aName = nullptr) {
-		auto obj = new Module;
-		obj->SetBase(Object::sPrototype);
-		if (aName && *aName)
-			obj->mName = _tcsdup(aName);
-		else obj->mName = nullptr;
-		return obj;
-	}
-
-	LPTSTR Type() { return mName ? mName : _T("Module"); }
-	ResultType Invoke(IObject_Invoke_PARAMS_DECL) {
-		if (aFlags & IT_CALL) {
-			ResultToken this_token{};
-			if (aName && GetOwnProp(this_token, aName) && this_token.symbol == SYM_OBJECT)
-				return this_token.object->Invoke(aResultToken, IT_CALL, nullptr, this_token, aParam, aParamCount);
-		}
-		return Object::Invoke(IObject_Invoke_PARAMS);
-	}
-};

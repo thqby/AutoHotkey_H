@@ -120,6 +120,24 @@ Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *ap
 	return obj;
 }
 
+Object *Object::CreateStructPtr(UINT_PTR aPtr, Object *aBase, ResultToken &aResultToken)
+{
+	auto obj = Create();
+	if (!obj)
+	{
+		aResultToken.MemoryError();
+		return nullptr;
+	}
+	obj->mFlags |= NoCallDelete;
+	if (!obj->SetBase(aBase, aResultToken))
+	{
+		obj->Release();
+		return nullptr;
+	}
+	obj->SetDataPtr(aPtr);
+	return obj;
+}
+
 
 //
 // Map::Create - Create a new Map given an array of key/value pairs.
@@ -506,56 +524,51 @@ bool Object::Delete()
 		return deleted; // Caller will --mRefCount.
 	}
 
-	if (mBase)
+	// __Delete shouldn't be called for Prototype objects.  Although it would be more efficient to
+	// exclusively use the flag, it has been documented that __Delete isn't called if __Class exists.
+	if (g_script && !(mFlags & NoCallDelete) && !FindField(_T("__Class")))
 	{
-		if (FindField(_T("__Class")))
-			// This object appears to be a class definition, so it would probably be
-			// undesirable to call the super-class' __Delete() meta-function for this.
-			return ObjectBase::Delete();
+		// L33: Privatize the last recursion layer's deref buffer in case it is in use by our caller.
+		// It's done here rather than in Var::FreeAndRestoreFunctionVars (even though the below might
+		// not actually call any script functions) because this function is probably executed much
+		// less often in most cases.
+		PRIVATIZE_S_DEREF_BUF;
 
-		if (g_script) {
-			// L33: Privatize the last recursion layer's deref buffer in case it is in use by our caller.
-			// It's done here rather than in Var::FreeAndRestoreFunctionVars (even though the below might
-			// not actually call any script functions) because this function is probably executed much
-			// less often in most cases.
-			PRIVATIZE_S_DEREF_BUF;
+		// If an exception has been thrown, temporarily clear it for execution of __Delete.
+		ResultToken *exc = g->ThrownToken;
+		g->ThrownToken = NULL;
 
-			// If an exception has been thrown, temporarily clear it for execution of __Delete.
-			ResultToken *exc = g->ThrownToken;
-			g->ThrownToken = NULL;
+		// This prevents an erroneous "The current thread will exit" message when an error occurs,
+		// by causing LineError() to throw an exception:
+		int outer_excptmode = g->ExcptMode;
+		g->ExcptMode |= EXCPTMODE_DELETE;
 
-			// This prevents an erroneous "The current thread will exit" message when an error occurs,
-			// by causing LineError() to throw an exception:
-			int outer_excptmode = g->ExcptMode;
-			g->ExcptMode |= EXCPTMODE_DELETE;
-
-			{
-				FuncResult rt;
-				CallMeta(_T("__Delete"), rt, ExprTokenType(this), nullptr, 0);
-				rt.Free();
-			}
-
-			// Call main destructor and all nested destructors before deleting anything, since an outer
-			// object's nested objects should be assumed valid within the outer object's destructor,
-			// and all objects in the group may rely on the mData of the outer-most object.
-			if (mNested)
-				CallNestedDelete();
-
-			g->ExcptMode = outer_excptmode;
-
-			// Exceptions thrown by __Delete are reported immediately because they would not be handled
-			// consistently by the caller (they would typically be "thrown" by the next function call),
-			// and because the caller must be allowed to make additional __Delete calls.
-			if (g->ThrownToken)
-				g_script->FreeExceptionToken(g->ThrownToken);
-
-			// If an exception has been thrown by our caller, it's likely that it can and should be handled
-			// reliably by our caller, so restore it.
-			if (exc)
-				g->ThrownToken = exc;
-
-			DEPRIVATIZE_S_DEREF_BUF; // L33: See above.
+		{
+			FuncResult rt;
+			CallMeta(_T("__Delete"), rt, ExprTokenType(this), nullptr, 0);
+			rt.Free();
 		}
+
+		// Call main destructor and all nested destructors before deleting anything, since an outer
+		// object's nested objects should be assumed valid within the outer object's destructor,
+		// and all objects in the group may rely on the mData of the outer-most object.
+		if (mNested)
+			CallNestedDelete();
+
+		g->ExcptMode = outer_excptmode;
+
+		// Exceptions thrown by __Delete are reported immediately because they would not be handled
+		// consistently by the caller (they would typically be "thrown" by the next function call),
+		// and because the caller must be allowed to make additional __Delete calls.
+		if (g->ThrownToken)
+			g_script->FreeExceptionToken(g->ThrownToken);
+
+		// If an exception has been thrown by our caller, it's likely that it can and should be handled
+		// reliably by our caller, so restore it.
+		if (exc)
+			g->ThrownToken = exc;
+
+		DEPRIVATIZE_S_DEREF_BUF; // L33: See above.
 
 		// Above may pass the script a reference to this object to allow cleanup routines to free any
 		// associated resources.  Deleting it is only safe if the script no longer holds any references
@@ -754,7 +767,7 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 			field = nullptr;
 			continue;
 		}
-		if (actual_param_count > 0 && field->prop->MaxParams == 0) // Prop cannot accept parameters.
+		if (actual_param_count > 0 && (setting ? field->prop->NoParamSet : field->prop->NoParamGet)) // Prop cannot accept parameters.
 		{
 			setting = false; // GET this property's value.
 			handle_params_recursively = true; // Apply parameters by passing them to value->Invoke().
@@ -796,11 +809,11 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 			if (field->tprop->class_object)
 			{
 				Object *nested = realthis->mNested[field->tprop->object_index];
-				mRefCount++;
+				realthis->mRefCount++; // Must be done at least when nested->mRefCount == 0 (and then reversed when nested->mRefCount reaches 0 again).
 				nested->mRefCount++; // Avoid calling Delete() when the __value setter returns.
 				auto result = nested->Invoke(aResultToken, IT_SET | IF_BYPASS_METAFUNC | IF_NO_NEW_PROPS, _T("__value"), ExprTokenType(nested), actual_param, 1);
 				nested->mRefCount--;
-				mRefCount--;
+				realthis->mRefCount--;
 				if (result != INVOKE_NOT_HANDLED)
 					return result;
 				return aResultToken.Error(_T("Assignment to struct is not supported."));
@@ -811,19 +824,37 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 		}
 		else if (field->tprop->class_object) // Struct type.
 		{
+			if (!realthis->mNested)
+			{
+				auto si = realthis->mBase->GetStructInfo();
+				realthis->mNested = new (std::nothrow) Object * [si->nested_count + 1];
+				if (!realthis->mNested)
+					return aResultToken.MemoryError();
+				ZeroMemory(realthis->mNested, sizeof(Object *) * (si->nested_count + 1));
+			}
 			Object *nested = realthis->mNested[field->tprop->object_index];
-			ASSERT(nested);
-			if (nested->AddRef() == 1)
-				realthis->AddRef();
+			if (!nested) // Since it wasn't constructed, this must be a pointer, not a real struct.
+			{
+				auto proto = dynamic_cast<Object*>(field->tprop->class_object->GetOwnPropObj(_T("Prototype")));
+				if (!proto)
+					return INVOKE_NOT_HANDLED;
+				nested = CreateStructPtr((UINT_PTR)ptr, proto, aResultToken);
+				if (!nested)
+					return FAIL; // Error was already raised.
+			}
+			else
+			{
+				if (nested->AddRef() == 1)
+					realthis->AddRef();
+			}
 			if (!handle_params_recursively)
 			{
-				mRefCount++;
-				nested->mRefCount++; // Avoid calling Delete() when the __value getter returns.
 				auto result = nested->Invoke(aResultToken, IT_GET | IF_BYPASS_METAFUNC, _T("__value"), ExprTokenType(nested), nullptr, 0);
-				nested->mRefCount--;
-				mRefCount--;
 				if (result != INVOKE_NOT_HANDLED)
+				{
+					nested->Release(); // This will realthis->Release() if appropriate.
 					return result;
+				}
 				aResultToken.SetValue(nested);
 				return OK;
 			}
@@ -1357,8 +1388,8 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 		else
 		{
 			auto prop = obj->DefineProperty(name);
-			prop->MinParams = member.minParams;
-			prop->MaxParams = member.maxParams;
+			prop->NoParamGet = prop->NoParamSet = member.maxParams == 0;
+			prop->NoEnumGet = member.minParams > 0;
 			
 			auto op_name = _tcschr(name, '\0');
 
@@ -1805,17 +1836,37 @@ Object::StructInfo *Object::GetStructInfo(bool aDefine)
 	return (StructInfo*)mData;
 }
 
-ResultType GetObjMaxParams(IObject *aObj, int &aMaxParams, ResultToken &aResultToken)
+ResultType FillPropertyFlags(IObject *aObj, bool aSetter, Property &aProp, ResultToken &aResultToken)
 {
-	__int64 propval = 0;
-	auto result = GetObjectIntProperty(aObj, _T("MaxParams"), propval, aResultToken, true);
+	bool &no_param = aSetter ? aProp.NoParamSet : aProp.NoParamGet;
+	no_param = false; // Reset to default, in case of error or undefined MaxParams.
+	__int64 propval;
+	ResultType result;
+	if (!aSetter)
+	{
+		aProp.NoEnumGet = false; // Reset to default, in case of error or undefined MaxParams.
+		propval = 0;
+		result = GetObjectIntProperty(aObj, _T("MinParams"), propval, aResultToken, true);
+		switch (result)
+		{
+		case FAIL:
+		case EARLY_EXIT:
+			return result;
+		case OK:
+			aProp.NoEnumGet = propval > 1;
+		}
+	}
+	propval = 0;
+	result = GetObjectIntProperty(aObj, _T("MaxParams"), propval, aResultToken, true);
 	switch (result)
 	{
 	case FAIL:
 	case EARLY_EXIT:
 		return result;
 	case OK:
-		aMaxParams = (int)propval;
+		no_param = propval == (aSetter ? 2 : 1);
+		if (!no_param)
+			break; // No need to query IsVariadic.
 		propval = 0;
 		result = GetObjectIntProperty(aObj, _T("IsVariadic"), propval, aResultToken, true);
 		switch (result)
@@ -1823,14 +1874,12 @@ ResultType GetObjMaxParams(IObject *aObj, int &aMaxParams, ResultToken &aResultT
 		case FAIL:
 		case EARLY_EXIT:
 			return result;
-		case INVOKE_NOT_HANDLED:
-			return OK;
 		case OK:
 			if (propval)
-				aMaxParams = INT_MAX;
+				no_param = false; // Reset to false; property accepts parameters.
 		}
 	}
-	return result;
+	return OK;
 }
 
 void Object::DefineProp(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
@@ -1881,34 +1930,19 @@ void Object::DefineProp(ResultToken &aResultToken, int aID, int aFlags, ExprToke
 	auto prop = DefineProperty(name);
 	if (!prop)
 		_o_throw_oom;
-	if (getter.symbol == SYM_OBJECT) prop->SetGetter(getter.object);
-	if (setter.symbol == SYM_OBJECT) prop->SetSetter(setter.object);
-	if (method.symbol == SYM_OBJECT) prop->SetMethod(method.object);
-	prop->MaxParams = -1;
-	if (auto obj = prop->Getter())
+	if (getter.symbol == SYM_OBJECT)
 	{
-		int max_params;
-		switch (GetObjMaxParams(obj, max_params, aResultToken))
-		{
-		case FAIL:
-		case EARLY_EXIT:
-			return;
-		case OK:
-			prop->MaxParams = max_params - 1;
-		}
+		prop->SetGetter(getter.object);
+		FillPropertyFlags(getter.object, false, *prop, aResultToken);
 	}
-	if (auto obj = prop->Setter())
+	if (setter.symbol == SYM_OBJECT)
 	{
-		int max_params;
-		switch (GetObjMaxParams(obj, max_params, aResultToken))
-		{
-		case FAIL:
-		case EARLY_EXIT:
-			return;
-		case OK:
-			if (prop->MaxParams < max_params - 2)
-				prop->MaxParams = max_params - 2;
-		}
+		prop->SetSetter(setter.object);
+		FillPropertyFlags(setter.object, true, *prop, aResultToken);
+	}
+	if (method.symbol == SYM_OBJECT)
+	{
+		prop->SetMethod(method.object);
 	}
 	AddRef();
 	_o_return(this);
@@ -1970,17 +2004,23 @@ ResultType Object::New(ResultToken &aResultToken, ExprTokenType *aParam[], int a
 	}
 	if (auto si = proto->GetStructInfo()) // Typed properties are defined.
 	{
-		if (!mData)
+		if (!mData && si->size)
 		{
 			if (FAILED(AllocDataPtr(si->size)))
+			{
+				Release();
 				return aResultToken.MemoryError();
+			}
 			ZeroMemory((void*)DataPtr(), DataSize());
 		}
 		if (si->nested_count)
 		{
 			mNested = new (std::nothrow) Object * [si->nested_count + 1];
 			if (!mNested)
+			{
+				Release();
 				return aResultToken.MemoryError();
+			}
 			ZeroMemory(mNested, sizeof(Object *) * (si->nested_count + 1));
 			auto result = NestedNew(aResultToken, si);
 			if (result != OK)
@@ -1993,7 +2033,10 @@ ResultType Object::New(ResultToken &aResultToken, ExprTokenType *aParam[], int a
 		{
 			mNested = new (std::nothrow) Object * [1];
 			if (!mNested)
+			{
+				Release();
 				return aResultToken.MemoryError();
+			}
 		}
 		mNested[0] = aOuter;
 		aOuter->AddRef();
@@ -2030,27 +2073,41 @@ ResultType Object::NestedNew(ResultToken &aResultToken, StructInfo *si)
 	auto data_ptr = DataPtr();
 
 	// Second pass: construct objects.
-	for (size_t i = 1; i <= si->nested_count; ++i)
+	ResultType result;
+	size_t i;
+	for (i = 1; i <= si->nested_count; ++i)
 	{
-		ASSERT(mNested[i]);
+		if (!mNested[i]) // Possible in case of redefinition via DefineProp.
+			continue;
 		// TODO: support native types other than Object
 		auto nested = Object::Create();
 		if (!nested)
-			return aResultToken.MemoryError();
+		{
+			result = aResultToken.MemoryError();
+			break;
+		}
 		nested->SetDataPtr(data_ptr + offsets[i-1]);
 		ExprTokenType prop_class { mNested[i] }, *pcarg {&prop_class};
-		auto result = nested->New(aResultToken, &pcarg, 1, this);
+		result = nested->New(aResultToken, &pcarg, 1, this);
+		if (result != OK)
+			break;
 		// During construction, 'nested' has a non-zero mRefCount and a counted reference to 'this'.
 		// Now it needs to have mRefCount == 0 to reflect that there aren't any external references.
 		nested->mRefCount--;
 		mRefCount--;
 		aResultToken.symbol = SYM_INTEGER; // New has set this to nested.  Reset to default without calling Release().
 		ASSERT(nested->mRefCount == 0 && mRefCount);
-		if (result == FAIL || result == EARLY_EXIT)
-			return result;
 		mNested[i] = nested;
 	}
-	return OK;
+	if (i <= si->nested_count)
+	{
+		ASSERT(result != OK);
+		// Clear any pointers stored in the first pass, since AddRef() wasn't called.
+		do mNested[i++] = nullptr; while (i <= si->nested_count);
+		// this object won't be returned, since construction failed.
+		Release();
+	}
+	return result;
 }
 
 ResultType Object::Construct(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
@@ -2076,8 +2133,13 @@ ResultType Object::Construct(ResultToken &aResultToken, ExprTokenType *aParam[],
 		}
 	}
 
+	return ConstructNoInit(aResultToken, aParam, aParamCount, this_token);
+}
+
+ResultType Object::ConstructNoInit(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, ExprTokenType &aThisToken)
+{
 	// __New may be defined by the script for custom initialization code.
-	result = CallMeta(_T("__New"), aResultToken, this_token, aParam, aParamCount);
+	auto result = CallMeta(_T("__New"), aResultToken, aThisToken, aParam, aParamCount);
 	aResultToken.Free();
 	if (result == INVOKE_NOT_HANDLED && aParamCount)
 	{
@@ -2216,10 +2278,10 @@ bool Object::Variant::InitCopy(Variant &val)
 		(object = val.object)->AddRef();
 		break;
 	case SYM_DYNAMIC:
-		prop = new Property();
-		prop->SetGetter(val.prop->Getter());
-		prop->SetSetter(val.prop->Setter());
-		prop->SetMethod(val.prop->Method());
+		prop = new Property(*val.prop);
+		if (auto obj = prop->Getter()) obj->AddRef();
+		if (auto obj = prop->Setter()) obj->AddRef();
+		if (auto obj = prop->Method()) obj->AddRef();
 		break;
 	case SYM_TYPED_FIELD:
 		tprop = new TypedProperty();
@@ -2905,7 +2967,7 @@ ResultType Object::GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCoun
 				// (consistent with inherited properties that have neither getter nor setter defined here).
 				// Also skip if this is a class prototype, since that isn't an instance of the class and
 				// therefore isn't a valid target for a method/property call.
-				if (field.prop->MaxParams > 0 || !field.prop->Getter() || IsClassPrototype())
+				if (field.prop->NoEnumGet || !field.prop->Getter() || IsClassPrototype())
 					continue;
 
 				FuncResult result_token;
@@ -3081,17 +3143,14 @@ char Object::HasProp(name_t name)
 {
 	if (auto field = FindField(name)) {
 		if (field->symbol == SYM_DYNAMIC) {
-			auto& prop = field->prop;
+			auto &prop = field->prop;
 			char kind = 0;
 			if (prop->Method())
 				kind |= 8;
-			if (prop->MaxParams > 0) {
-				if (prop->Getter())
-					kind |= 2;
-				if (prop->Setter())
-					kind |= 4;
-			}
-			else kind |= 1;
+			if (prop->Getter())
+				kind |= prop->NoParamGet ? 1 : 2;
+			if (prop->Setter())
+				kind |= prop->NoParamSet ? 1 : 4;
 			return kind;
 		}
 		return 1;
@@ -3893,8 +3952,7 @@ void Object::CreateRootPrototypes()
 	for (int i = 0; i < _countof(sFuncs); ++i)
 		sAnyPrototype->DefineMethod(sFuncs[i], g_script->FindGlobalFunc(sFuncs[i]));
 	auto prop = sAnyPrototype->DefineProperty(_T("Base"));
-	prop->MinParams = 0;
-	prop->MaxParams = 0;
+	prop->NoParamGet = prop->NoParamSet = true;
 	prop->SetGetter(g_script->FindGlobalFunc(_T("ObjGetBase")));
 	prop->SetSetter(g_script->FindGlobalFunc(_T("ObjSetBase")));
 
@@ -4111,8 +4169,7 @@ void Object::DefineClass(name_t aName, Object *aClass)
 	aClass->AddRef();
 
 	auto get = new BuiltInFunc { _T(""), Class_GetNestedClass, 1, 1, false, info };
-	prop->MinParams = 0;
-	prop->MaxParams = 0;
+	prop->NoParamGet = prop->NoParamSet = true;
 	prop->SetGetter(get);
 	get->Release();
 
@@ -4183,7 +4240,9 @@ BIF_DECL(Class_New)
 	auto proto = Object::CreatePrototype(name, base_proto);
 	auto class_obj = Object::CreateClass(proto, base_class);
 	proto->Release();
-	class_obj->Construct(aResultToken, aParam, aParamCount); // This either releases or returns class_obj.
+	// Don't call any inherited __Init, since that would reinitialize static variables and duplicate
+	// any typed properties defined by that one class.  This either releases or returns class_obj:
+	class_obj->ConstructNoInit(aResultToken, aParam, aParamCount, ExprTokenType(class_obj));
 }
 
 

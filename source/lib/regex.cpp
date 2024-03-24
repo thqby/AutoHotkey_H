@@ -333,9 +333,9 @@ int RegExCallout(pcret_callout_block *cb)
 		number_to_return = PCRE_ERROR_CALLOUT;
 		cd.result_token->SetExitResult(result);
 	}
-	
-	match_object->Release();
+
 	g->EventInfo = EventInfo_saved;
+	match_object->Release();
 
 	// Behaviour of return values is defined by PCRE.
 	return (int)number_to_return;
