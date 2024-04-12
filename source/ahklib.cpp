@@ -104,8 +104,20 @@ public:
 	}
 	
 	STDMETHODIMP_(BSTR) get_Name() { return SysAllocString(mFunc->mName); }
-	STDMETHODIMP_(BSTR) get_File() { return SysAllocString(Line::sSourceFile[mFunc->mFileIndex]); }
-	STDMETHODIMP_(UINT) get_Line() { return mFunc->mLineNumber; }
+
+	STDMETHODIMP_(BSTR) get_File()
+	{
+		auto func = dynamic_cast<UserFunc*>(mFunc);
+		return SysAllocString(func ? Line::sSourceFile[func->mFileIndex] : L"");
+	}
+
+	STDMETHODIMP_(UINT) get_Line()
+	{
+		if (auto func = dynamic_cast<UserFunc*>(mFunc))
+			return func->mLineNumber;
+		return 0;
+	}
+
 	STDMETHODIMP_(UINT) get_EndLine();
 	STDMETHODIMP_(BOOL) get_IsBuiltIn() { return mFunc->IsBuiltIn(); }
 	STDMETHODIMP_(BOOL) get_IsVariadic() { return mFunc->mIsVariadic; }

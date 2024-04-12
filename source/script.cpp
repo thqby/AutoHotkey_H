@@ -8274,7 +8274,7 @@ ResultType Script::PreparseExpressions(FuncList &aFuncs)
 	for (int i = 0; i < aFuncs.mCount; ++i)
 	{
 		UserFunc &func = *aFuncs.mItem[i];
-		if (func.mPreprocessLocalVarsDone)
+		if (func.IsPreprocessDone())
 			continue;
 		
 		// Variables that were assignable in the outer function should also be assignable
@@ -13124,11 +13124,11 @@ ResultType Script::PreprocessLocalVars(FuncList &aFuncs)
 	for (int i = 0; i < aFuncs.mCount; ++i)
 	{
 		UserFunc &func = *aFuncs.mItem[i];
-		if (func.mPreprocessLocalVarsDone)
+		if (func.IsPreprocessDone())
 			continue;
 		if (!PreprocessLocalVars(func))
 			return FAIL;
-		func.mPreprocessLocalVarsDone = true;
+		func.MarkPreprocessDone();
 		// Nested functions will be preparsed next, due to the fact that they immediately
 		// follow the outer function in aFuncs.
 	}
