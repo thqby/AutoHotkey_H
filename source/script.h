@@ -1481,11 +1481,6 @@ public:
 	int mMinParams = 0;  // The number of mandatory parameters (populated for both UDFs and built-in's).
 	bool mIsVariadic = false; // Whether to allow mParamCount to be exceeded.
 
-#ifdef CONFIG_DLL
-	LineNumberType mLineNumber = 0;
-	FileIndexType mFileIndex = 0;
-#endif
-
 	virtual bool IsBuiltIn() = 0; // FIXME: Should not need to rely on this.
 	virtual bool ArgIsOutputVar(int aArg) = 0;
 	virtual bool ArgIsOptional(int aArg) { return aArg >= mMinParams; }
@@ -1547,6 +1542,22 @@ public:
 #define VAR_DECLARE_STATIC (VAR_DECLARED | VAR_LOCAL | VAR_LOCAL_STATIC)
 	UCHAR mDefaultVarType = VAR_DECLARE_LOCAL;
 
+	bool mIsMacro = false;
+
+	enum Flags : decltype(mFlags)
+	{
+		PreprocessDone = LastObjectFlag << 1
+	};
+
+	// preprocess vars only once
+	bool IsPreprocessDone() { return mFlags & PreprocessDone; }
+	void MarkPreprocessDone() { mFlags |= PreprocessDone; }
+
+#ifdef CONFIG_DLL
+	LineNumberType mLineNumber = 0;
+	FileIndexType mFileIndex = 0;
+#endif
+
 	UserFunc(LPCTSTR aName) : Func(aName) {}
 	~UserFunc() {
 		auto freevars = [](VarList& vars, bool isstatic) {
@@ -1586,10 +1597,6 @@ public:
 	{
 		return mDefaultVarType & VAR_GLOBAL;
 	}
-
-	bool mIsMacro = false;
-	// preprocess vars only once
-	bool mPreprocessLocalVarsDone = false;
 
 	bool Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount) override;
 	bool Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount, FreeVars *aUpVars);

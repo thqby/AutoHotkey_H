@@ -8348,7 +8348,7 @@ ResultType Script::PreparseExpressions(FuncList &aFuncs)
 	{
 		ASSERT(dynamic_cast<UserFunc*>(aFuncs.mItem[i]));
 		auto &func = *(UserFunc *)aFuncs.mItem[i];
-		if (func.mPreprocessLocalVarsDone)
+		if (func.IsPreprocessDone())
 			continue;
 		g->CurrentFunc = &func;
 		if (!PreparseExpressions(func.mJumpToLine)) // Preparse this function's body.
@@ -13066,13 +13066,13 @@ ResultType Script::PreprocessLocalVars(FuncList &aFuncs)
 	{
 		ASSERT(dynamic_cast<UserFunc*>(aFuncs.mItem[i]));
 		auto &func = *(UserFunc *)aFuncs.mItem[i];
-		if (func.mPreprocessLocalVarsDone)
+		if (func.IsPreprocessDone())
 			continue;
 		if (!PreprocessLocalVars(func))
 			return FAIL;
+		func.MarkPreprocessDone();
 		// Nested functions will be preparsed next, due to the fact that they immediately
 		// follow the outer function in aFuncs.
-		func.mPreprocessLocalVarsDone = true;
 	}
 	return OK;
 }
