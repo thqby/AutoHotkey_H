@@ -10496,12 +10496,13 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 							g->CurrentFunc->mVars.mItem = NULL;
 						}
 						delete this_postfix->var;
-						if (!aArg.is_expression)
+						auto obj = var->ToObject();
+						if (!aArg.is_expression || !obj)
 							this_postfix->var = var;
 						else
 						{
-							this_postfix->SetValue(var->mObject);
-							var->mObject->AddRef();
+							this_postfix->SetValue(obj);
+							obj->AddRef();
 						}
 						continue;
 					}
