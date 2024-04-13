@@ -2460,6 +2460,7 @@ BIF_DECL(BIF_DynaCall)
 		DYNAPARM& this_dyna_param = dyna_param[i];
 		ExprTokenType& this_param = i < aParamCount ? *aParam[i] : miss;
 		IObject* this_param_obj = TokenToObject(this_param);
+		param_shift[i] = i;
 		if (this_param_obj)
 		{
 			if (this_dyna_param.is_ptr == 2) {
@@ -2550,34 +2551,31 @@ BIF_DECL(BIF_DynaCall)
 		} // switch (this_dyna_param.type)
 	} // for() each arg.
 
-	for (i = 0; i < obj->mParamCount; i++)
-		param_shift[i] = i;
-	UINT arrLen;
-	if (arr && (arrLen = arr->Length()) > 1)
-	{
+	if (auto l = arr ? min(arr->Length() - 1, (UINT)obj->mParamCount) : 0) {
 		// Set shift info for parameters, -1 for definition in first item.
 		memset(param_shift, -1, obj->mParamCount * sizeof(int));
-		bool* paramslist = (bool*)_alloca(obj->mParamCount);
+		auto paramslist = (bool *)_alloca(obj->mParamCount);
 		memset(paramslist, 0, obj->mParamCount);
-		for (UINT i = 1; i < arrLen; i++) {
-			arr->ItemToToken(i, token);
+		for (UINT j = 0; j < l; j++) {
+			if (!arr->ItemToToken(j + 1, token))
+				continue;
 			if (token.symbol != SYM_INTEGER)
 				_o_throw_type(_T("Integer"), token);
-			else if (token.value_int64 < 1 || token.value_int64 > obj->mParamCount || paramslist[token.value_int64 - 1])
+			i = int(token.value_int64 - 1);
+			if (i < 0 || i >= obj->mParamCount || paramslist[i])
 				_o_throw(ERR_INVALID_INDEX, TokenToString(token, _f_number_buf), ErrorPrototype::Index);
-			param_shift[i] = (int)(token.value_int64 - 1);
-			paramslist[token.value_int64 - 1] = true;
+			paramslist[param_shift[j] = i] = true;
 		}
 		for (i = 0; i < obj->mParamCount; i++) {
 			if (paramslist[i]) continue;
 			for (int j = 0; j < obj->mParamCount; j++)
 				if (param_shift[j] == -1) {
 					param_shift[j] = i;
-					goto next;
+					break;
 				}
-		next:;
 		}
 	}
+
 	dyobj.obj = nullptr;
 	_o_return(obj);
 }
