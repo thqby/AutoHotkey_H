@@ -822,7 +822,8 @@ BIF_DECL(BIF_DllCall)
 						continue;
 					}
 				}
-				else if (tp == SYM_STRING && this_dyna_param.is_ptr == 1 && this_dyna_param.type != DLL_ARG_xSTR) {
+				else if (tp == SYM_STRING && this_dyna_param.is_ptr == 1 &&
+					this_dyna_param.type != DLL_ARG_xSTR && this_dyna_param.type != DLL_ARG_U8STR) {
 					this_dyna_param.ptr = ParamIndexToString(i);
 					continue;
 				}
@@ -1354,15 +1355,15 @@ BIF_DECL(BIF_DllCall)
 			// passed_by_address for all other types.  However, it must be used carefully since
 			// there's no way for Str* to know how or whether the function requires the string
 			// to be freed (e.g. by calling CoTaskMemFree()).
-			if (this_dyna_param.ptr != output_var.Contents(FALSE)
-				&& !output_var.AssignString((LPTSTR)this_dyna_param.ptr))
-				aResultToken.SetExitResult(FAIL);
+			if (this_dyna_param.ptr != p_str_or_obj[arg_count])
+				if (!output_var.AssignString((LPTSTR)this_dyna_param.ptr))
+					aResultToken.SetExitResult(FAIL);
 			break;
 		case DLL_ARG_xSTR: // AStr* on Unicode builds and WStr* on ANSI builds.
 		case DLL_ARG_U8STR:
-			if (this_dyna_param.ptr != output_var.Contents(FALSE)
-				&& !output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr, -1, this_dyna_param.type == DLL_ARG_U8STR ? CP_UTF8 : 0))
-				aResultToken.SetExitResult(FAIL);
+			if (this_dyna_param.ptr != p_str_or_obj[arg_count])
+				if (!output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr, -1, this_dyna_param.type == DLL_ARG_U8STR ? CP_UTF8 : 0))
+					aResultToken.SetExitResult(FAIL);
 		}
 		if (p_type[arg_count]) {
 			ResultToken result;

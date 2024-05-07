@@ -191,6 +191,7 @@ public:
 	void Exit(ExitReasons aExitReason, char *aCommandName=NULL); // Called when exiting AutoHotkey.
 	inline bool IsConnected() { return mSocket != INVALID_SOCKET; }
 	inline bool IsStepping() { return mInternalState >= DIS_StepInto; }
+	inline bool IsAtBreak() { return mProcessingCommands; }
 	inline bool HasStdErrHook() { return mStdErrMode != SR_Disabled; }
 	inline bool HasStdOutHook() { return mStdOutMode != SR_Disabled; }
 	inline bool BreakOnExceptionIsEnabled() { return mBreakOnException; }
@@ -273,12 +274,7 @@ public:
 	DEBUGGER_COMMAND(redirect_stderr);
 
 
-	Debugger() : mSocket(INVALID_SOCKET), mInternalState(DIS_Starting)
-		, mMaxPropertyData(1024), mContinuationTransactionId(""), mStdErrMode(SR_Disabled), mStdOutMode(SR_Disabled)
-		, mMaxChildren(20), mMaxDepth(2), mDisabledHooks(0)
-		, mThrownToken(NULL), mBreakOnExceptionID(0), mBreakOnExceptionWasSet(false), mBreakOnExceptionIsTemporary(false), mBreakOnException(false)
-	{
-	}
+	Debugger() {}
 
 
 	// Stack - keeps track of threads and function calls.
@@ -286,11 +282,11 @@ public:
 	friend struct DbgStack;
 
 private:
-	SOCKET mSocket;
-	Line *mCurrLine; // Similar to g_script->mCurrLine, but may be different when breaking post-function-call, before continuing expression evaluation.
-	ExprTokenType *mThrownToken; // The exception that triggered the current exception breakpoint.
-	bool mBreakOnExceptionWasSet, mBreakOnExceptionIsTemporary, mBreakOnException; // Supports a single coverall breakpoint exception.
-	int mBreakOnExceptionID;
+	SOCKET mSocket = INVALID_SOCKET;
+	Line *mCurrLine = nullptr; // Similar to g_script->mCurrLine, but may be different when breaking post-function-call, before continuing expression evaluation.
+	ExprTokenType *mThrownToken = nullptr; // The exception that triggered the current exception breakpoint.
+	bool mBreakOnExceptionWasSet = false, mBreakOnExceptionIsTemporary = false, mBreakOnException = false; // Supports a single coverall breakpoint exception.
+	int mBreakOnExceptionID = 0;
 
 	class Buffer
 	{
@@ -316,7 +312,7 @@ private:
 		}
 	private:
 		int EstimateFileURILength(LPCTSTR aPath);
-		void WriteFileURI(LPCTSTR aPath);
+		void WriteFileURI(LPCWSTR aPath);
 	} mCommandBuf, mResponseBuf;
 
 	enum DebuggerInternalStateType {
@@ -327,20 +323,21 @@ private:
 		DIS_StepInto,
 		DIS_StepOver,
 		DIS_StepOut
-	} mInternalState;
+	} mInternalState = DIS_Starting;
 
 	enum StreamRedirectType {
 		SR_Disabled = 0,
 		SR_Copy = 1,
 		SR_Redirect = 2
-	} mStdErrMode, mStdOutMode;
+	} mStdErrMode = SR_Disabled, mStdOutMode = SR_Disabled;
 
-	int mContinuationDepth; // Stack depth at last continuation command, for step_into/step_over.
-	CStringA mContinuationTransactionId; // transaction_id of last continuation command.
+	int mContinuationDepth = 0; // Stack depth at last continuation command, for step_into/step_over.
+	CStringA mContinuationTransactionId {""}; // transaction_id of last continuation command.
 
-	int mMaxPropertyData, mMaxChildren, mMaxDepth;
+	int mMaxPropertyData = 1024, mMaxChildren = 20, mMaxDepth = 2;
 
-	HookType mDisabledHooks;
+	HookType mDisabledHooks = 0;
+	bool mProcessingCommands;
 
 
 	enum PropertyType
@@ -359,15 +356,13 @@ private:
 		VarBkp *bkp;
 		Object::Variant *field;
 		ResultToken value;
-		IObject *this_object = nullptr;
+		IObject *invokee = nullptr;
 		PropertySource(LPTSTR aResultBuf)
 		{
 			value.InitResult(aResultBuf);
 		}
 		~PropertySource()
 		{
-			if (this_object)
-				this_object->Release();
 			value.Free();
 		}
 	};
@@ -391,15 +386,13 @@ private:
 	{
 		Debugger &mDbg;
 		PropertyInfo &mProp;
-		IObject *mObject;
 		size_t mNameLength;
 		int mDepth;
 		int mError;
 
-		PropertyWriter(Debugger &aDbg, PropertyInfo &aProp, IObject *aObject)
+		PropertyWriter(Debugger &aDbg, PropertyInfo &aProp)
 			: mDbg(aDbg)
 			, mProp(aProp)
-			, mObject(aObject)
 			, mNameLength(aProp.fullname.GetLength())
 			, mDepth(0)
 			, mError(0)
@@ -413,7 +406,7 @@ private:
 		void WriteDynamicProperty(LPTSTR aName);
 		void WriteEnumItems(IObject *aEnumerable, int aStart, int aEnd);
 
-		void _WriteProperty(ExprTokenType &aValue, IObject *aThisOverride = nullptr);
+		void _WriteProperty(ExprTokenType &aValue, IObject *aInvokee = nullptr);
 
 		void BeginProperty(LPCSTR aName, LPCSTR aType, int aNumChildren, DebugCookie &aCookie);
 		void EndProperty(DebugCookie aCookie);
@@ -424,7 +417,7 @@ private:
 	int ReceiveCommand(int *aCommandSize=NULL);
 
 	// Send XML response to debugger UI:
-	int SendResponse();
+	int SendResponse(size_t aStartOffset = 0);
 	int SendErrorResponse(char *aCommandName, char *aTransactionId, int aError=999, char *aExtraAttributes=NULL);
 	int SendStandardResponse(char *aCommandName, char *aTransactionId);
 	int SendContinuationResponse(LPCSTR aCommand = nullptr, LPCSTR aStatus = "break", LPCSTR aReason = "ok");
@@ -446,12 +439,12 @@ private:
 
 	int WritePropertyXml(PropertyInfo &aProp);
 	int WritePropertyXml(PropertyInfo &aProp, LPTSTR aName);
-	int WritePropertyXml(PropertyInfo &aProp, IObject *aObject);
+	int WritePropertyObjectXml(PropertyInfo &aProp);
 
 	int WritePropertyData(LPCTSTR aData, size_t aDataSize, int aMaxEncodedSize);
 	int WritePropertyData(ExprTokenType &aValue, int aMaxEncodedSize);
 
-	int WriteEnumItems(PropertyInfo &aProp, IObject *aObject);
+	int WriteEnumItems(PropertyInfo &aProp);
 
 	int ParsePropertyName(LPCSTR aFullName, int aDepth, int aVarScope, ExprTokenType *aSetValue
 		, PropertySource &aResult);

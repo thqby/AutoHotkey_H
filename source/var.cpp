@@ -855,7 +855,7 @@ void Var::Free(int aWhenToFree)
 	// Even if it isn't free'd, variable will be made blank.  So it seems proper to always remove
 	// the uninitialized attribute (since *we* are initializing it).  Some callers may rely on us
 	// removing these attributes:
-	mAttrib &= ~VAR_ATTRIB_OFTEN_REMOVED;
+	mAttrib &= ~(VAR_ATTRIB_OFTEN_REMOVED | VAR_ATTRIB_VIRTUAL_OPEN);
 
 	if (aWhenToFree & VAR_REQUIRE_INIT)
 		// Caller requires this var to be considered uninitialized from now on.  This attribute may

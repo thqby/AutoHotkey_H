@@ -806,8 +806,7 @@ public:
 		{
 			// Commit the value in our temporary buffer.
 			auto result = AssignVirtual(ExprTokenType(mCharContents, CharLength()));
-			Free(); // Free temporary memory.
-			mAttrib &= ~VAR_ATTRIB_VIRTUAL_OPEN;
+			Free(); // Free temporary memory and remove VAR_ATTRIB_VIRTUAL_OPEN.
 			return result;
 		}
 		// VAR_ATTRIB_CONTENTS_OUT_OF_DATE is removed below for maintainability; it shouldn't be

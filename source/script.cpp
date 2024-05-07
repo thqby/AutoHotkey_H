@@ -1,4 +1,4 @@
-/*
+﻿/*
 AutoHotkey
 
 Copyright 2003-2009 Chris Mallett (support@autohotkey.com)
@@ -449,6 +449,11 @@ Script::~Script() // Destructor.
 	g_MsgMonitor->Dispose();
 	mOnExit.Dispose();
 	mOnClipboardChange.Dispose();
+
+	// The following fixes being unable to paste text copied from an error dialog after the
+	// program exits (if it wasn't already pasted at least once), and may similarly be of
+	// benefit to scripts which directly or indirectly use OLE for clipboard.
+	OleFlushClipboard();
 
 	// DestroyWindow() will cause MainWindowProc() to immediately receive and process the
 	// WM_DESTROY msg, which should in turn result in any child windows being destroyed
@@ -2788,11 +2793,17 @@ process_completed_line:
 					buf[buf_length] = '\0';
 					// Before adding the line, apply expression line-continuation logic, which hasn't
 					// been applied yet because hotkey labels can contain unbalanced ()[]{}:
+					auto open_block = mOpenBlock;
 					if (   !GetLineContExpr(fp, buf, next_buf, phys_line_number, has_continuation_section)
 						|| !AddLine(ACT_BLOCK_BEGIN)			// Implicit start of function
 						|| !ParseAndAddLine(buf)				// Function body - one line
 						|| !AddLine(ACT_BLOCK_END))				// Implicit end of function
 						return FAIL;
+					if (open_block != mOpenBlock) // key::try { or similar.
+					{
+						mCurrLine = nullptr;
+						return ScriptError(ERR_HOTKEY_MISSING_BRACE);
+					}
 				}
 			}
 			goto continue_main_loop; // In lieu of "continue", for performance.
@@ -3423,7 +3434,7 @@ bool Script::IsSOLContExpr(LineBuffer &next_buf)
 		//  MsgBox
 		//  +!'::'  ; 0
 		*hotkey_flag = '\0';
-		bool valid_hotkey = Hotkey::TextInterpret(next_buf, NULL, true);
+		bool valid_hotkey = Hotkey::TextInterpret(next_buf, NULL, true) == OK;
 		*hotkey_flag = *HOTKEY_FLAG;
 		if (!valid_hotkey)
 			return true; // It's not valid hotkey syntax, so treat it as continuation even if it's ultimately a syntax error.
@@ -7414,7 +7425,7 @@ void Script::IncludeLibrary(LPTSTR aFuncName, size_t aFuncNameLength, bool &aErr
 
 #endif
 
-Var* Script::LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength)
+Var* Script::LoadVarFromWinApi(LPTSTR aFuncName)
 {
 	if (!g_hWinAPI) {
 		EnterCriticalSection(&g_Critical);
@@ -7445,7 +7456,8 @@ Var* Script::LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength)
 		LeaveCriticalSection(&g_Critical);
 	}
 	// WinApi and #DllImport are always global functions
-	auto* aCurrent_func = g->CurrentFunc;
+	auto *aCurrent_func = g->CurrentFunc;
+	auto aFuncNameLength = _tclen(aFuncName);
 	g->CurrentFunc = NULL;
 	TCHAR parameter[1024] = { 0 }; // Should be enough room for any dll function definition
 	memcpy(parameter, aFuncName, aFuncNameLength * sizeof(TCHAR));
@@ -10466,46 +10478,44 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 					this_postfix->var_usage = VARREF_REF;
 					continue;
 				}
+				Var *var = nullptr;
+				auto name = this_postfix->var->mName;
 				bool error_was_shown;
 				g_script->mCurrLine = this;
 				if (this_postfix->var->mScope == VAR_GLOBAL)
 				{
-					if (g_script->LoadVarFromLib(this_postfix->var->mName, error_was_shown))
-						continue;
+					var = g_script->LoadVarFromLib(name, error_was_shown);
 					if (error_was_shown)
 						return FAIL;
-					if (g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))
-						continue;
+					if (!var)
+						var = g_script->LoadVarFromWinApi(name);
 				}
 				else if (curfunc)
 				{
-					auto var = g_script->FindGlobalVar(this_postfix->var->mName);
+					var = g_script->FindGlobalVar(name);
 					if (var && var->mType == VAR_NORMAL && !var->IsAssignedSomewhere())
-						var = NULL;
+						var = nullptr;
 					if (!var)
 					{
-						var = g_script->LoadVarFromLib(this_postfix->var->mName, error_was_shown);
+						var = g_script->LoadVarFromLib(name, error_was_shown);
 						if (error_was_shown)
 							return FAIL;
 					}
-					if (var || (var = g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))) {
-						g->CurrentFunc->mVars.Remove(this_postfix->var->mName);
-						if (g->CurrentFunc->mVars.mCount == 0 && g->CurrentFunc->mVars.mItem)
-						{
-							free(g->CurrentFunc->mVars.mItem);
-							g->CurrentFunc->mVars.mItem = NULL;
-						}
+					if (var || (var = g_script->LoadVarFromWinApi(name)))
+					{
+						auto &vars = curfunc->mVars;
+						vars.Remove(name);
+						if (!vars.mCount)
+							free(vars.mItem), vars.mItem = nullptr;
 						delete this_postfix->var;
-						auto obj = var->ToObject();
-						if (!aArg.is_expression || !obj)
-							this_postfix->var = var;
-						else
-						{
-							this_postfix->SetValue(obj);
-							obj->AddRef();
-						}
-						continue;
+						this_postfix->var = var;
 					}
+				}
+				if (var)
+				{
+					if (var->IsDirectConstant() && !var->IsUninitialized())
+						var->ToToken(*this_postfix);
+					continue;
 				}
 			}
 			g_script->WarnUnassignedVar(this_postfix->var, this);
