@@ -1012,6 +1012,69 @@ FResult Hotkey::Dynamic(LPCTSTR aHotkeyName, LPCTSTR aOptions, IObject *aCallbac
 			return fr;
 	}
 
+	HotkeyIDType on_off = HOTKEY_ID_INVALID;
+	bool set_max_threads_buffer = false,	new_max_threads_buffer;
+	bool set_suspend_exempt = false,		new_suspend_exempt;
+	bool set_priority = false;			int new_priority;
+	bool set_max_threads = false;		int new_max_threads;
+	bool set_input_level = false;		int new_input_level;
+
+	// Parse options up front so that if any are invalid, no hotkey is created or altered.
+	for (auto cp = aOptions; *cp; )
+	{
+		switch (ctoupper(*cp++))
+		{
+		case 'O':
+			if (ctoupper(*cp) == 'N')
+			{
+				cp += 1;
+				on_off = HOTKEY_ID_ON;
+				continue;
+			}
+			else if (!_tcsnicmp(cp - 1, _T("Off"), 3))
+			{
+				cp += 2;
+				on_off = HOTKEY_ID_OFF;
+				continue;
+			}
+			// Fall through:
+		default:
+			return FR_E_ARG(2);
+		case 'B':
+			set_max_threads_buffer = true;
+			new_max_threads_buffer = (*cp != '0'); // i.e. if the char is NULL or something other than '0'.
+			cp += (*cp == '0' || *cp == '1');
+			continue;
+		// For options such as P & T: Require base 10 to prohibit ambiguous cases like P0x01B (since B is a valid option letter).
+		case 'P':
+			set_priority = true;
+			new_priority = _tcstol(cp, const_cast<LPTSTR*>(&cp), 10);
+			break;
+		case 'S':
+			set_suspend_exempt = true;
+			new_suspend_exempt = (*cp != '0');
+			cp += (*cp == '0' || *cp == '1');
+			continue;
+		case 'T':
+			set_max_threads = true;
+			new_max_threads = _tcstol(cp, const_cast<LPTSTR*>(&cp), 10);
+			if (new_max_threads > MAX_THREADS_LIMIT || new_max_threads < 1)
+				return FR_E_ARG(2);
+			if (new_max_threads > g_MaxThreadsTotal) // Permit caller to specify values larger than #MaxThreads, within the absolute limit imposed above.
+				new_max_threads = g_MaxThreadsTotal;
+			break;
+		case 'I':
+			set_input_level = true;
+			new_input_level = _tcstol(cp, const_cast<LPTSTR*>(&cp), 10);
+			if (!SendLevelIsValid(new_input_level))
+				return FR_E_ARG(2);
+			break;
+		case ' ':
+		case '\t':
+			continue;
+		}
+	}
+
 	UCHAR no_suppress;
 	bool hook_is_mandatory;
 	Hotkey *hk = FindHotkeyByTrueNature(aHotkeyName, no_suppress, hook_is_mandatory); // NULL if not found.
@@ -1031,18 +1094,7 @@ FResult Hotkey::Dynamic(LPCTSTR aHotkeyName, LPCTSTR aOptions, IObject *aCallbac
 			// already exists, it seems best to strictly require a matching variant rather than falling back
 			// onto some "default variant" such as the global variant (if any).
 			return FError(ERR_NONEXISTENT_VARIANT, aHotkeyName, ErrorPrototype::Target);
-		if (aHookAction == HOTKEY_ID_TOGGLE)
-			aHookAction = hk->mHookAction
-				? (hk->mParentEnabled ? HOTKEY_ID_OFF : HOTKEY_ID_ON) // Enable/disable parent hotkey (due to alt-tab being a global hotkey).
-				: (variant->mEnabled ? HOTKEY_ID_OFF : HOTKEY_ID_ON); // Enable/disable individual variant.
-		if (aHookAction == HOTKEY_ID_ON)
-		{
-			if (hk->mHookAction ? hk->EnableParent() : hk->Enable(*variant))
-				update_all_hotkeys = true; // Do it this way so that any previous "true" value isn't lost.
-		}
-		else
-			if (hk->mHookAction ? hk->DisableParent() : hk->Disable(*variant))
-				update_all_hotkeys = true; // Do it this way so that any previous "true" value isn't lost.
+		on_off = aHookAction;
 		break;
 
 	default: // aHookAction is 0 or an AltTab action.  COMMAND: Hotkey, Name, Callback|AltTabAction
@@ -1158,77 +1210,46 @@ FResult Hotkey::Dynamic(LPCTSTR aHotkeyName, LPCTSTR aOptions, IObject *aCallbac
 	// be a NULL variant (depending on whether there happens to be a variant in the hotkey that matches the current criteria).
 
 	// If aOptions is blank, any new hotkey or variant created above will have used the current values of
-	// g_MaxThreadsBuffer, etc.
-	if (*aOptions)
+	// g_MaxThreadsBuffer, etc. (but any pre-existing variant may have other settings).
+	if (*aOptions && variant)
 	{
-		for (auto cp = aOptions; *cp; ++cp)
+		if (set_max_threads_buffer)
+			variant->mMaxThreadsBuffer = new_max_threads_buffer;
+		if (set_priority)
+			variant->mPriority = new_priority;
+		if (set_suspend_exempt)
+			variant->mSuspendExempt = new_suspend_exempt;
+		if (set_max_threads)
+			variant->mMaxThreads = new_max_threads;
+		if (set_input_level)
 		{
-			switch(ctoupper(*cp))
+			if (new_input_level && !hk->mKeybdHookMandatory)
 			{
-			case 'O': // v1.0.38.02.
-				if (ctoupper(cp[1]) == 'N') // Full validation for maintainability.
-				{
-					++cp; // Omit the 'N' from further consideration in case it ever becomes a valid option letter.
-					if (hk->mHookAction ? hk->EnableParent() : hk->Enable(*variant)) // Under these conditions, earlier logic has ensured variant is non-NULL.
-						update_all_hotkeys = true; // Do it this way so that any previous "true" value isn't lost.
-				}
-				else if (!_tcsnicmp(cp, _T("Off"), 3))
-				{
-					cp += 2; // Omit the letters of the word from further consideration in case "f" ever becomes a valid option letter.
-					if (hk->mHookAction ? hk->DisableParent() : hk->Disable(*variant)) // Under these conditions, earlier logic has ensured variant is non-NULL.
-						update_all_hotkeys = true; // Do it this way so that any previous "true" value isn't lost.
-					if (variant_was_just_created) // This variant (and possibly its parent hotkey) was just created above.
-						update_all_hotkeys = false; // Override the "true" that was set (either right above *or* anywhere earlier) because this new hotkey/variant won't affect other hotkeys.
-				}
-				break;
-			case 'B':
-				if (variant)
-					variant->mMaxThreadsBuffer = (cp[1] != '0');  // i.e. if the char is NULL or something other than '0'.
-				break;
-			// For options such as P & T: Use atoi() vs. ATOI() to avoid interpreting something like 0x01B
-			// as hex when in fact the B was meant to be an option letter:
-			case 'P':
-				if (variant)
-					variant->mPriority = _ttoi(cp + 1);
-				break;
-			case 'S':
-				if (variant)
-					variant->mSuspendExempt = (cp[1] != '0');
-				break;
-			case 'T':
-				if (variant)
-				{
-					variant->mMaxThreads = _ttoi(cp + 1);
-					if (variant->mMaxThreads > g_MaxThreadsTotal) // To avoid array overflow, this limit must by obeyed except where otherwise documented.
-						// Older comment: Keep this limited to prevent stack overflow due to too many pseudo-threads.
-						variant->mMaxThreads = g_MaxThreadsTotal;
-					else if (variant->mMaxThreads < 1)
-						variant->mMaxThreads = 1;
-				}
-				break;
-			case 'I':
-				if (variant)
-				{
-					int new_input_level = _ttoi(cp + 1);
-					if (SendLevelIsValid(new_input_level))
-					{
-						if (new_input_level && !hk->mKeybdHookMandatory)
-						{
-							// For simplicity, a hotkey requires the hook if any of its variants have a non-zero
-							// input level, even if those variants are disabled.  The same is done for the tilde
-							// prefix above and in AddVariant(); see there for more comments.
-							hk->mKeybdHookMandatory = true;
-							update_all_hotkeys = true;
-						}
-						variant->mInputLevel = (SendLevelType)new_input_level;
-					}
-				}
-				break;
-			// Otherwise: Ignore other characters, such as the digits that comprise the number after the T option.
+				// For simplicity, a hotkey requires the hook if any of its variants have a non-zero
+				// input level, even if those variants are disabled.  The same is done for the tilde
+				// prefix above and in AddVariant(); see there for more comments.
+				hk->mKeybdHookMandatory = true;
+				update_all_hotkeys = true;
 			}
-		} // for()
-	} // if (*aOptions)
-		
+			variant->mInputLevel = (SendLevelType)new_input_level;
+		}
+	}
+	
+	if (on_off == HOTKEY_ID_TOGGLE)
+		on_off = (variant ? variant->mEnabled : hk->mParentEnabled) ? HOTKEY_ID_OFF : HOTKEY_ID_ON;
+	if (on_off == HOTKEY_ID_ON)
+	{
+		if (variant ? hk->Enable(*variant) : hk->EnableParent())
+			update_all_hotkeys = true; // Do it this way so that any previous "true" value isn't lost.
+	}
+	else if (on_off == HOTKEY_ID_OFF)
+	{
+		if (variant ? hk->Disable(*variant) : hk->DisableParent())
+			update_all_hotkeys = true; // Do it this way so that any previous "true" value isn't lost.
+		if (variant_was_just_created) // This variant (and possibly its parent hotkey) was just created above.
+			update_all_hotkeys = false; // Override the "true" that was set (either right above *or* anywhere earlier) because this new hotkey/variant won't affect other hotkeys.
+	}
+
 	if (update_all_hotkeys)
 		ManifestAllHotkeysHotstringsHooks(); // See its comments for why it's done in so many of the above situations.
 
@@ -1764,8 +1785,11 @@ break_loop:
 			tcslcpy(aProperties->suffix_text, omit_leading_whitespace(marker), _countof(aProperties->suffix_text)); // Protect against overflow case script ultra-long (and thus invalid) key name.
 		if (auto temp = tcscasestr(aProperties->suffix_text, _T(" Up"))) // Should be reliable detection method because leading spaces have been omitted and it's unlikely a legitimate key name will ever contain a space followed by "Up".
 		{
-			omit_trailing_whitespace(aProperties->suffix_text, temp)[1] = '\0'; // Omit " Up" from suffix_text since caller wants that.
-			aProperties->is_key_up = true; // Override the default set earlier.
+			if (!temp[3]) // Not something like "key up up", which can happen as a result of "a up::b".
+			{
+				omit_trailing_whitespace(aProperties->suffix_text, temp)[1] = '\0'; // Omit " Up" from suffix_text since caller wants that.
+				aProperties->is_key_up = true; // Override the default set earlier.
+			}
 		}
 	}
 	return marker;
@@ -1811,10 +1835,13 @@ ResultType Hotkey::TextToKey(LPCTSTR aText, bool aIsModifier, Hotkey *aThisHotke
 	else
 	{
 		// If there's something after the first word/character, it's not a hotkey.
-		if (aSyntaxCheckOnly)
-			return *keyname_end ? FAIL : OK;
+		// Only for *keyname_end != '\0', no error should be reported if aThisHotkey == NULL
+		// since the caller will attempt to parse the line as something else first, such as
+		// x := '::'
 		if (*keyname_end)
-			return CONDITION_FALSE;
+			return aThisHotkey ? ValueError(ERR_INVALID_HOTKEY, aText, FAIL) : CONDITION_FALSE;
+		if (aSyntaxCheckOnly)
+			return OK;
 	}
 
 	HotkeyTypeType hotkey_type_temp;

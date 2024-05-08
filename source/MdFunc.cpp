@@ -166,11 +166,8 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		// This handling here is similar to that in BuiltInMethod::Call():
 		if (!obj || !obj->IsOfType(mPrototype))
 		{
-			LPCTSTR expected_type;
-			ExprTokenType value;
-			if (mPrototype->GetOwnProp(value, _T("__Class")) && value.symbol == SYM_STRING)
-				expected_type = value.marker;
-			else
+			LPCTSTR expected_type = mPrototype->GetOwnPropString(_T("__Class"));
+			if (!expected_type)
 				expected_type = _T("?"); // Script may have tampered with the prototype.
 			result = aResultToken.TypeError(expected_type, *aParam[0]);
 			goto end;
@@ -282,9 +279,9 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 
 		if (out != MdType::Void) // Out or some variant, and not retval (which was already handled).
 		{
-			if (!TokenToOutputVar(param))
+			if (!TokenIsOutputVar(param))
 			{
-				result = aResultToken.ParamError(pi - 1, &param, _T("VarRef"));
+				result = aResultToken.ParamError(pi - 1, &param, _T("variable reference"));
 				goto end;
 			}
 			++output_var_count;
@@ -473,8 +470,8 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		if (out == MdType::Void || ParamIndexIsOmitted(pi))
 			continue;
 		--output_var_count;
-		auto var = ParamIndexToOutputVar(pi);
-		ASSERT(var); // Implied by validation during processing of parameter inputs.
+		auto var = aParam[pi]->IsOptimizedOutputVar() ? aParam[pi]->var
+			: new (_alloca(sizeof(Var))) Var(ParamIndexToObject(pi)); // mType = VAR_VIRTUAL_OBJ
 		auto arg_value = args[ai];
 		if (*atp == MdType::String)
 		{

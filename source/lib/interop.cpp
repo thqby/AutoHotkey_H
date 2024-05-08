@@ -234,10 +234,6 @@ BIF_DECL(BIF_NumPut)
 		case 1: *(UINT8 *)op.target = (UINT8)num_i64; break;
 		}
 	}
-	if (target_token.symbol == SYM_VAR && !target_token.var->IsPureNumeric())
-		target_token.var->Close(); // This updates various attributes of the variable.
-	//else the target was an raw address.  If that address is inside some variable's contents, the above
-	// attributes would already have been removed at the time the & operator was used on the variable.
 	aResultToken.value_int64 = num_end; // aResultToken.symbol was set to SYM_INTEGER by our caller.
 }
 
@@ -576,7 +572,7 @@ BIF_DECL(BIF_StrPtr)
 		_f_return((UINT_PTR)aParam[0]->marker);
 	case SYM_VAR:
 		if (!aParam[0]->var->IsPureNumericOrObject())
-			_f_return((UINT_PTR)aParam[0]->var->Contents());
+			_f_return((UINT_PTR)aParam[0]->var->Contents(FALSE)); // VAR_NORMAL and the above condition imply passing FALSE is safe.
 	default:
 		_f_throw_type(_T("String"), *aParam[0]);
 	}

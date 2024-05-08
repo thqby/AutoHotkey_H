@@ -611,7 +611,6 @@ enum BuiltInFunctionID {
 	FID_TV_GetNext = 0, FID_TV_GetPrev, FID_TV_GetParent, FID_TV_GetChild, FID_TV_GetSelection, FID_TV_GetCount,
 	FID_TV_Get = 0, FID_TV_GetText,
 	FID_Trim = 0, FID_LTrim, FID_RTrim,
-	FID_RegExMatch = 0, FID_RegExReplace,
 	FID_Input = 0, FID_InputEnd,
 	FID_GetKeyName = 0, FID_GetKeyVK = 1, FID_GetKeySC,
 	FID_StrLower = 0, FID_StrUpper, FID_StrTitle,
@@ -633,7 +632,7 @@ enum BuiltInFunctionID {
 	FID_PostMessage = 0, FID_SendMessage,
 	FID_RegRead = 0, FID_RegWrite, FID_RegCreateKey, FID_RegDelete, FID_RegDeleteKey,
 	FID_SoundGetVolume = 0, FID_SoundGetMute, FID_SoundGetName, FID_SoundGetInterface, FID_SoundSetVolume, FID_SoundSetMute,
-	FID_RunWait = 0, FID_ClipWait, FID_KeyWait, FID_WinWait, FID_WinWaitClose, FID_WinWaitActive, FID_WinWaitNotActive,
+	FID_WinWait = 0, FID_WinWaitClose, FID_WinWaitActive, FID_WinWaitNotActive,
 	// Hotkey/HotIf/...
 	FID_HotIfWinActive = HOT_IF_ACTIVE, FID_HotIfWinNotActive = HOT_IF_NOT_ACTIVE,
 		FID_HotIfWinExist = HOT_IF_EXIST, FID_HotIfWinNotExist = HOT_IF_NOT_EXIST,
@@ -1738,8 +1737,6 @@ protected:
 	};
 
 public:
-	UCHAR *mOutputVars = nullptr; // String of indices indicating which params are output vars.
-
 	bool IsBuiltIn() override { return true; }
 
 	bool Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount) override;
@@ -1761,7 +1758,8 @@ public:
 		BuiltInFunctionID mFID; // For code sharing: this function's ID in the group of functions which share the same C++ function.
 		void *mData;
 	};
-	
+	UCHAR *mOutputVars = nullptr; // String of indices indicating which params are output vars.
+
 	BuiltInFunc(LPCTSTR aName) : NativeFunc(aName) {}
 	BuiltInFunc(FuncEntry &);
 	BuiltInFunc(LPCTSTR aName, BuiltInFunctionType aBIF, int aMinParams, int aMaxParams, bool aIsVariadic = false, void *aData = nullptr) : BuiltInFunc(aName)
@@ -1889,6 +1887,22 @@ public:
 	}
 	ResultType Next(Var *, Var *) override;
 	friend class JSON;
+};
+
+
+class Object::PropEnum : public EnumBase
+{
+	Object *mObject;
+	index_t *mIndex;
+	int mIndexCount = 0;
+	bool mDebuggerMode = false;
+	ExprTokenType mThisToken;
+
+public:
+	PropEnum(Object *aObject);
+	PropEnum(Object *aObject, ExprTokenType &aThisToken);
+	~PropEnum();
+	ResultType Next(Var *aName, Var *aVal) override;
 };
 
 
@@ -3049,7 +3063,7 @@ public:
 	void InitFuncLibrary(FuncLibrary &aLib, LPTSTR aPathBase, LPTSTR aPathSuffix);
 	void IncludeLibrary(LPTSTR aFuncName, size_t aFuncNameLength, bool &aErrorWasShown, bool &aFileWasFound);
 #endif
-	Var* LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength = 0);
+	Var* LoadVarFromWinApi(LPTSTR aFuncName);
 	Var* LoadVarFromLib(LPTSTR aVarName, bool &aErrorWasShown);
 	Func *FindGlobalFunc(LPCTSTR aFuncName, size_t aFuncNameLength = 0);
 	static Func *GetBuiltInFunc(LPTSTR aFuncName);
@@ -3142,7 +3156,9 @@ public:
 	ResultType VarIsReadOnlyError(Var *aVar, int aErrorType = VARREF_LVALUE);
 	ResultType VarUnsetError(Var *aVar);
 
-	ResultType ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aExtraInfo, Line *aLine, IObject *aException = nullptr);
+	ResultType ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aExtraInfo, Line *aLine);
+	ResultType ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aExtraInfo, Line *aLine, Object *aException);
+	ResultType ShowError(Line* aLine, ResultType aErrorType, ExprTokenType *aException);
 
 	void ScriptWarning(WarnMode warnMode, LPCTSTR aWarningText, LPCTSTR aExtraInfo = _T(""), Line *line = NULL);
 	void WarnUnassignedVar(Var *aVar, Line *aLine);
@@ -3295,9 +3311,7 @@ BIF_DECL(BIF_StrLen);
 BIF_DECL(BIF_SubStr);
 BIF_DECL(BIF_InStr);
 BIF_DECL(BIF_StrCase);
-BIF_DECL(BIF_StrReplace);
 BIF_DECL(BIF_Sort);
-BIF_DECL(BIF_RegEx);
 BIF_DECL(BIF_Ord);
 BIF_DECL(BIF_Chr);
 BIF_DECL(BIF_Format);
@@ -3336,6 +3350,7 @@ BIF_DECL(BIF_Throw);
 
 BIF_DECL(Op_Object);
 BIF_DECL(Op_Array);
+BIF_DECL(Op_RegEx);
 
 BIF_DECL(BIF_ObjAddRefRelease);
 BIF_DECL(BIF_ObjBindMethod);
@@ -3372,9 +3387,6 @@ BIF_DECL(BIF_Click);
 BIF_DECL(BIF_Reg);
 BIF_DECL(BIF_Random);
 BIF_DECL(BIF_Sound);
-BIF_DECL(BIF_SplitPath);
-BIF_DECL(BIF_CaretGetPos);
-BIF_DECL(BIF_RunWait);
 
 // ahk_h funcs
 BIF_DECL(BIF_Alias);
@@ -3425,6 +3437,8 @@ double TokenToDouble(ExprTokenType &aToken, BOOL aCheckForHex = TRUE);
 LPTSTR TokenToString(ExprTokenType &aToken, LPTSTR aBuf = NULL, size_t *aLength = NULL);
 ResultType TokenToDoubleOrInt64(const ExprTokenType &aInput, ExprTokenType &aOutput);
 StringCaseSenseType TokenToStringCase(ExprTokenType& aToken);
+bool TokenIsOutputVar(ExprTokenType &aToken);
+bool ObjectCanBeOutputVar(IObject *aObj);
 Var *TokenToOutputVar(ExprTokenType &aToken);
 IObject *TokenToObject(ExprTokenType &aToken); // L31
 ResultType ValidateFunctor(IObject *aFunc, int aParamCount, ResultToken &aResultToken, int *aMinParams = nullptr, bool aShowError = true);

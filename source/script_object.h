@@ -6,7 +6,6 @@
 #define IS_INVOKE_SET		(aFlags & IT_SET)
 #define IS_INVOKE_GET		(INVOKE_TYPE == IT_GET)
 #define IS_INVOKE_CALL		(aFlags & IT_CALL)
-#define IS_INVOKE_META		(aFlags & IF_BYPASS_METAFUNC)
 
 #define INVOKE_NOT_HANDLED	CONDITION_FALSE
 
@@ -294,6 +293,7 @@ protected:
 		// key_c contains the first character of key.s. This utilizes space that would
 		// otherwise be unused due to 8-byte alignment. See FindField() for explanation.
 		TCHAR key_c;
+		bool enumerable;
 
 		Variant() = delete;
 		~Variant() { Free(); }
@@ -334,6 +334,8 @@ protected:
 	};
 
 	ResultType GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCount);
+
+	class PropEnum;
 
 #ifndef _WIN64
 	// This is defined in ObjectBase on x64 builds to save space (due to alignment requirements).
@@ -382,7 +384,21 @@ private:
 	StructInfo *GetStructInfo(bool aDefine = false);
 
 protected:
+	ResultType GetProperty(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
+	ResultType SetProperty(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
+	ResultType CallProperty(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
+
+	ResultType GetFieldValue(ResultToken &aResultToken, int aFlags, FieldType &aField, ExprTokenType &aThisToken);
+	ResultType GetMethodValue(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken);
+
+	Object *GetThisForTypedValue(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken);
+	ResultType GetTypedValue(ResultToken &aResultToken, int aFlags, TypedProperty &aProp);
+	ResultType SetTypedValue(ResultToken &aResultToken, int aFlags, name_t aName, TypedProperty &aProp, ExprTokenType &aValue);
+	
+	ResultType ApplyParams(ResultToken &aThisResultToken, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	ResultType CallEtter(ResultToken &aResultToken, int aFlags, IObject *aEtter, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
 	ResultType CallAsMethod(ExprTokenType &aFunc, ResultToken &aResultToken, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
+	
 	ResultType CallMeta(LPTSTR aName, ResultToken &aResultToken, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
 	ResultType CallMetaVarg(int aFlags, LPTSTR aName, ResultToken &aResultToken, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
 	void CallNestedDelete();
@@ -446,6 +462,28 @@ public:
 		return true;
 	}
 	
+	LPTSTR GetOwnPropString(name_t aName)
+	{
+		auto field = FindField(aName);
+		if (!field || field->symbol != SYM_STRING)
+			return nullptr;
+		return field->string.Value();
+	}
+
+	__int64 GetOwnPropInt64(name_t aName)
+	{
+		auto field = FindField(aName);
+		if (!field)
+			return 0;
+		switch (field->symbol)
+		{
+		case SYM_INTEGER: return field->n_int64;
+		case SYM_FLOAT: return (__int64)field->n_double;
+		case SYM_STRING: return ATOI(field->string);
+		}
+		return 0;
+	}
+	
 	IObject *GetOwnPropObj(name_t aName)
 	{
 		auto field = FindField(aName);
@@ -464,12 +502,13 @@ public:
 		return field && field->symbol == SYM_DYNAMIC ? field->prop->Getter() : nullptr;
 	}
 
-	bool SetOwnProp(name_t aName, ExprTokenType &aValue)
+	bool SetOwnProp(name_t aName, ExprTokenType &aValue, bool aEnumerable = true)
 	{
 		index_t insert_pos;
 		auto field = FindField(aName, insert_pos);
 		if (!field && !(field = Insert(aName, insert_pos)))
 			return false;
+		field->enumerable = aEnumerable;
 		return field->Assign(aValue);
 	}
 
@@ -484,7 +523,7 @@ public:
 			mFields.Remove((index_t)(field - mFields), 1);
 	}
 	
-	Property *DefineProperty(name_t aName);
+	Property *DefineProperty(name_t aName, bool aEnumerable = true);
 	TypedProperty *DefineTypedProperty(name_t aName);
 	FResult DefineTypedProperty(name_t aName, MdType aType, Object *aClass, size_t aCount);
 	bool DefineMethod(name_t aName, IObject *aFunc);
@@ -560,14 +599,16 @@ public:
 	void GetOwnPropDesc(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 	void HasOwnProp(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 	void OwnProps(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	void Props(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 	void Clone(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	void __Ref(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 	void ToJSON(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
 	enum { M_Error__New, M_OSError__New };
 	void Error__New(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+	void Error_Show(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
 	// For pseudo-objects:
-	static ObjectMember sValueMembers[];
 	thread_local static Object *sAnyPrototype, *sPrimitivePrototype, *sStringPrototype
 		, *sNumberPrototype, *sIntegerPrototype, *sFloatPrototype;
 	thread_local static Object *sVarRefPrototype;
@@ -586,6 +627,31 @@ public:
 #ifdef CONFIG_DEBUGGER
 	friend class Debugger;
 #endif
+};
+
+
+// This has some overlap with BoundFunc, but is separate since we don't want the extra Func members.
+class PropRef : public ObjectBase
+{
+	IObject *mThat;
+	LPTSTR mMember;
+
+public:
+	thread_local static Object *sPrototype;
+	static ObjectMember sMembers[];
+
+	PropRef(IObject *that, LPTSTR member) : mThat(that), mMember(member) {}
+
+	~PropRef()
+	{
+		mThat->Release();
+		free(mMember);
+	}
+
+	IObject_Type_Impl("PropRef");
+	Object *Base() { return sPrototype; }
+
+	void __Value(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 };
 
 
@@ -964,6 +1030,8 @@ BIF_DECL(Class_CallNestedClass);
 BIF_DECL(Class_New);
 
 BIF_DECL(Any___Init);
+
+BIF_DECL(PropRef_Call);
 
 ////////////////////////
 // DYNACALL TOKEN //

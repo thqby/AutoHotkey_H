@@ -356,27 +356,21 @@ BIF_DECL(BIF_StrCase)
 
 
 
-BIF_DECL(BIF_StrReplace)
+FResult StrReplace(ExprTokenType &aSource, StrArg aOldStr, optl<StrArg> aNewStr, ExprTokenType *aCaseSense, UINT *aCount, optl<UINT> aLimit
+	, ResultToken &aRetVal)
 {
 	size_t length; // Going in to StrReplace(), it's the haystack length. Later (coming out), it's the result length. 
-	_f_param_string(source, 0, &length);
-	_f_param_string(oldstr, 1);
-	_f_param_string_opt(newstr, 2);
+	auto source = TokenToString(aSource, aRetVal.buf, &length);
+	auto oldstr = const_cast<LPTSTR>(aOldStr);
+	auto newstr = const_cast<LPTSTR>(aNewStr.value_or_empty());
 
 	// Maintain this together with the equivalent section of BIF_InStr:
-	StringCaseSenseType string_case_sense = ParamIndexToCaseSense(3);
+	StringCaseSenseType string_case_sense = aCaseSense ? TokenToStringCase(*aCaseSense) : SCS_INSENSITIVE;
 	if (string_case_sense == SCS_INVALID 
 		|| string_case_sense == SCS_INSENSITIVE_LOGICAL) // Not supported, seems more useful to throw rather than using SCS_INSENSITIVE.
-		_f_throw_param(3);
+		return FR_E_ARG(3);
 
-	Var *output_var_count = ParamIndexToOutputVar(4); 
-	UINT replacement_limit = UINT_MAX;
-	if (!ParamIndexIsOmitted(5))
-	{
-		Throw_if_Param_NaN(5);
-		replacement_limit = (UINT)ParamIndexToInt64(5); 
-	}
-	
+	UINT replacement_limit = aLimit.value_or(UINT_MAX);
 
 	// Note: The current implementation of StrReplace() should be able to handle any conceivable inputs
 	// without an empty string causing an infinite loop and without going infinite due to finding the
@@ -386,21 +380,21 @@ BIF_DECL(BIF_StrReplace)
 	UINT found_count = StrReplace(source, oldstr, newstr, string_case_sense, replacement_limit, -1, &dest, &length); // Length of haystack is passed to improve performance because TokenToString() can often discover it instantaneously.
 
 	if (!dest) // Failure due to out of memory.
-		_f_throw_oom; 
+		return FR_E_OUTOFMEM;
 
 	if (dest != source) // StrReplace() allocated new memory rather than returning "source" to us unaltered.
 	{
 		// Return the newly allocated memory directly to our caller. 
-		aResultToken.AcceptMem(dest, length);
+		aRetVal.AcceptMem(dest, length);
 	}
 	else // StrReplace gave us back "source" unaltered because no replacements were needed.
 	{
-		_f_set_retval_p(dest, length); 
+		aRetVal.SetValue(dest, length); 
 	}
 
-	if (output_var_count)
-		output_var_count->Assign((DWORD)found_count);
-	_f_return_retval;
+	if (aCount)
+		*aCount = found_count;
+	return OK;
 }
 
 
@@ -538,10 +532,13 @@ outofmem:
 
 
 
-ResultType SplitPath(LPCTSTR aFileSpec, Var *output_var_name, Var *output_var_dir, Var *output_var_ext, Var *output_var_name_no_ext, Var *output_var_drive)
+// SplitPath outputs:
+//  aName: non-null, either constant _T("") or points into aFileSpec.
+//  all others: null if no such component, otherwise points into aFileSpec.
+void SplitPath(LPCTSTR aFileSpec, LPCTSTR &aName, LPCTSTR &aExtDot, LPCTSTR &aDirEnd, LPCTSTR &aDriveEnd)
 {
 	// For URLs, "drive" is defined as the server name, e.g. http://somedomain.com
-	LPCTSTR name = _T(""), name_delimiter = NULL, drive_end = NULL; // Set defaults to improve maintainability.
+	LPCTSTR name = _T(""), name_delimiter = nullptr, drive_end = nullptr;
 	LPCTSTR drive = omit_leading_whitespace(aFileSpec); // i.e. whitespace is considered for everything except the drive letter or server name, so that a pathless filename can have leading whitespace.
 	LPCTSTR colon_double_slash = _tcsstr(aFileSpec, _T("://"));
 
@@ -583,21 +580,7 @@ ResultType SplitPath(LPCTSTR aFileSpec, Var *output_var_name, Var *output_var_di
 		// Differences between _splitpath() and the method used here:
 		// _splitpath() doesn't include drive in output_var_dir, it includes a trailing
 		// backslash, it includes the . in the extension, it considers ":" to be a filename.
-		// _splitpath(pathname, drive, dir, file, ext);
-		//char sdrive[16], sdir[MAX_PATH], sname[MAX_PATH], sext[MAX_PATH];
-		//_splitpath(aFileSpec, sdrive, sdir, sname, sext);
-		//if (output_var_name_no_ext)
-		//	output_var_name_no_ext->Assign(sname);
-		//strcat(sname, sext);
-		//if (output_var_name)
-		//	output_var_name->Assign(sname);
-		//if (output_var_dir)
-		//	output_var_dir->Assign(sdir);
-		//if (output_var_ext)
-		//	output_var_ext->Assign(sext);
-		//if (output_var_drive)
-		//	output_var_drive->Assign(sdrive);
-		//return OK;
+		// It doesn't support long paths.
 
 		// Don't use _splitpath() since it supposedly doesn't handle UNC paths correctly,
 		// and anyway we need more info than it provides.  Also note that it is possible
@@ -632,8 +615,7 @@ ResultType SplitPath(LPCTSTR aFileSpec, Var *output_var_name, Var *output_var_di
 			// _splitpath() doesn't fetch the drive letter of relative paths either.  This also reports
 			// a blank drive for something like file://C:\My Folder\My File.txt, which seems too rarely
 			// to justify a special mode.
-			drive_end = _T("");
-			drive = drive_end; // This is necessary to allow Assign() to work correctly later below, since it interprets a length of zero as "use string's entire length".
+			//drive_end = nullptr; // Already set by default.
 		}
 
 		if (   !(name_delimiter = _tcsrchr(aFileSpec, '\\'))   ) // No backslash.
@@ -649,72 +631,36 @@ ResultType SplitPath(LPCTSTR aFileSpec, Var *output_var_name, Var *output_var_di
 	// drive: As the start of the drive/server name, e.g. C:, \\Workstation01, http://domain.com, etc.
 	// drive_end: As the position after the drive's last character, either a zero terminator, slash, or backslash.
 
-	if (output_var_name && !output_var_name->Assign(name))
-		return FAIL;
-
-	if (output_var_dir)
-	{
-		if (!name_delimiter)
-			output_var_dir->Assign(); // Shouldn't fail.
-		else if (*name_delimiter == '\\' || *name_delimiter == '/')
-		{
-			if (!output_var_dir->Assign(aFileSpec, (VarSizeType)(name_delimiter - aFileSpec)))
-				return FAIL;
-		}
-		else // *name_delimiter == ':', e.g. "C:Some File.txt".  If aFileSpec starts with just ":",
-			 // the dir returned here will also start with just ":" since that's rare & illegal anyway.
-			if (!output_var_dir->Assign(aFileSpec, (VarSizeType)(name_delimiter - aFileSpec + 1)))
-				return FAIL;
-	}
-
-	LPCTSTR ext_dot = _tcsrchr(name, '.');
-	if (output_var_ext)
-	{
-		// Note that the OS doesn't allow filenames to end in a period.
-		if (!ext_dot)
-			output_var_ext->Assign();
-		else
-			if (!output_var_ext->Assign(ext_dot + 1)) // Can be empty string if filename ends in just a dot.
-				return FAIL;
-	}
-
-	if (output_var_name_no_ext && !output_var_name_no_ext->Assign(name, (VarSizeType)(ext_dot ? ext_dot - name : _tcslen(name))))
-		return FAIL;
-
-	if (output_var_drive && !output_var_drive->Assign(drive, (VarSizeType)(drive_end - drive)))
-		return FAIL;
-
-	return OK;
+	aName = name;
+	
+	aExtDot = _tcsrchr(name, '.');
+	
+	aDriveEnd = drive_end;
+	
+	if (!name_delimiter || *name_delimiter == '\\' || *name_delimiter == '/')
+		aDirEnd = name_delimiter;
+	else // *name_delimiter == ':', e.g. "C:Some File.txt".  If aFileSpec starts with just ":",
+		 // the dir returned here will also start with just ":" since that's rare & illegal anyway.
+		aDirEnd = name_delimiter + 1;
 }
 
-BIF_DECL(BIF_SplitPath)
+
+
+FResult SplitPath(StrArg aPath, StrRet *aName, StrRet *aDir, StrRet *aExt, StrRet *aNameNoExt, StrRet *aDrive)
 {
-	LPTSTR mem_to_free = nullptr;
-	_f_param_string(aFileSpec, 0);
-	Var *vars[6];
-	for (int i = 1; i < _countof(vars); ++i)
-		vars[i] = ParamIndexToOutputVar(i);
-	if (aParam[0]->symbol == SYM_VAR) // Check for overlap of input/output vars.
-	{
-		vars[0] = aParam[0]->var;
-		// There are cases where this could be avoided, such as by careful ordering of the assignments
-		// in SplitPath(), or when there's only one output var.  Also, real paths are generally short
-		// enough that stack memory could be used.  However, perhaps simple is best in this case.
-		for (int i = 1; i < _countof(vars); ++i)
-		{
-			if (vars[i] == vars[0])
-			{
-				aFileSpec = mem_to_free = _tcsdup(aFileSpec);
-				if (!mem_to_free)
-					_f_throw_oom;
-				break;
-			}
-		}
-	}
-	aResultToken.SetValue(_T(""), 0);
-	if (!SplitPath(aFileSpec, vars[1], vars[2], vars[3], vars[4], vars[5]))
-		aResultToken.SetExitResult(FAIL);
-	free(mem_to_free);
+	LPCTSTR name, ext_dot, dir_end, drive_end;
+	SplitPath(aPath, name, ext_dot, dir_end, drive_end);
+	if (aName)
+		aName->SetTemp(name);
+	if (aDir && dir_end)
+		aDir->Copy(aPath, dir_end - aPath);
+	if (aExt && ext_dot)
+		aExt->Copy(ext_dot + 1);
+	if (aNameNoExt)
+		aNameNoExt->Copy(name, ext_dot ? ext_dot - name : _tcslen(name));
+	if (aDrive && drive_end)
+		aDrive->Copy(aPath, drive_end - aPath);
+	return OK;
 }
 
 

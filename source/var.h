@@ -30,7 +30,7 @@ EXTERN_CLIPBOARD;
 #define SMALL_STRING_LENGTH (MAX_ALLOC_SIMPLE - 1)  // The largest string that can fit in the above.
 #define DEREF_BUF_EXPAND_INCREMENT (16 * 1024) // Reduced from 32 to 16 in v1.0.46.07 to reduce the memory utilization of deeply recursive UDFs.
 
-enum AllocMethod {ALLOC_NONE, ALLOC_SIMPLE, ALLOC_MALLOC};
+enum AllocMethod {ALLOC_NONE, ALLOC_SIMPLE, ALLOC_MALLOC, ALLOC_DISABLED};
 enum VarTypes
 {
   // The following must all be LOW numbers to avoid any realistic chance of them matching the address of
@@ -39,8 +39,13 @@ enum VarTypes
 , VAR_NORMAL // Most variables, such as those created by the user, are this type.
 , VAR_CONSTANT // or as I like to say, not variable.
 , VAR_VIRTUAL
-, VAR_LAST_TYPE = VAR_VIRTUAL
+, VAR_VIRTUAL_OBJ
+// If adding to this enum, ensure range checks and VAR_LAST_TYPE remain valid.
+, VAR_LAST_TYPE = VAR_VIRTUAL_OBJ
 };
+
+// Returns true if the given var type should be evaluated by calling Var::Get(ResultToken&).
+inline bool VarTypeIsVirtual(int type) { return type >= VAR_VIRTUAL; }
 
 typedef UCHAR VarTypeType;     // UCHAR vs. VarTypes to save memory.
 typedef UCHAR AllocMethodType; // UCHAR vs. AllocMethod to save memory.
@@ -190,6 +195,7 @@ public:
 
 	// Caller has verified mType == VAR_VIRTUAL.
 	bool HasSetter() { return mVV->Set; }
+	// Caller has verified VarTypeIsVirtual(mType).
 	ResultType AssignVirtual(ExprTokenType &aValue);
 
 	// Unconditionally accepts new memory, bypassing the usual redirection to Assign() for VAR_VIRTUAL.
@@ -249,6 +255,7 @@ public:
 	ResultType AssignHWND(HWND aWnd);
 	ResultType Assign(Var &aVar);
 	ResultType Assign(ExprTokenType &aToken);
+	static void AssignVirtualObj(IObject *aObj, ExprTokenType &aValue, ResultToken &aResultToken);
 	static ResultType GetClipboardAll(void **aData, size_t *aDataSize);
 	static ResultType SetClipboardAll(void *aData, size_t aDataSize);
 	// Assign(char *, ...) has been break into four methods below.
@@ -372,7 +379,7 @@ public:
 		// IF-IS is the only caller that wouldn't cause a warning, but in that case ExpandArgs() would have
 		// already caused one.
 		SymbolType is_pure_numeric = ::IsNumeric(var.Contents(), true, false, true); // Contents() vs. mContents to support VAR_VIRTUAL lvalue in a pure expression such as "a_clipboard:=1,a_clipboard+=5"
-		if (is_pure_numeric == PURE_NOT_NUMERIC && var.mType != VAR_VIRTUAL)
+		if (is_pure_numeric == PURE_NOT_NUMERIC && !VarTypeIsVirtual(var.mType))
 			var.mAttrib |= VAR_ATTRIB_NOT_NUMERIC;
 		return is_pure_numeric;
 	}
@@ -514,7 +521,7 @@ public:
 		Var &var = *ResolveAlias();
 		// v1.0.44.14: Changed it so that ByRef/Aliases report their own name rather than the target's/caller's
 		// (it seems more useful and intuitive).
-		var.UpdateContents(); // Update mContents and mLength for use below.
+		var.Contents(); // Update mContents and mLength for use below.
 		LPTSTR aBuf_orig = aBuf;
 		switch (var.IsPureNumericOrObject())
 		{
@@ -525,6 +532,11 @@ public:
 			aBuf += sntprintf(aBuf, aBufSize, _T("%s: %s"), mName, var.mCharContents);
 			break;
 		case VAR_ATTRIB_IS_OBJECT:
+			if (var.mType == VAR_VIRTUAL_OBJ)
+			{
+				aBuf += sntprintf(aBuf, aBufSize, _T("%s[%s]: %s"), mName, mObject->Type(), var.mCharContents);
+				break;
+			}
 			aBuf = var.ObjectToText(this->mName, aBuf, aBufSize);
 			break;
 		default:
@@ -550,6 +562,11 @@ public:
 	{
 		Var &var = *ResolveAlias();
 		return var.mType;
+	}
+
+	bool IsVirtual()
+	{
+		return VarTypeIsVirtual(Type());
 	}
 
 	bool IsAlias()
@@ -743,12 +760,15 @@ public:
 	// mContents would almost always want it up-to-date.  Any caller who wants to WRITE to mContents would
 	// would almost always have called Assign(NULL, ...) prior to calling Contents(), which would have
 	// cleared the VAR_ATTRIB_CONTENTS_OUT_OF_DATE flag.
+	// UPDATE: If the variable is known to already be "up to date", passing FALSE reduces code size,
+	// as the compiler often inlines the function and is able to optimize out the aAllowUpdate branches
+	// (although the final result can be larger if it allows the compiler to inline more functions).
 	{
 		if (mType == VAR_ALIAS)
 			return mAliasFor->Contents(aAllowUpdate);
 		if ((mAttrib & VAR_ATTRIB_CONTENTS_OUT_OF_DATE) && aAllowUpdate) // VAR_ATTRIB_CONTENTS_OUT_OF_DATE is checked here and in the function below, for performance.
 			UpdateContents(); // This also clears the VAR_ATTRIB_CONTENTS_OUT_OF_DATE.
-		if (mType == VAR_VIRTUAL && !(mAttrib & VAR_ATTRIB_VIRTUAL_OPEN) && aAllowUpdate)
+		if (VarTypeIsVirtual(mType) && !(mAttrib & VAR_ATTRIB_VIRTUAL_OPEN) && aAllowUpdate)
 		{
 			// This var isn't open for writing, so populate mCharContents with its current value.
 			PopulateVirtualVar();
@@ -759,7 +779,7 @@ public:
 	}
 
 	// Populate a virtual var with its current value, as a string.
-	// Caller has verified aVar->mType == VAR_VIRTUAL.
+	// Caller has verified this->IsVirtual().
 	ResultType PopulateVirtualVar();
 
 	void ConvertToNonAliasIfNecessary() // __forceinline because it's currently only called from one place.
@@ -788,6 +808,7 @@ public:
 	// Copies any internal mObject ref used for managing the lifetime of the alias.
 	void UpdateAlias(Var *aTargetVar);
 	void UpdateAlias(VarRef *aTargetVar);
+	void UpdateVirtualObj(IObject *aTargetRef);
 
 	// Unconditionally makes this var an alias of aTargetVar, without resolving aliases.
 	// Caller must ensure aTargetVar != nullptr && aTargetVar != this.
@@ -806,12 +827,11 @@ public:
 	{
 		if (mType == VAR_ALIAS)
 			return mAliasFor->Close();
-		if (mType == VAR_VIRTUAL)
+		if (VarTypeIsVirtual(mType))
 		{
 			// Commit the value in our temporary buffer.
 			auto result = AssignVirtual(ExprTokenType(mCharContents, CharLength()));
-			Free(); // Free temporary memory.
-			mAttrib &= ~VAR_ATTRIB_VIRTUAL_OPEN;
+			Free(); // Free temporary memory and remove VAR_ATTRIB_VIRTUAL_OPEN.
 			return result;
 		}
 		// VAR_ATTRIB_CONTENTS_OUT_OF_DATE is removed below for maintainability; it shouldn't be
@@ -849,6 +869,15 @@ public:
 		mHowAllocated = ALLOC_MALLOC;
 	}
 
+	Var(IObject *aRef)
+		// The caller must ensure that aVarName is non-null.
+		: mType(VAR_VIRTUAL_OBJ), mObject(aRef)
+		, mScope(0), mName(_T("")), mAttrib(VAR_ATTRIB_IS_OBJECT)
+		, mHowAllocated(ALLOC_DISABLED)
+	{
+		ASSERT(aRef);
+	}
+
 	void *operator new(size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
 	void *operator new(size_t aBytes, void *p) {return p;}
 	void *operator new[](size_t aBytes) {return SimpleHeap::Malloc(aBytes);}
@@ -882,9 +911,16 @@ public:
 		var.mAttrib |= VAR_ATTRIB_UNINITIALIZED;
 	}
 
-	void Uninitialize(int aWhenToFree = VAR_FREE_IF_LARGE) 
+	ResultType Uninitialize(int aWhenToFree = VAR_FREE_IF_LARGE) 
 	{
+		if (IsVirtual())
+		{
+			ExprTokenType unset;
+			unset.symbol = SYM_MISSING;
+			return AssignVirtual(unset);
+		}
 		Free(aWhenToFree | VAR_REQUIRE_INIT);
+		return OK;
 	}
 
 }; // class Var
@@ -909,6 +945,10 @@ public:
 	void *operator new[](size_t aBytes) { return malloc(aBytes); }
 	void operator delete(void *aPtr) { free(aPtr); }
 	void operator delete[](void *aPtr) { free(aPtr); }
+
+	void __Value(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
+
+	static ObjectMember sMembers[];
 };
 
 

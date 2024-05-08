@@ -78,7 +78,8 @@ Object *Object::Create(ExprTokenType *aParam[], int aParamCount, ResultToken *ap
 	}
 
 	Object *obj = Object::Create();
-	if (aUnsorted) obj->mFlags |= UnsortedFlag;
+	if (aUnsorted)
+		obj->mFlags |= UnsortedFlag;
 	if (aParamCount)
 	{
 		if (aParamCount > 8)
@@ -537,7 +538,7 @@ bool Object::Delete()
 		// If an exception has been thrown, temporarily clear it for execution of __Delete.
 		ResultToken *exc = g->ThrownToken;
 		g->ThrownToken = NULL;
-
+		
 		// This prevents an erroneous "The current thread will exit" message when an error occurs,
 		// by causing LineError() to throw an exception:
 		int outer_excptmode = g->ExcptMode;
@@ -629,26 +630,23 @@ void Map::Clear()
 		// Copy key before Free() since it might cause re-entry via __delete.
 		auto key = mItem[mCount].key;
 		mItem[mCount].Free();
-		if (!IsUnsorted())
-		{
-			if (mCount >= mKeyOffsetString)
-				free(key.s);
-			else 
-			{
-				--mKeyOffsetString;
-				if (mCount >= mKeyOffsetObject)
-					key.p->Release(); // Might also cause re-entry.
-				else
-					--mKeyOffsetObject;
-			}
-		}
-		else
+		if (IsUnsorted())
 		{
 			SymbolType akeytype = (SymbolType)mKeyTypes[mCount];
 			if (akeytype == SYM_STRING)
 				free(key.s);
 			else if (akeytype == SYM_OBJECT)
 				key.p->Release();  // Might also cause re-entry.
+		}
+		else if (mCount >= mKeyOffsetString)
+			free(key.s);
+		else 
+		{
+			--mKeyOffsetString;
+			if (mCount >= mKeyOffsetObject)
+				key.p->Release(); // Might also cause re-entry.
+			else
+				--mKeyOffsetObject;
 		}
 	}
 }
@@ -661,6 +659,7 @@ void Map::Clear()
 ObjectMember Object::sMembers[] =
 {
 	Object_Member(__Item, __Item, 0, IT_SET, 1, 1),
+	Object_Method1(__Ref, 1, 1),
 	Object_Method1(Clone, 0, 0),
 	Object_Method1(DefineProp, 2, 2),
 	Object_Method1(DeleteProp, 1, 1),
@@ -668,6 +667,7 @@ ObjectMember Object::sMembers[] =
 	Object_Method1(GetOwnPropDesc, 1, 1),
 	Object_Method1(HasOwnProp, 1, 1),
 	Object_Method1(OwnProps, 0, 0),
+	Object_Method1(Props, 0, 0),
 	Object_Method1(ToJSON, 0, 2)
 };
 
@@ -708,356 +708,369 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 	}
 	else
 		name = aName;
+	
+	ResultType result;
 
-	auto actual_param = aParam; // Actual first parameter between [] or ().
-	int actual_param_count = aParamCount; // Actual number of parameters between [] or ().
-
-	bool hasprop = false; // Whether any kind of property was found.
-	bool setting = IS_INVOKE_SET;
-	bool calling = IS_INVOKE_CALL;
-	bool handle_params_recursively = calling;
-	ResultToken token_for_recursion;
-	IObject *etter = nullptr, *method = nullptr;
-	FieldType *field = nullptr;
-	index_t insert_pos, other_pos;
-	Object *that;
-
-	if (setting)
+	switch (INVOKE_TYPE)
 	{
-		// Due to the way expression parsing works, the result should never be negative
-		// (and any direct callers of Invoke must always pass aParamCount >= 1):
-		ASSERT(actual_param_count > 0);
-		--actual_param_count;
+	case IT_GET: result = GetProperty(aResultToken, aFlags, name, aThisToken, aParam, aParamCount); break;
+	case IT_SET: result = SetProperty(aResultToken, aFlags, name, aThisToken, aParam, aParamCount); break;
+	default: result = CallProperty(aResultToken, aFlags, name, aThisToken, aParam, aParamCount); break;
 	}
+
+	if (result == INVOKE_NOT_HANDLED && !(aFlags & IF_BYPASS_METAFUNC))
+		result = CallMetaVarg(aFlags, aName, aResultToken, aThisToken, aParam, aParamCount);
+
+	return result;
+}
+
+
+ResultType Object::GetProperty(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount)
+{
+	IObject *method = nullptr;
+
+	for (auto that = this; that; that = that->mBase)
+	{
+		auto field = that->FindField(aName);
+		if (!field)
+			continue;
+
+		if (field->symbol != SYM_DYNAMIC || field->prop->NoParamGet)
+		{
+			int flag = aParamCount ? IF_BYPASS___VALUE : 0;
+			auto result = GetFieldValue(aResultToken, aFlags | flag, *field, aThisToken);
+			if (!aParamCount || result != OK)
+				return result;
+			return ApplyParams(aResultToken, aFlags, aParam, aParamCount);
+		}
+		else if (auto getter = field->prop->Getter())
+		{
+			return CallEtter(aResultToken, aFlags, getter, aThisToken, aParam, aParamCount);
+		}
+		else if (!method)
+		{
+			method = field->prop->Method();
+		}
+	}
+
+	if (method)
+	{
+		method->AddRef();
+		aResultToken.SetValue(method);
+		return OK;
+	}
+
+	return INVOKE_NOT_HANDLED;
+}
+
+
+ResultType Object::GetFieldValue(ResultToken &aResultToken, int aFlags, FieldType &aField, ExprTokenType &aThisToken)
+{
+	if (aField.symbol == SYM_TYPED_FIELD)
+	{
+		auto that = GetThisForTypedValue(aResultToken, aFlags, aField.name, aThisToken);
+		return that ? that->GetTypedValue(aResultToken, aFlags, *aField.tprop) : FAIL;
+	}
+	else if (aField.symbol == SYM_DYNAMIC)
+	{
+		if (aField.prop->Getter())
+			return CallEtter(aResultToken, aFlags, aField.prop->Getter(), aThisToken, nullptr, 0);
+		auto method = aField.prop->Method();
+		method->AddRef();
+		aResultToken.SetValue(method);
+		return OK;
+	}
+	aField.ReturnRef(aResultToken);
+	return OK;
+}
+
+
+ResultType Object::CallProperty(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount)
+{
+	ResultToken method_token;
+	method_token.InitResult(aResultToken.buf);
+	auto result = GetMethodValue(method_token, aFlags, aName, aThisToken);
+	if (result != INVOKE_NOT_HANDLED)
+	{
+		if (result == OK)
+			result = CallAsMethod(method_token, aResultToken, aThisToken, aParam, aParamCount);
+		method_token.Free();
+	}
+	return result;
+}
+
+
+ResultType Object::GetMethodValue(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken)
+{
+	FieldType *getter = nullptr;
+	for (auto that = this; that; that = that->mBase)
+	{
+		auto field = that->FindField(aName);
+		if (!field)
+			continue;
+		if (field->symbol != SYM_DYNAMIC)
+		{
+			getter = field;
+			break;
+		}
+		if (auto method = field->prop->Method())
+		{
+			method->AddRef();
+			aResultToken.SetValue(method);
+			return OK;
+		}
+		if (!getter && field->prop->Getter())
+			getter = field;
+	}
+	if (getter)
+		return GetFieldValue(aResultToken, (aFlags & ~IT_BITMASK) | IF_BYPASS___VALUE, *getter, aThisToken);
+	if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
+		return aResultToken.ReturnPtr(g_DefaultObjectValue);
+	return INVOKE_NOT_HANDLED;
+}
+
+
+ResultType Object::SetProperty(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount)
+{
+	Object *that;
+	index_t insert_pos, other_pos;
+	FieldType *field = nullptr;
 
 	for (that = this; that; that = that->mBase)
 	{
-		// Search each object from this to its most distance base, but set insert_pos only when
-		// searching this object, since it needs to be the position we can insert a new field at.
-		field = that->FindField(name, that == this ? insert_pos : other_pos);
-		if (!field) // 'that' has no own property.
+		auto candidate = that->FindField(aName, that == this ? insert_pos : other_pos);
+		if (!candidate)
 			continue;
-		if (field->symbol != SYM_DYNAMIC) // 'that' has a value property.
+		if (candidate->symbol != SYM_DYNAMIC)
 		{
-			if (field->symbol == SYM_TYPED_FIELD)
-			{
-				hasprop = true;
-				break;
-			}
-			if (hasprop && setting)
-				// This value property has been overridden with a getter, but no setter.
-				// Treat it as read-only rather than allowing the getter to implicitly be overridden.
-				field = nullptr;
-			hasprop = true;
-			// This value property takes precedence over any getter, setter or method defined in a base.
+			// This value property takes precedence over anything inherited from that->mBase,
+			// but any previously found getter or method implies that this property is read-only.
+			if (!field)
+				field = candidate;
 			break;
 		}
-		hasprop = true;
-		// Since above did not break or continue, 'that' has a dynamic property.
-		if (calling)
+		auto setter = candidate->prop->Setter();
+		if (setter && !(aParamCount > 1 && candidate->prop->NoParamSet))
 		{
-			if (method = field->prop->Method())
-			{
-				etter = nullptr; // Method takes precedence.
-				break;
-			}
-			// Record the first (most derived) getter, if any, in case there is no method:
-			if (!etter)
-				etter = field->prop->Getter();
-			field = nullptr;
-			continue;
+			// Setter hasn't been shadowed by a value/typed property, and either takes parameters
+			// or none were passed.  If it takes parameters, the search stops here even if there
+			// are insufficient parameters to successfully call the setter.
+			return CallEtter(aResultToken, aFlags, setter, aThisToken, aParam, aParamCount);
 		}
-		if (actual_param_count > 0 && (setting ? field->prop->NoParamSet : field->prop->NoParamGet)) // Prop cannot accept parameters.
-		{
-			setting = false; // GET this property's value.
-			handle_params_recursively = true; // Apply parameters by passing them to value->Invoke().
-		}
-		// Can this Property actually handle this operation?
-		if (setting)
-			etter = field->prop->Setter();
-		else if (  !(etter = field->prop->Getter()) && !method  )
-			method = field->prop->Method(); // Fall back to returning this if no getter is found.
-		// Reset field to simplify detection of dynamic property vs. value.
-		// Note that field would be reset by the next iteration, if there is one.
-		field = nullptr;
-		if (etter)
-			break;
-		// This part of the property isn't implemented here, so keep searching.
-		continue;
-	} // for (that = each base)
-
-	if (!hasprop && !IS_INVOKE_META)
-	{
-		// Invoke a meta-function in place of this non-existent property.
-		auto result = CallMetaVarg(aFlags, aName, aResultToken, aThisToken, actual_param, actual_param_count);
-		if (result != INVOKE_NOT_HANDLED)
-			return result;
+		// Save the first getter in case no setter is found, or the first method if no getters.
+		if (  !(field && field->prop->Getter()) && candidate->prop->Getter()
+			|| !field && candidate->prop->Method()  )
+			field = candidate;
 	}
-	
+
+	if (aParamCount > 1)
+	{
+		if (!field)
+			return INVOKE_NOT_HANDLED;
+
+		// Apply parameters to the property's value, since there is no setter which accepts parameters.
+		auto result = GetFieldValue(aResultToken, (aFlags & ~IT_BITMASK) | IF_BYPASS___VALUE, *field, aThisToken);
+		if (result != OK)
+			return result;
+		return ApplyParams(aResultToken, aFlags, aParam, aParamCount);
+	}
+
 	if (field && field->symbol == SYM_TYPED_FIELD)
 	{
-		auto realthis = this;
-		if (aFlags & (IF_SUBSTITUTE_THIS | IF_SUPER))
-			realthis = dynamic_cast<Object*>(TokenToObject(aThisToken));
-		if (!realthis || !realthis->mData || (realthis->mFlags & DataIsStructInfo))
-			return aResultToken.Error(_T("Property invalid for object with null data."), name);
-		// TODO: allow inheriting DataPtr()?
-		auto ptr = (void*)(realthis->DataPtr() + field->tprop->data_offset);
-		handle_params_recursively = actual_param_count || calling;
-		if (setting && !handle_params_recursively)
+		auto that = GetThisForTypedValue(aResultToken, aFlags, aName, aThisToken);
+		return that ? that->SetTypedValue(aResultToken, aFlags, aName, *field->tprop, **aParam) : FAIL;
+	}
+	
+	if (field && field->symbol == SYM_DYNAMIC || (aFlags & (IF_SUBSTITUTE_THIS | IF_SUPER)))
+	{
+		if ((aFlags & IF_SUPER) && !(field && field->symbol == SYM_DYNAMIC))
 		{
-			if (field->tprop->class_object)
+			// This is `super.x := y` where x is either a value property or undefined.
+			// If aThisToken is an Object, use the base Object implementation of set: create a value property.
+			if (auto real_this = dynamic_cast<Object *>(TokenToObject(aThisToken)))
 			{
-				Object *nested = realthis->mNested[field->tprop->object_index];
-				realthis->mRefCount++; // Must be done at least when nested->mRefCount == 0 (and then reversed when nested->mRefCount reaches 0 again).
-				nested->mRefCount++; // Avoid calling Delete() when the __value setter returns.
-				auto result = nested->Invoke(aResultToken, IT_SET | IF_BYPASS_METAFUNC | IF_NO_NEW_PROPS, _T("__value"), ExprTokenType(nested), actual_param, 1);
-				nested->mRefCount--;
-				realthis->mRefCount--;
-				if (result != INVOKE_NOT_HANDLED)
-					return result;
-				return aResultToken.Error(_T("Assignment to struct is not supported."));
-			}
-			if (field->tprop->item_count)
-				return aResultToken.Error(ERR_PROPERTY_READONLY, name);
-			return SetValueOfTypeAtPtr(field->tprop->type, ptr, *actual_param[0], aResultToken);
-		}
-		else if (field->tprop->class_object) // Struct type.
-		{
-			if (!realthis->mNested)
-			{
-				auto si = realthis->mBase->GetStructInfo();
-				realthis->mNested = new (std::nothrow) Object * [si->nested_count + 1];
-				if (!realthis->mNested)
+				if (!real_this->SetOwnProp(aName, **aParam))
 					return aResultToken.MemoryError();
-				ZeroMemory(realthis->mNested, sizeof(Object *) * (si->nested_count + 1));
-			}
-			Object *nested = realthis->mNested[field->tprop->object_index];
-			if (!nested) // Since it wasn't constructed, this must be a pointer, not a real struct.
-			{
-				auto proto = dynamic_cast<Object*>(field->tprop->class_object->GetOwnPropObj(_T("Prototype")));
-				if (!proto)
-					return INVOKE_NOT_HANDLED;
-				nested = CreateStructPtr((UINT_PTR)ptr, proto, aResultToken);
-				if (!nested)
-					return FAIL; // Error was already raised.
-			}
-			else
-			{
-				if (nested->AddRef() == 1)
-					realthis->AddRef();
-			}
-			if (!handle_params_recursively)
-			{
-				auto result = nested->Invoke(aResultToken, IT_GET | IF_BYPASS_METAFUNC, _T("__value"), ExprTokenType(nested), nullptr, 0);
-				if (result != INVOKE_NOT_HANDLED)
-				{
-					nested->Release(); // This will realthis->Release() if appropriate.
-					return result;
-				}
-				aResultToken.SetValue(nested);
 				return OK;
 			}
-			token_for_recursion.SetValue(nested);
 		}
-		else
-		{
-			if (field->tprop->item_count)
-			{
-				ASSERT(field->tprop->type == MdType::Void); // Untyped buffer.
-				(handle_params_recursively ? token_for_recursion : aResultToken).SetValue((size_t)ptr);
-				if (!handle_params_recursively)
-					return OK;
-			}
-			TypedPtrToToken(field->tprop->type, ptr
-				, handle_params_recursively ? token_for_recursion : aResultToken);
-			if (!handle_params_recursively)
-				return OK;
-			if (token_for_recursion.symbol == SYM_OBJECT)
-				token_for_recursion.object->AddRef();
-		}
-		token_for_recursion.mem_to_free = nullptr;
+		// This property has a getter but no setter; or either IF_SUBSTITUTE_THIS or IF_SUPER was set and above
+		// did not return, in which case the property should be considered read-only, since it can't be stored
+		// in the actual target object (which is aThisToken, not C++ `this`).
+		return field ? aResultToken.Error(ERR_PROPERTY_READONLY, aName) : INVOKE_NOT_HANDLED;
 	}
-	else if (etter) // Property with getter/setter.
+
+	if (this != that)
 	{
-		// Prepare the parameter list: this, [value,] actual_param*
-		ExprTokenType this_etter(etter);
-		ExprTokenType **prop_param = (ExprTokenType **)_malloca((actual_param_count + 2) * sizeof(ExprTokenType *));
-		if (!prop_param)
+		if (aFlags & IF_NO_NEW_PROPS)
+			return INVOKE_NOT_HANDLED;
+		if (!(aFlags & IF_BYPASS_METAFUNC))
+		{
+			auto result = CallMetaVarg(aFlags, aName, aResultToken, aThisToken, aParam, aParamCount);
+			if (result != INVOKE_NOT_HANDLED)
+				return result;
+		}
+		if (aParam[0]->symbol == SYM_MISSING)
+			return OK; // No action needed for x.y := unset.
+		if (  !(field = Insert(aName, insert_pos))  )
 			return aResultToken.MemoryError();
-		prop_param[0] = &aThisToken; // For the hidden "this" parameter in the getter/setter.
-		int prop_param_count = 1;
-		if (setting)
-		{
-			// Put the setter's hidden "value" parameter before the other parameters.
-			prop_param[prop_param_count++] = actual_param[actual_param_count];
-		}
-		if (!handle_params_recursively)
-		{
-			memcpy(prop_param + prop_param_count, actual_param, actual_param_count * sizeof(ExprTokenType *));
-			prop_param_count += actual_param_count;
-		}
-		// Call getter/setter.
-		auto result = etter->Invoke(aResultToken, IT_CALL, nullptr, this_etter, prop_param, prop_param_count);
-		_freea(prop_param);
-		if (result == INVOKE_NOT_HANDLED)
-			return aResultToken.UnknownMemberError(this_etter, IT_CALL, nullptr);
-		if ((!handle_params_recursively && !calling) || result == FAIL || result == EARLY_EXIT)
-			return result;
-		// Otherwise, handle_params_recursively || calling.
-		token_for_recursion.CopyValueFrom(aResultToken);
-		token_for_recursion.mem_to_free = aResultToken.mem_to_free;
-		aResultToken.mem_to_free = nullptr;
-		aResultToken.SetValue(_T(""));
+	}
+	else if (aParam[0]->symbol == SYM_MISSING) // x.y := unset
+	{
+		// Completely delete the property, since other sections currently aren't designed to handle properties
+		// with no value (unlike Array and Map items).
+		mFields.Remove((index_t)(field - mFields), 1);
+		return OK;
 	}
 
-	if (calling)
-	{
-		ExprTokenType func_token;
+	return field->Assign(**aParam) ? OK : aResultToken.MemoryError();
+}
 
-		bool tfr_set = etter || field && field->symbol == SYM_TYPED_FIELD; // TODO: measure these checks against initializing token_for_recursion.symbol and checking that instead
-		if (tfr_set)
-			func_token.CopyValueFrom(token_for_recursion);
-		else if (!field)
-				return INVOKE_NOT_HANDLED;
-		else if (field->symbol == SYM_DYNAMIC)
-			func_token.SetValue(field->prop->Method());
-		else
-			field->ToToken(func_token);
-		auto result = CallAsMethod(func_token, aResultToken, aThisToken, actual_param, actual_param_count);
-		if (tfr_set)
-			token_for_recursion.Free();
-		if (result == INVOKE_NOT_HANDLED)
-		{
-			// Something like obj.x(y) where obj.x exists but has no Call method.  Throw here
-			// to override the default error message, which would indicate that "x" is unknown.
-			result = aResultToken.UnknownMemberError(func_token, IT_CALL, nullptr);
-		}
-		return result;
-	}
 
-	if (actual_param_count)
-	{
-		// This section handles parameters being passed to a property, such as this.x[y],
-		// when that property doesn't accept parameters (i.e. none were declared, or the
-		// property is undefined or just a value).
-		if (!etter)
-		{
-			if (field)
-			{
-				if (field->symbol != SYM_TYPED_FIELD)
-					field->ToToken(token_for_recursion);
-				//else token_for_recursion was already set.
-			}
-			else if (method)
-				token_for_recursion.SetValue(method);
-			else
-				return INVOKE_NOT_HANDLED;
-		}
-		
-		if (IS_INVOKE_SET)
-			++actual_param_count; // Fix the parameter count.
-
-		IObject *obj_for_recursion = TokenToObject(token_for_recursion);
-		if (!obj_for_recursion)
-		{
-			obj_for_recursion = ValueBase(token_for_recursion);
-			aFlags |= IF_SUBSTITUTE_THIS;
-		}
-		
-		// Recursively invoke obj_for_recursion, passing remaining parameters:
-		auto result = obj_for_recursion->Invoke(aResultToken, (aFlags & IT_BITMASK)
-			, nullptr, token_for_recursion, actual_param, actual_param_count);
-		
-		if (aResultToken.symbol == SYM_STRING && !aResultToken.mem_to_free && aResultToken.marker != aResultToken.buf)
-		{
-			// Before releasing obj_for_recursion, make a copy of the string in case it points
-			// to memory contained by obj_for_recursion, which might be deleted via Release().
-			if (!TokenSetResult(aResultToken, aResultToken.marker, aResultToken.marker_length))
-				result = FAIL;
-		}
-		if (result == INVOKE_NOT_HANDLED)
-		{
-			// Something like obj.x[y] where obj.x exists but obj.x[y] does not.  Throw here
-			// to override the default error message, which would indicate that "x" is unknown.
-			result = aResultToken.UnknownMemberError(token_for_recursion, aFlags, nullptr);
-		}
-		if (etter || field && field->symbol == SYM_TYPED_FIELD)
-			token_for_recursion.Free();
-		return result;
-	}
-
-	// SET
-	else if (setting)
-	{
-		if (!field && hasprop || (aFlags & (IF_SUBSTITUTE_THIS | IF_SUPER)))
-		{
-			if ((aFlags & IF_SUPER) && (field || !hasprop))
-			{
-				// This is `super.x := y` where x is either a value property or undefined.
-				// If aThisToken is an Object, use the base Object implementation of set: create a value property.
-				if (auto real_this = dynamic_cast<Object *>(TokenToObject(aThisToken)))
-				{
-					if (!real_this->SetOwnProp(aName, **actual_param))
-						return aResultToken.MemoryError();
-					return OK;
-				}
-			}
-			// This property has a getter but no setter; or either IF_SUBSTITUTE_THIS or IF_SUPER was set and above
-			// did not return, in which case the property should be considered read-only, since it can't be stored
-			// in the actual target object (which is aThisToken, not C++ `this`).
-			return hasprop ? aResultToken.Error(ERR_PROPERTY_READONLY, name) : INVOKE_NOT_HANDLED;
-		}
-		
-		if (!field || this != that) // No such property in this object yet.
-		{
-			if (aFlags & IF_NO_NEW_PROPS)
-				return INVOKE_NOT_HANDLED;
-			if (actual_param[0]->symbol == SYM_MISSING)
-				return OK; // No action needed for x.y := unset.
-			if (  !(field = Insert(name, insert_pos))  )
-				return aResultToken.MemoryError();
-		}
-		else if (actual_param[0]->symbol == SYM_MISSING) // x.y := unset
-		{
-			// Completely delete the property, since other sections currently aren't designed to handle properties
-			// with no value (unlike Array and Map items).
-			mFields.Remove((index_t)(field - mFields), 1);
-			return OK;
-		}
-		if (field->Assign(**actual_param))
-			return OK;
+ResultType Object::CallEtter(ResultToken &aResultToken, int aFlags, IObject *aEtter, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount)
+{
+	// Prepare the parameter list: this, [value,] actual_param*
+	ExprTokenType this_etter(aEtter);
+	auto prop_param = (ExprTokenType **)_malloca((aParamCount + 1) * sizeof(ExprTokenType *));
+	if (!prop_param)
 		return aResultToken.MemoryError();
-	}
+	prop_param[0] = &aThisToken; // For the hidden "this" parameter in the getter/setter.
+	int prop_param_count = 1;
+	if (IS_INVOKE_SET)
+		// Put the setter's hidden "value" parameter before the other parameters.
+		prop_param[prop_param_count++] = aParam[--aParamCount];
+	memcpy(prop_param + prop_param_count, aParam, aParamCount * sizeof(ExprTokenType *));
+	prop_param_count += aParamCount;
+	// Call getter/setter.
+	auto result = aEtter->Invoke(aResultToken, IT_CALL, nullptr, this_etter, prop_param, prop_param_count);
+	_freea(prop_param);
+	if (result == INVOKE_NOT_HANDLED)
+		return aResultToken.UnknownMemberError(this_etter, IT_CALL, nullptr);
+	return result;
+}
 
-	// GET
+
+Object *Object::GetThisForTypedValue(ResultToken &aResultToken, int aFlags, name_t aName, ExprTokenType &aThisToken)
+{
+	auto realthis = this;
+	if (aFlags & (IF_SUBSTITUTE_THIS | IF_SUPER))
+		realthis = dynamic_cast<Object*>(TokenToObject(aThisToken));
+	if (realthis && realthis->mData && !(realthis->mFlags & DataIsStructInfo))
+		return realthis;
+	aResultToken.Error(_T("Property invalid for object with null data."), aName);
+	return nullptr;
+}
+
+
+ResultType Object::GetTypedValue(ResultToken &aResultToken, int aFlags, TypedProperty &aProp)
+{
+	// TODO: allow inheriting DataPtr()?
+	auto ptr = (void*)(DataPtr() + aProp.data_offset);
+	if (aProp.class_object) // Struct type.
+	{
+		Object *nested = mNested ? mNested[aProp.object_index] : nullptr;
+		if (!nested) // Since it wasn't constructed, this must be a pointer, not a real struct.
+		{
+			auto proto = dynamic_cast<Object*>(aProp.class_object->GetOwnPropObj(_T("Prototype")));
+			if (!proto)
+				return INVOKE_NOT_HANDLED;
+			nested = CreateStructPtr((UINT_PTR)ptr, proto, aResultToken);
+			if (!nested)
+				return FAIL; // Error was already raised.
+		}
+		else
+		{
+			if (nested->AddRef() == 1) // First external reference.
+				this->AddRef(); // Keep this alive while nested is referenced externally.
+		}
+		if (!(aFlags & IF_BYPASS___VALUE))
+		{
+			auto result = nested->Invoke(aResultToken, IT_GET | IF_BYPASS_METAFUNC, _T("__Value"), ExprTokenType(nested), nullptr, 0);
+			if (result != INVOKE_NOT_HANDLED)
+			{
+				nested->Release(); // This will recursively Release() if appropriate.
+				return result;
+			}
+		}
+		aResultToken.SetValue(nested);
+	}
+	else if (aProp.item_count)
+	{
+		ASSERT(aProp.type == MdType::Void); // Untyped buffer.
+		aResultToken.SetValue((size_t)ptr);
+	}
 	else
 	{
-		if (field)
-		{
-			// Caller takes care of copying the result into persistent memory when necessary, and must
-			// ensure this is done before they Release() this object.  For ExpandExpression(), there are
-			// two different danger scenarios:
-			//   1) Fn {value:"string"}.value   ; Temporary object could be released prematurely.
-			//   2) Fn( obj.value, obj := "" )  ; Object is freed by the assignment.
-			// For both cases, the value is copied immediately after we return, because the result of any
-			// BIF is assumed to be volatile if expression eval isn't finished.  The function call in #1
-			// is handled by ExpandExpression() since commit 2a276145.
-			field->ReturnRef(aResultToken);
-			return OK;
-		}
-		else if (method)
-		{
-			method->AddRef();
-			return aResultToken.Return(method);
-		}
-		else if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
-			return aResultToken.ReturnPtr(g_DefaultObjectValue);
+		TypedPtrToToken(aProp.type, ptr, aResultToken);
+		ASSERT(aResultToken.symbol != SYM_OBJECT); // Shouldn't happen since we don't support typed Object-pointer properties, but if it happened we may need to AddRef().
+	}
+	return OK;
+}
+
+
+ResultType Object::SetTypedValue(ResultToken &aResultToken, int aFlags, name_t aName, TypedProperty &aProp, ExprTokenType &aValue)
+{
+	auto ptr = (void*)(DataPtr() + aProp.data_offset);
+	if (aProp.class_object)
+	{
+		Object *nested = mNested[aProp.object_index];
+		mRefCount++; // Must be done at least when nested->mRefCount == 0 (and then reversed when nested->mRefCount reaches 0 again).
+		nested->mRefCount++; // Avoid calling Delete() when the __value setter returns.
+		auto param = &aValue;
+		auto result = nested->Invoke(aResultToken, IT_SET | IF_BYPASS_METAFUNC | IF_NO_NEW_PROPS, _T("__Value"), ExprTokenType(nested), &param, 1);
+		nested->mRefCount--;
+		mRefCount--;
+		if (result != INVOKE_NOT_HANDLED)
+			return result;
+		return aResultToken.Error(_T("Assignment to struct is not supported."));
+	}
+	if (aProp.item_count)
+		return aResultToken.Error(ERR_PROPERTY_READONLY, aName);
+	return SetValueOfTypeAtPtr(aProp.type, ptr, aValue, aResultToken);
+}
+
+
+ResultType Object::ApplyParams(ResultToken &aThisResultToken, int aFlags, ExprTokenType *aParam[], int aParamCount)
+{
+	// On input, aThisResultToken contains the value to invoke, having been either retrieved
+	// from a field or returned from a property getter.  Callers rely on us to free any string
+	// value if appropriate, regardless of whether the recursive invoke succeeds (it might
+	// succeed if the script has defined String.Prototype.__Item, for instance).
+	ResultToken this_token;
+	this_token.CopyValueFrom(aThisResultToken);
+	this_token.mem_to_free = aThisResultToken.mem_to_free;
+	aThisResultToken.mem_to_free = nullptr;
+	aThisResultToken.SetValue(_T(""), -1);
+	auto &aResultToken = aThisResultToken;
+	
+	IObject *this_obj = TokenToObject(this_token);
+	if (!this_obj)
+	{
+		this_obj = ValueBase(this_token);
+		aFlags |= IF_SUBSTITUTE_THIS;
 	}
 
-	// Fell through from one of the sections above: invocation was not handled.
-	return INVOKE_NOT_HANDLED;
+	auto result = this_obj->Invoke(aResultToken, aFlags, nullptr, this_token, aParam, aParamCount);
+
+	if (aResultToken.symbol == SYM_STRING && !aResultToken.mem_to_free && aResultToken.marker != aResultToken.buf)
+	{
+		// Returned strings are sometimes in memory owned by the object, so make a copy
+		// before potentially releasing this_obj via this_token.Free().
+		if (!TokenSetResult(aResultToken, aResultToken.marker, aResultToken.marker_length))
+			result = FAIL;
+	}
+
+	if (result == INVOKE_NOT_HANDLED)
+	{
+		// Something like obj.x[y] where obj.x exists but obj.x[y] does not.  Throw here
+		// to override the default error message, which would indicate that "x" is unknown.
+		result = aResultToken.UnknownMemberError(this_token, aFlags, nullptr);
+	}
+
+	this_token.Free();
+	return result;
 }
+
 
 
 ResultType ObjectBase::Invoke(IObject_Invoke_PARAMS_DECL)
@@ -1069,6 +1082,7 @@ ResultType ObjectBase::Invoke(IObject_Invoke_PARAMS_DECL)
 	}
 	return INVOKE_NOT_HANDLED;
 }
+
 
 
 void Object::CallBuiltin(int aID, ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
@@ -1178,6 +1192,8 @@ ResultType Object::CallMetaVarg(int aFlags, LPTSTR aName, ResultToken &aResultTo
 	auto func = GetMethod(sMetaFuncName[INVOKE_TYPE]);
 	if (!func)
 		return INVOKE_NOT_HANDLED;
+	if (IS_INVOKE_SET)
+		--aParamCount;
 	auto vargs = Array::Create(aParam, aParamCount);
 	if (!vargs)
 		return aResultToken.MemoryError();
@@ -1310,12 +1326,11 @@ ResultType Object::SetBase(Object *aNewBase, ResultToken &aResultToken)
 LPTSTR Object::Type()
 {
 	Object *base;
-	ExprTokenType value;
-	if (GetOwnProp(value, _T("__Class")))
+	if (HasOwnProp(_T("__Class")))
 		return _T("Prototype"); // This object is a prototype.
 	for (base = mBase; base; base = base->mBase)
-		if (base->GetOwnProp(value, _T("__Class")))
-			return TokenToString(value); // This object is an instance of that class.
+		if (auto classname = base->GetOwnPropString(_T("__Class")))
+			return classname; // This object is an instance of that class.
 	return _T("Object"); // Provide a default in case __Class has been removed from all of the base objects.
 }
 
@@ -1333,7 +1348,7 @@ Object *Object::CreatePrototype(LPTSTR aClassName, Object *aBase)
 {
 	auto obj = new Object();
 	obj->mFlags |= ClassPrototype;
-	obj->SetOwnProp(_T("__Class"), ExprTokenType(aClassName));
+	obj->SetOwnProp(_T("__Class"), ExprTokenType(aClassName), false);
 	obj->SetBase(aBase);
 	return obj;
 }
@@ -1494,20 +1509,7 @@ void Map::Delete(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 	mCount--;
 	// Free item and keys.
 	copy->Free();
-	if (!IsUnsorted())
-	{
-		if (key_type == SYM_STRING)
-			free(copy->key.s);
-		else // i.e. SYM_OBJECT or SYM_INTEGER
-		{
-			mKeyOffsetString--;
-			if (key_type == SYM_INTEGER)
-				mKeyOffsetObject--;
-			else
-				copy->key.p->Release();
-		}
-	}
-	else
+	if (IsUnsorted())
 	{
 		if (key_type == SYM_STRING)
 			free(copy->key.s);
@@ -1515,6 +1517,16 @@ void Map::Delete(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *
 			copy->key.p->Release();
 		if (mCount > pos)
 			memmove(mKeyTypes + pos, mKeyTypes + pos + 1, mCount - pos);
+	}
+	else if (key_type == SYM_STRING)
+		free(copy->key.s);
+	else // i.e. SYM_OBJECT or SYM_INTEGER
+	{
+		mKeyOffsetString--;
+		if (key_type == SYM_INTEGER)
+			mKeyOffsetObject--;
+		else
+			copy->key.p->Release();
 	}
 	_o_return_retval;
 }
@@ -1651,6 +1663,11 @@ void Object::OwnProps(ResultToken &aResultToken, int aID, int aFlags, ExprTokenT
 		, static_cast<IndexEnumerator::Callback>(&Object::GetEnumProp)));
 }
 
+void Object::Props(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+{
+	_o_return(new PropEnum(this));
+}
+
 void Object::ToJSON(ResultToken& aResultToken, int aID, int aFlags, ExprTokenType* aParam[], int aParamCount)
 {
 	if (aParamCount >= 1 && aParam[0]->symbol == SYM_PTR) {
@@ -1717,12 +1734,13 @@ bool Object::DefineMethod(name_t aName, IObject *aFunc)
 	return false;
 }
 
-Property *Object::DefineProperty(name_t aName)
+Property *Object::DefineProperty(name_t aName, bool aEnumerable)
 {
 	index_t insert_pos;
 	auto field = FindField(aName, insert_pos);
 	if (!field && !(field = Insert(aName, insert_pos)))
 		return nullptr;
+	field->enumerable = aEnumerable;
 	if (field->symbol != SYM_DYNAMIC)
 	{
 		field->Free();
@@ -1981,6 +1999,57 @@ void Object::GetOwnPropDesc(ResultToken &aResultToken, int aID, int aFlags, Expr
 		desc->SetOwnProp(_T("Value"), value);
 	}
 	_o_return(desc);
+}
+
+void NewPropRef(ResultToken &aResultToken, IObject *aObj, LPCTSTR aName)
+{
+	auto new_name = _tcsdup(aName);
+	if (!new_name)
+		_f_throw_oom;
+	aObj->AddRef();
+	_f_return(new PropRef(aObj, new_name));
+}
+
+void Object::__Ref(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+{
+	auto name = ParamIndexToString(0, _f_retval_buf);
+	if (!*name)
+		_f_throw_param(0);
+
+	for (Object *that = this; that; that = that->mBase)
+	{
+		if (auto field = that->FindField(name))
+		{
+			if (field->symbol != SYM_TYPED_FIELD || !field->tprop->class_object)
+				break;
+			Object *nested = mNested[field->tprop->object_index];
+			if (!nested)
+				break;
+			if (nested->AddRef() == 1) // Nested objects have this unique requirement.
+				this->AddRef();
+			_o_return(nested);
+		}
+	}
+
+	NewPropRef(aResultToken, this, name);
+}
+
+BIF_DECL(PropRef_Call)
+{
+	++aParam, --aParamCount; // Exclude "PropRef" itself.
+	auto that = ParamIndexToObject(0);
+	if (!that)
+		_f_throw_param(0, _T("object"));
+	auto name = ParamIndexToString(1, _f_retval_buf);
+	if (!*name)
+		_f_throw_param(1);
+	NewPropRef(aResultToken, that, name);
+}
+
+void PropRef::__Value(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+{
+	if (mThat->Invoke(aResultToken, aFlags, mMember, ExprTokenType(mThat), aParam, aParamCount) == INVOKE_NOT_HANDLED)
+		_o_return_unset;
 }
 
 
@@ -2309,9 +2378,7 @@ void Object::Variant::ReturnRef(ResultToken &result)
 		object->AddRef();
 		result.object = object;
 		break;
-	case SYM_MISSING:
-		result.SetValue(_T(""), 0);
-		break;
+	//case SYM_MISSING: // Callers don't need special handling for this.
 	//case SYM_INTEGER:
 	//case SYM_FLOAT:
 	default:
@@ -2336,10 +2403,10 @@ void Object::Variant::ReturnMove(ResultToken &result)
 		Minit(); // Let item forget the object ref since we are taking ownership.
 		break;
 	case SYM_MISSING:
+		// This implements "blank if none" documented for some methods in v2.0.
+		// TODO: v2.1/future mode: return unset
 	case SYM_DYNAMIC:
-	case SYM_TYPED_FIELD:
-		// Since functons currently aren't permitted to return unset, these cases return ""
-		// (as documented for RemoveAt, Delete, etc.).
+	case SYM_TYPED_FIELD: // This is a field definition; it can't have a value.
 		result.SetValue(_T(""), 0);
 		break;
 	//case SYM_INTEGER:
@@ -2360,8 +2427,8 @@ void Object::Variant::ToToken(ExprTokenType &aToken)
 		break;
 	case SYM_DYNAMIC:
 	case SYM_TYPED_FIELD:
-		ASSERT(!"These cases should not be reached");
-		aToken.SetValue(_T(""), 0);
+		// This can be reached via Object::GetOwnProp.
+		aToken.symbol = SYM_INVALID; // Allow caller to detect this as an error.
 		break;
 	default:
 		aToken.value_int64 = n_int64; // Union copy.
@@ -2490,7 +2557,8 @@ Array *Array::Create(ExprTokenType *aValue[], index_t aCount, bool aUnsorted)
 {
 	auto arr = new Array();
 	arr->SetBase(Array::sPrototype);
-	if (aUnsorted) arr->mFlags |= UnsortedFlag;
+	if (aUnsorted)
+		arr->mFlags |= UnsortedFlag;
 	if (!aCount || arr->InsertAt(0, aValue, aCount))
 		return arr;
 	arr->Release();
@@ -2559,7 +2627,7 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 	case M_Get:
 	{
 		auto index = ParamToZeroIndex(*aParam[IS_INVOKE_SET ? 1 : 0]);
-		if (index >= mLength) 
+		if (index >= mLength)
 			_o_throw(ERR_INVALID_INDEX, *aParam[IS_INVOKE_SET ? 1 : 0], ErrorPrototype::Index);
 		auto &item = mItem[index];
 		if (IS_INVOKE_SET)
@@ -2615,8 +2683,6 @@ void Array::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType
 			index = mLength;
 		if (!InsertAt(index, aParam, aParamCount))
 			_o_throw_oom;
-		if (aID == M_Push)
-			_o_return(mLength);
 		_o_return_empty;
 	}
 
@@ -2932,9 +2998,20 @@ ResultType Array::GetEnumItem(UINT &aIndex, Var *aVal, Var *aReserved, int aVarC
 
 bool EnumBase::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
 {
-	Var *var0 = ParamIndexToOutputVar(0);
-	Var *var1 = ParamIndexToOutputVar(1);
-	auto result = Next(var0, var1);
+	Var *var[] { nullptr, nullptr };
+	for (int i = 0; i < _countof(var); ++i)
+		if (i < aParamCount)
+			if (IObject *obj = ParamIndexToObject(i))
+			{
+				var[i] = new (_alloca(sizeof(Var))) Var(obj); // mType = VAR_VIRTUAL_OBJ
+			}
+			else if (aParam[i]->symbol != SYM_MISSING)
+			{
+				aResultToken.ParamError(i, aParam[i], _T("variable reference"));
+				return false;
+			}
+
+	auto result = Next(var[0], var[1]);
 	switch (result)
 	{
 	case CONDITION_TRUE:
@@ -2990,8 +3067,8 @@ ResultType Object::GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCoun
 			}
 			else if (field.symbol == SYM_TYPED_FIELD)
 			{
-				// TODO: enumerate typed properties based on fields in base?
-				aVal->Free(VAR_NEVER_FREE | VAR_REQUIRE_INIT);
+				// Typed properties are owned by the prototype, but have values only in the instances.
+				continue;
 			}
 			else
 			{
@@ -3007,6 +3084,98 @@ ResultType Object::GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCoun
 		return CONDITION_TRUE;
 	}
 	return CONDITION_FALSE;
+}
+
+
+Object::PropEnum::PropEnum(Object *aObject)
+{
+	for (Object *p = aObject; p; p = p->mBase)
+		++mIndexCount;
+	mIndex = new index_t[mIndexCount];
+	memset(mIndex, 0, mIndexCount * sizeof(index_t));
+	mObject = aObject;
+	mObject->AddRef();
+	mThisToken.SetValue(mObject);
+}
+
+
+Object::PropEnum::PropEnum(Object *aObject, ExprTokenType &aThisToken)
+	: PropEnum(aObject)
+{
+	mThisToken.CopyValueFrom(aThisToken);
+	mDebuggerMode = true;
+}
+
+
+Object::PropEnum::~PropEnum()
+{
+	mObject->Release();
+	delete[] mIndex;
+}
+
+
+ResultType Object::PropEnum::Next(Var *aName, Var *aVal)
+{
+	int nextidx, testidx = 0;
+	Object *nextobj = nullptr;
+	bool is_proto = mObject->IsClassPrototype() && !mDebuggerMode;
+	for (Object *testobj = mObject;; )
+	{
+		if (mIndex[testidx] < testobj->mFields.Length())
+		{
+			auto &testfld = testobj->mFields[mIndex[testidx]];
+			if (!testfld.enumerable && (testidx || !mDebuggerMode)
+				|| testfld.symbol == SYM_DYNAMIC && (testfld.prop->NoEnumGet || !testfld.prop->Getter() || is_proto))
+			{
+				++mIndex[testidx]; // Skip this property.
+				continue;
+			}
+			int r = nextobj ? _tcsicmp(testfld.name, nextobj->mFields[mIndex[nextidx]].name) : -1;
+			if (r < 0)
+			{
+				nextidx = testidx;
+				nextobj = testobj;
+			}
+			else if (r == 0)
+			{
+				++mIndex[testidx]; // Skip this shadowed property.
+				// No need to consider the name at the new index, since r > 0 can be inferred.
+			}
+		}
+		++testidx, testobj = testobj->mBase;
+		if (!testobj || testidx >= mIndexCount)
+			break; // No more bases.
+	}
+	if (!nextobj)
+		return CONDITION_FALSE;
+
+	UINT tempidx = mIndex[nextidx];
+
+	auto &field = nextobj->mFields[mIndex[nextidx]++];
+
+	ResultType result = OK;
+	if (aName)
+		result = aName->Assign(field.name);
+
+	if (aVal && result)
+	{
+		FuncResult result_token;
+		auto result = mObject->GetFieldValue(result_token, IT_GET | IF_BYPASS___VALUE, field, mThisToken);
+		if (result == FAIL || result == EARLY_EXIT)
+			return result;
+		if (result_token.mem_to_free)
+		{
+			ASSERT(result_token.symbol == SYM_STRING && result_token.mem_to_free == result_token.marker);
+			aVal->AcceptNewMem(result_token.mem_to_free, result_token.marker_length);
+		}
+		else
+		{
+			result = aVal->Assign(result_token);
+			result_token.Free();
+		}
+	}
+	
+	return result ? CONDITION_TRUE : FAIL;
 }
 
 
@@ -3224,22 +3393,27 @@ Map::Pair *Map::FindItem(SymbolType key_type, Key key, index_t &insert_pos)
 // left and right must indicate the appropriate section of mItem to search, based on key type.
 {
 	index_t left, right;
-	if (IsUnsorted()) {
-		if (key_type == SYM_STRING) {
+	if (IsUnsorted())
+	{
+		if (key_type == SYM_STRING)
+		{
 			bool caseless = mFlags & MapCaseless;
 			bool use_locale = mFlags & MapUseLocale;
 			LPTSTR val = key.s;
 			int first_char = caseless ? 0 : *val;
-			for (insert_pos = 0; insert_pos < mCount; insert_pos++) {
+			for (insert_pos = 0; insert_pos < mCount; insert_pos++)
+			{
 				auto &item = mItem[insert_pos];
 				if (first_char == item.key_c && mKeyTypes[insert_pos] == SYM_STRING && !(!caseless ? _tcscmp(val, item.key.s) 
 					: use_locale ? lstrcmpi(val, item.key.s) : _tcsicmp(val, item.key.s)))
 					return &item;
 			}
 		}
-		else {
+		else
+		{
 			IntKeyType val = key_type == SYM_OBJECT ? (IntKeyType)(INT_PTR)key.p : key.i;
-			for (insert_pos = 0; insert_pos < mCount; insert_pos++) {
+			for (insert_pos = 0; insert_pos < mCount; insert_pos++)
+			{
 				auto& item = mItem[insert_pos];
 				if (mKeyTypes[insert_pos] == key_type && val == item.key.i)
 					return &item;
@@ -3349,6 +3523,7 @@ Object::FieldType *Object::Insert(name_t name, index_t at)
 	field.key_c = ctolower(*name);
 	field.name = name; // Above has already copied string or called key.p->AddRef() as appropriate.
 	field.Minit(); // Initialize to default value.  Caller will likely reassign.
+	field.enumerable = true;
 	return &field;
 }
 
@@ -3861,12 +4036,25 @@ ObjectMember RegExMatchObject::sMembers[] =
 
 ObjectMember Object::sErrorMembers[]
 {
-	Object_Member(__New, Error__New, M_Error__New, IT_CALL, 0, 3)
+	Object_Member(__New, Error__New, M_Error__New, IT_CALL, 0, 3),
+	Object_Member(Show, Error_Show, 0, IT_CALL, 0, 2),
 };
 
 ObjectMember Object::sOSErrorMembers[]
 {
 	Object_Member(__New, Error__New, M_OSError__New, IT_CALL, 0, 3)
+};
+
+
+
+ObjectMember VarRef::sMembers[]
+{
+	Object_Member(__Value, __Value, 0, IT_SET | BIMF_UNSET_ARG_1)
+};
+
+ObjectMember PropRef::sMembers[]
+{
+	Object_Member(__Value, __Value, 0, IT_SET | BIMF_UNSET_ARG_1)
 };
 
 ObjectMember DynaToken::sMembers[] =
@@ -3891,7 +4079,6 @@ ObjectMember Promise::sMembers[] =
 	Object_Method(Catch, 1, 1)
 };
 
-#undef GetObject
 ObjectMember Worker::sMembers[] =
 {
 	Object_Method(__New, 0, 3),
@@ -3912,6 +4099,8 @@ ObjectMember Decimal::sMembers[] = {
 	Object_Method(ToString, 0, 1),
 };
 #endif // ENABLE_DECIMAL
+
+
 
 struct ClassDef
 {
@@ -3951,13 +4140,13 @@ void Object::CreateRootPrototypes()
 	static const LPTSTR sFuncs[] = { _T("GetMethod"), _T("HasBase"), _T("HasMethod"), _T("HasProp") };
 	for (int i = 0; i < _countof(sFuncs); ++i)
 		sAnyPrototype->DefineMethod(sFuncs[i], g_script->FindGlobalFunc(sFuncs[i]));
-	auto prop = sAnyPrototype->DefineProperty(_T("Base"));
+	auto prop = sAnyPrototype->DefineProperty(_T("Base"), false);
 	prop->NoParamGet = prop->NoParamSet = true;
 	prop->SetGetter(g_script->FindGlobalFunc(_T("ObjGetBase")));
 	prop->SetSetter(g_script->FindGlobalFunc(_T("ObjSetBase")));
-
+	
 	// Define __Init so that Script::DefineClassInit can add an unconditional super.__Init().
-	auto __Init = new BuiltInFunc{ _T(""), Any___Init, 1, 1 };
+	auto __Init = new BuiltInFunc { _T(""), Any___Init, 1, 1 };
 	sAnyPrototype->DefineMethod(_T("__Init"), __Init);
 	__Init->Release();
 
@@ -4059,15 +4248,16 @@ void Object::CreateRootPrototypes()
 		}},
 		{_T("Primitive"), &Object::sPrimitivePrototype, no_ctor, no_members, 0, {
 			{_T("Number"), &Object::sNumberPrototype, {BIF_Number, 2, 2}, no_members, 0, {
+#ifdef ENABLE_DECIMAL
+				{_T("Decimal"), &Decimal::sPrototype, {Decimal::Create, 2, 2}, Decimal::sMembers, _countof(Decimal::sMembers)},
+#endif // ENABLE_DECIMAL
 				{_T("Float"), &Object::sFloatPrototype, {BIF_Float, 2, 2}},
 				{_T("Integer"), &Object::sIntegerPrototype, {BIF_Integer, 2, 2}}
-#ifdef ENABLE_DECIMAL
-				,{_T("Decimal"), &Decimal::sPrototype, {Decimal::Create, 2, 2}, Decimal::sMembers, _countof(Decimal::sMembers)}
-#endif // ENABLE_DECIMAL
 			}},
 			{_T("String"), &Object::sStringPrototype, {BIF_String, 2, 2}}
 		}},
-		{_T("VarRef"), &sVarRefPrototype}
+		{_T("PropRef"), &PropRef::sPrototype, {PropRef_Call, 3, 3}, PropRef::sMembers, _countof(PropRef::sMembers)},
+		{_T("VarRef"), &sVarRefPrototype, no_ctor, VarRef::sMembers, _countof(VarRef::sMembers)}
 	});
 
 #ifdef ENABLE_DECIMAL
@@ -4124,6 +4314,7 @@ namespace ErrorPrototype
 }
 
 thread_local Object *Object::sVarRefPrototype;
+thread_local Object *PropRef::sPrototype;
 thread_local Object *Object::sComObjectPrototype, *Object::sComValuePrototype, *Object::sComArrayPrototype, *Object::sComRefPrototype;
 
 thread_local IObject *Object::sObjectCall;

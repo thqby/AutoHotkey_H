@@ -324,28 +324,28 @@ bif_impl FResult WinWaitNotActive(ExprTokenType *aWinTitle, optl<StrArg> aWinTex
 // RunWait is still a "BIF" for now because the OutputVarPID parameter can only be used
 // by another thread, while the function is running, and there's currently no means for
 // a function implemented via MdFunc to assign to the output var directly.
-BIF_DECL(BIF_RunWait)
+ResultType RunWait(StrArg aTarget, optl<StrArg> aWorkingDir, optl<StrArg> aOptions, optl<IObject*> aPID, int &aExitCode)
 {
 	Line *waiting_line = g_script->mCurrLine;
 	DWORD start_time = GetTickCount();
 
-	_f_param_string_opt(arg1, 0);
-	_f_param_string_opt(arg2, 1);
-	_f_param_string_opt(arg3, 2);
-	Var *output_var = ParamIndexToOutputVar(3);
-	if (output_var)
-		output_var->Assign();
-
 	HANDLE running_process;
-	if (!g_script->ActionExec(arg1, NULL, arg2, true, arg3, &running_process, true, true))
-		_f_return_FAIL;
+	if (!g_script->ActionExec(aTarget, NULL, aWorkingDir.value_or_null(), true, aOptions.value_or_null(), &running_process, true, true))
+		return FAIL;
 	
 	// For the output var to be useful, it must be assigned before we wait:
-	if (output_var && running_process)
-		output_var->Assign(GetProcessId(running_process));
+	if (aPID.has_value() && running_process)
+	{
+		Var output_var(aPID.value());
+		if (!output_var.Assign(GetProcessId(running_process)))
+			return FAIL;
+	}
 
 	if (!running_process) // Nothing to wait for (rare?).
-		_f_return_i(0);
+	{
+		aExitCode = 0;
+		return OK;
+	}
 
 	for (;;)
 	{
@@ -355,7 +355,7 @@ BIF_DECL(BIF_RunWait)
 		if (MsgWaitForMultipleObjects(1, &running_process, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0)
 			break;
 		if ((char)g->IsPaused == -1)	// ahk_h: Used to terminate a thread
-			return (void)aResultToken.SetResult(EARLY_RETURN);
+			return EARLY_RETURN;
 		MsgSleepWithListLines(-1, waiting_line, start_time);
 	}
 
@@ -370,5 +370,6 @@ BIF_DECL(BIF_RunWait)
 	// to check against a return value of -1, for example, which I suspect many apps
 	// return.  AutoIt3 (and probably 2) use a signed int as well, so that is another
 	// reason to keep it this way:
-	_f_return_i((int)exit_code);
+	aExitCode = (int)exit_code;
+	return OK;
 }

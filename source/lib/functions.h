@@ -12,6 +12,8 @@ md_func(CallbackCreate, (In, Object, Function), (In_Opt, String, Options), (In_O
 md_func(CallbackFree, (In, UIntPtr, Callback))
 #endif
 
+md_func_x(CaretGetPos, CaretGetPos, Bool32, (Out_Opt, Variant, X), (Out_Opt, Variant, Y))
+
 md_func(ClipWait, (In_Opt, Float64, Timeout), (In_Opt, Int32, AnyType), (Ret, Bool32, RetVal))
 
 md_func(ControlAddItem, (In, String, Value), MD_CONTROL_ARGS, (Ret, IntPtr, Index))
@@ -235,10 +237,14 @@ md_func(ProcessSetPriority, (In, String, Priority), (In_Opt, String, Process), (
 md_func(ProcessWait, (In, String, Process), (In_Opt, Float64, Timeout), (Ret, UInt32, FoundPID))
 md_func(ProcessWaitClose, (In, String, Process), (In_Opt, Float64, Timeout), (Ret, UInt32, UnclosedPID))
 
+md_func(RegExMatch, (In, Variant, Haystack), (In, String, Needle), (Out_Opt, Object, Match), (In_Opt, Int32, StartingPos), (Ret, Int32, FoundPos))
+md_func(RegExReplace, (In, Variant, Haystack), (In, String, Needle), (In_Opt, Variant, Replacement), (Out_Opt, Int32, Count), (In_Opt, Int32, Limit), (In_Opt, Int32, StartingPos), (Ret, Variant, RetVal))
+
 md_func(Reload, md_arg_none)
 
 md_func(Run, (In, String, Target), (In_Opt, String, WorkingDir), (In_Opt, String, Options), (Out_Opt, Variant, PID))
 md_func_v(RunAs, (In_Opt, String, User), (In_Opt, String, Password), (In_Opt, String, Domain))
+md_func_x(RunWait, RunWait, ResultType, (In, String, Target), (In_Opt, String, WorkingDir), (In_Opt, String, Options), (In_Opt, Object, PID), (Ret, Int32, ExitCode))
 
 md_func_v(Send, (In, String, Keys))
 md_func_v(SendEvent, (In, String, Keys))
@@ -275,9 +281,12 @@ md_func_x(Sleep, ScriptSleep, Void, (In, Int32, Delay))
 md_func_v(SoundBeep, (In_Opt, Int32, Duration), (In_Opt, Int32, Frequency))
 md_func(SoundPlay, (In, String, Path), (In_Opt, String, Wait))
 
+md_func(SplitPath, (In, String, Path), (Out_Opt, String, Name), (Out_Opt, String, Dir), (Out_Opt, String, Ext), (Out_Opt, String, NameNoExt), (Out_Opt, String, Drive))
+
 md_func(StatusBarGetText, (In_Opt, Int32, Part), MD_WINTITLE_ARGS, (Ret, String, RetVal))
 md_func(StatusBarWait, (In_Opt, String, Text), (In_Opt, Float64, Timeout), (In_Opt, Int32, Part), (In_Opt, Variant, WinTitle), (In_Opt, String, WinText), (In_Opt, Int32, Interval), (In_Opt, String, ExcludeTitle), (In_Opt, String, ExcludeText), (Ret, Bool32, RetVal))
 
+md_func(StrReplace, (In, Variant, Haystack), (In, String, Needle), (In_Opt, String, ReplaceText), (In_Opt, Variant, CaseSense), (Out_Opt, UInt32, Count), (In_Opt, UInt32, Limit), (Ret, Variant, RetVal))
 md_func(StrSplit, (In, String, String), (In_Opt, Variant, Delimiters), (In_Opt, String, OmitChars), (In_Opt, Int32, MaxParts), (Ret, Object, RetVal))
 
 md_func(Suspend, (In_Opt, Int32, Mode))

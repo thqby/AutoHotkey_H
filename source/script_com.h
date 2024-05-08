@@ -57,7 +57,8 @@ public:
 	{
 		P_Ptr,
 		// ComValueRef
-		P___Item,
+		P___Item, // v2.0: Allows accessing a VT_BYREF value via comobj[].
+		P___Value = P___Item, // v2.1: Alias to allow use with VAR_VIRTUAL_OBJ (ByRef parameters).
 	};
 	static ObjectMember sRefMembers[], sValueMembers[];
 	static ObjectMemberMd sArrayMembers[];

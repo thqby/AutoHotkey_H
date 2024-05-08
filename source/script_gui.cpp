@@ -6542,7 +6542,7 @@ ResultType GuiType::ControlParseOptions(LPCTSTR aOptions, GuiControlOptionsType 
 						option_char = 0; // Mark it as invalid for switch() below.
 				}
 				if ((option_char == 'X' || option_char == 'Y')
-					|| (option_char == 'W' || option_char == 'H') && (option_int != -1 || option_char2 == 'P')) // Scale W/H unless it's W-1 or H-1.
+					|| (option_char == 'W' || option_char == 'H') && (option_int > 0 || option_char2 == 'P')) // Scale W/H unless it's negative, as some controls give special meaning to W-1 H-1 W-2.
 					option_int = Scale(option_int);
 			}
 

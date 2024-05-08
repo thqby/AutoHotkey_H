@@ -139,11 +139,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 					if (right_obj->Base() == Object::sVarRefPrototype)
 						temp_var = static_cast<VarRef *>(right_obj);
 					else
-					{
-						error_info = _T("String or VarRef");
-						error_value = &right;
-						goto type_mismatch;
-					}
+						temp_var = new (_alloca(sizeof(Var))) Var(right_obj);
 				}
 				else
 				{
@@ -195,13 +191,12 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			}
 			if (this_token.symbol == SYM_VAR && (!VARREF_IS_WRITE(this_token.var_usage) || this_token.var_usage == VARREF_LVALUE_MAYBE))
 			{
-				if (this_token.var->Type() == VAR_VIRTUAL && VARREF_IS_READ(this_token.var_usage))
+				if (this_token.var->IsVirtual() && VARREF_IS_READ(this_token.var_usage))
 				{
 					// FUTURE: This should be merged with the SYM_FUNC handling at some point to improve
 					// maintainability, reduce code size, and take advantage of SYM_FUNC's optimizations.
 					ResultToken result_token;
 					result_token.InitResult(left_buf);
-					result_token.symbol = SYM_INTEGER; // For _f_return_i() and consistency with BIFs.
 
 					// Call this virtual variable's getter.
 					this_token.var->Get(result_token);
@@ -215,6 +210,11 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 
 					if (result_token.symbol != SYM_STRING || result_token.marker_length == 0)
 					{
+						if (result_token.symbol == SYM_MISSING && this_token.var_usage != VARREF_READ_MAYBE)
+						{
+							error_value = &this_token;
+							goto unset_var;
+						}
 						// Currently SYM_OBJECT is not added to to_free[] as there aren't any built-in
 						// vars that create an object or call AddRef().  If that's changed, must update
 						// BIV_TrayMenu and Debugger::GetPropertyValue.
@@ -820,7 +820,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			{
 				if (this_token.var_usage != VARREF_REF)
 				{
-					// VARREF_ISSET or VARREF_OUTPUT_VAR -> SYM_VAR.
+					// VARREF_OUTPUT_VAR -> SYM_VAR
 					this_token.SetVarRef(right.var);
 					goto push_this_token;
 				}
@@ -837,7 +837,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 					goto push_this_token;
 				}
 			}
-			ASSERT(right.var->Type() == VAR_NORMAL);
+			ASSERT(right.var->Type() == VAR_NORMAL || right.var->IsVirtual());
 			this_token.SetValue(right.var->GetRef());
 			if (!this_token.object)
 				goto outofmem;
@@ -969,7 +969,9 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 				case SYM_ASSIGN: // Listed first for performance (it's probably the most common because things like ++ and += aren't expressions when they're by themselves on a line).
 					if (!left.var->Assign(right)) // left.var can be VAR_VIRTUAL in this case.
 						goto abort;
-					if (left.var->Type() != VAR_NORMAL // VAR_VIRTUAL should not yield SYM_VAR (as some sections of the code wouldn't handle it correctly).
+					if (left.var_usage == VARREF_LVALUE_ISSET) // this_token is to be passed to IsSet().
+						this_token.SetVar(left.var, VARREF_ISSET);
+					else if (left.var->Type() != VAR_NORMAL // VAR_VIRTUAL should not yield SYM_VAR (as some sections of the code wouldn't handle it correctly).
 						|| right.symbol == SYM_MISSING // Subsequent operators/calls (confirmed at load-time as being able to handle `unset`) need SYM_MISSING,
 							&& this_postfix[1].symbol != SYM_REF) // except the reference operator, as in &x:=unset.
 						this_token.CopyValueFrom(right); // Doing it this way is more maintainable than other methods, and is unlikely to perform much worse.
@@ -1162,7 +1164,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 							// step of putting into temporary memory.
 							if (!temp_var->AssignString(NULL, (VarSizeType)result_size - 1)) // Resize the destination, if necessary.
 								goto abort; // Above should have already reported the error.
-							result = temp_var->Contents(); // Call Contents() AGAIN because Assign() may have changed it.  No need to pass FALSE because the call to Assign() above already reset the contents.
+							result = temp_var->Contents(FALSE); // Call Contents() AGAIN because Assign() may have changed it.  Update is never needed because above reset the contents.  Passing FALSE reduces code size when inlined.
 							if (left_length)
 								tmemcpy(result, left_string, left_length);  // Not +1 because don't need the zero terminator.
 							tmemcpy(result + left_length, right_string, right_length + 1); // +1 to include its zero terminator.
@@ -1854,21 +1856,6 @@ bool NativeFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aP
 			}
 		}
 
-		if (mOutputVars)
-		{
-			// Verify that each output parameter is either a valid var or completely omitted.
-			for (int i = 0; i < MAX_FUNC_OUTPUT_VAR && mOutputVars[i]; ++i)
-			{
-				if (mOutputVars[i] <= aParamCount
-					&& aParam[mOutputVars[i]-1]->symbol != SYM_MISSING
-					&& !TokenToOutputVar(*aParam[mOutputVars[i]-1]))
-				{
-					aResultToken.ParamError(mOutputVars[i]-1, aParam[mOutputVars[i]-1], _T("variable reference"), mName);
-					return false; // Abort expression.
-				}
-			}
-		}
-
 	return true;
 }
 
@@ -1911,11 +1898,8 @@ bool BuiltInMethod::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int
 	// prototype objects, which are always really just Object.
 	if (!obj || !obj->IsOfType(mClass))
 	{
-		LPCTSTR expected_type;
-		ExprTokenType value;
-		if (mClass->GetOwnProp(value, _T("__Class")) && value.symbol == SYM_STRING)
-			expected_type = value.marker;
-		else
+		LPCTSTR expected_type = mClass->GetOwnPropString(_T("__Class"));
+		if (!expected_type)
 			expected_type = _T("?"); // Script may have tampered with the prototype.
 		aResultToken.TypeError(expected_type, *aParam[0]);
 	}
@@ -2126,25 +2110,30 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 						if (!ref)
 							goto free_and_return;
 						ref->Release(); // token.var retains a reference; release ours.
-						ASSERT(this_formal_param.var->IsAlias());
 						// Point our freevar to the caller's freevar, for use by our closures.
 						this_formal_param.var->GetAliasFor()->UpdateAlias(token.var);
 						// Also update our local alias below.
 					}
-					this_formal_param.var->UpdateAlias(token.var); // Set mAliasFor.
+					this_formal_param.var->UpdateAlias(token.var); // Set mAliasFor (and mObject only if var->GetRef() has been called).
 					continue;
 				}
-				else if (auto ref = dynamic_cast<VarRef *>(TokenToObject(token)))
+				else if (IObject *refobj = TokenToObject(token))
 				{
-					if (this_formal_param.var->Scope() & VAR_DOWNVAR) // This parameter's var is referenced by one or more closures.
+					if (refobj->Base() == Object::sVarRefPrototype) // Use the more efficient VAR_ALIAS for VarRef.
 					{
-						ASSERT(this_formal_param.var->IsAlias());
-						// Point our freevar to the caller's freevar, for use by our closures.
-						this_formal_param.var->GetAliasFor()->UpdateAlias(ref);
-						// Also update our local alias below.
+						auto ref = static_cast<VarRef*>(refobj);
+						if (this_formal_param.var->Scope() & VAR_DOWNVAR) // This parameter's var is referenced by one or more closures.
+							this_formal_param.var->GetAliasFor()->UpdateAlias(ref);
+						this_formal_param.var->UpdateAlias(ref); // Set mAliasFor and mObject.
+						continue;
 					}
-					this_formal_param.var->UpdateAlias(ref); // Set mAliasFor and mObject.
-					continue;
+					else if (ObjectCanBeOutputVar(refobj)) // use VAR_VIRTUAL_OBJ for any object except those known to lack __value.
+					{
+						if (this_formal_param.var->Scope() & VAR_DOWNVAR)
+							this_formal_param.var->GetAliasFor()->UpdateVirtualObj(refobj);
+						this_formal_param.var->UpdateVirtualObj(refobj);
+						continue;
+					}
 				}
 				aResultToken.ParamError(j - (mClass ? 1 : 0), &token, _T("variable reference"), mName);
 				goto free_and_return;

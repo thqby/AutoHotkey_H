@@ -319,7 +319,7 @@ public:
 
 	STDMETHODIMP_(BSTR) get_Name() { return SysAllocString(mVar->mName); }
 	STDMETHODIMP_(BOOL) get_IsReadOnly() { return VAR_IS_READONLY(*mVar); }
-	STDMETHODIMP_(BOOL) get_IsVirtual() { return mVar->Type() == VAR_VIRTUAL; }
+	STDMETHODIMP_(BOOL) get_IsVirtual() { return mVar->IsVirtual(); }
 	STDMETHODIMP_(BOOL) get_IsDeclared() { return mVar->IsDeclared(); }
 	STDMETHODIMP_(BOOL) get_IsSuperGlobal() { return FALSE; }
 };
@@ -557,13 +557,12 @@ public:
 		if (IS_INVOKE_SET) // Script.Var := Value
 			return var->Assign(*aParam[0]);
 		// Script.Var
-		if (var->Type() != VAR_VIRTUAL)
+		if (!var->IsVirtual())
 		{
 			var->ToToken(aResultToken);
 			return OK;
 		}
 		// Built-in/virtual variable
-		aResultToken.symbol = SYM_INTEGER; // For _f_return_i() and consistency with BIFs.
 		var->Get(aResultToken);
 		if (aResultToken.symbol == SYM_OBJECT)
 			aResultToken.object->AddRef();

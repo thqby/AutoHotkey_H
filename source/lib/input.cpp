@@ -255,6 +255,9 @@ ResultType input_type::SetKeyFlags(LPCTSTR aKeys, bool aEndKeyMode, UCHAR aFlags
 		if (sc || sc_by_number) // Fixed for v1.1.33.02: Allow sc000 for setting/unsetting flags for any events that lack a scan code.
 		{
 			end_sc[sc] = (end_sc[sc] & ~aFlagsRemove) | aFlagsAdd;
+			// If specified by name, apply flag removal to this key's VK as well.
+			if (aFlagsRemove && !sc_by_number && (vk = sc_to_vk(sc)))
+				end_vk[vk] &= ~aFlagsRemove;
 		}
 	} // for()
 

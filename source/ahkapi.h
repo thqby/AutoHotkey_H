@@ -21,7 +21,6 @@
 #define IS_INVOKE_SET		(aFlags & IT_SET)
 #define IS_INVOKE_GET		(INVOKE_TYPE == IT_GET)
 #define IS_INVOKE_CALL		(aFlags & IT_CALL)
-#define IS_INVOKE_META		(aFlags & IF_BYPASS_METAFUNC)
 
 #define INVOKE_NOT_HANDLED	CONDITION_FALSE
 
@@ -61,22 +60,6 @@ struct ExprTokenType;
 struct ResultToken;
 class Object;
 
-#ifdef CONFIG_DEBUGGER
-struct IObject;
-typedef void* DebugCookie;
-struct DECLSPEC_NOVTABLE IDebugProperties
-{
-	virtual void WriteProperty(LPCSTR aName, ExprTokenType& aValue) = 0;
-	virtual void WriteProperty(LPCWSTR aName, ExprTokenType& aValue) = 0;
-	virtual void WriteProperty(ExprTokenType& aKey, ExprTokenType& aValue) = 0;
-	virtual void WriteBaseProperty(IObject* aBase) = 0;
-	virtual void WriteDynamicProperty(LPTSTR aName) = 0;
-	virtual void WriteEnumItems(IObject* aEnumerable, int aStart, int aEnd) = 0;
-	virtual void BeginProperty(LPCSTR aName, LPCSTR aType, int aNumChildren, DebugCookie& aCookie) = 0;
-	virtual void EndProperty(DebugCookie aCookie) = 0;
-};
-#endif
-
 struct DECLSPEC_NOVTABLE IObject : public IDispatch
 {
 #define IObject_Invoke_PARAMS_DECL ResultToken &aResultToken, int aFlags, LPTSTR aName, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount
@@ -88,8 +71,8 @@ struct DECLSPEC_NOVTABLE IObject : public IDispatch
 	virtual bool IsOfType(Object* aPrototype) = 0;
 
 #ifdef CONFIG_DEBUGGER
-#define IObject_DebugWriteProperty_Def void DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPageSize, int aMaxDepth)
-	virtual void DebugWriteProperty(IDebugProperties* aDebugger, int aPage, int aPageSize, int aMaxDepth) = 0;
+#define IObject_DebugWriteProperty_Def void DebugWriteProperty(void *aDebugger, int aPage, int aPageSize, int aMaxDepth)
+	virtual void DebugWriteProperty(void* aDebugger, int aPage, int aPageSize, int aMaxDepth) = 0;
 #else
 #define IObject_DebugWriteProperty_Def
 #endif
@@ -387,18 +370,13 @@ public:
 
 	virtual bool IsBuiltIn() = 0;
 	virtual bool ArgIsOutputVar(int aArg) = 0;
-
+	virtual bool ArgIsOptional(int aArg) = 0;
 	virtual bool Call(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamCount) = 0;
-
-	virtual IObject* CloseIfNeeded() = 0;
 };
 
 class DECLSPEC_NOVTABLE EnumBase : public Func
 {
 public:
-	bool IsBuiltIn() override { return true; };
-	bool ArgIsOutputVar(int aArg) override { return true; }
-	bool Call(ResultToken& aResultToken, ExprTokenType* aParam[], int aParamCount) override;
 	virtual ResultType Next(Var*, Var*) = 0;
 };
 
@@ -415,8 +393,6 @@ class ComArrayEnum : public EnumBase
 
 class DECLSPEC_NOVTABLE NativeFunc : public Func
 {
-public:
-	UCHAR* mOutputVars = nullptr;
 };
 
 #define BIF_DECL_PARAMS ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount
@@ -431,6 +407,7 @@ public:
 		int mFID;
 		void* mData;
 	};
+	UCHAR *mOutputVars;
 };
 
 #define MAX_FUNC_OUTPUT_VAR 7

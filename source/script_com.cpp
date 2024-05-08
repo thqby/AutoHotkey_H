@@ -1331,6 +1331,7 @@ ObjectMemberMd ComObject::sArrayMembers[]
 ObjectMember ComObject::sRefMembers[]
 {
 	Object_Property_get_set(__Item),
+	Object_Property_get_set(__Value),
 };
 
 ObjectMember ComObject::sValueMembers[]
@@ -1506,9 +1507,8 @@ LPTSTR ComObject::Type()
 			return sBuf;
 		}
 	}
-	ExprTokenType value;
-	if (Base()->GetOwnProp(value, _T("__Class")))
-		return TokenToString(value);
+	if (auto classname = Base()->GetOwnPropString(_T("__Class")))
+		return classname;
 	return _T("ComValue"); // Provide a safe default in case __Class was removed.
 }
 
@@ -1961,8 +1961,7 @@ STDMETHODIMP IObjectComCompatible::Invoke(DISPID dispIdMember, REFIID riid, LCID
 						pExcepInfo->bstrSource = SysStringFromToken(token, result_token.buf);
 					if (obj->GetOwnProp(token, _T("File")))
 						pExcepInfo->bstrHelpFile = SysStringFromToken(token, result_token.buf);
-					if (obj->GetOwnProp(token, _T("Line")))
-						pExcepInfo->dwHelpContext = (DWORD)TokenToInt64(token);
+					pExcepInfo->dwHelpContext = (DWORD)obj->GetOwnPropInt64(_T("Line"));
 				}
 				else
 				{
@@ -2046,7 +2045,7 @@ void WriteComObjType(IDebugProperties *aDebugger, ComObject *aObject, LPCSTR aNa
 void ComObject::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPageSize, int aDepth)
 {
 	DebugCookie rootCookie;
-	aDebugger->BeginProperty(NULL, "object", 2 + (mVarType == VT_DISPATCH)*2 + (mEventSink != NULL), rootCookie);
+	aDebugger->BeginProperty(NULL, "object", 2, rootCookie);
 	if (aPage == 0 && aDepth > 0)
 	{
 		// For simplicity, assume aPageSize >= 2.

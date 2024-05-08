@@ -775,7 +775,8 @@ has_valid_return_type:
 						continue;
 					}
 				}
-				else if (tp == SYM_STRING && this_dyna_param.is_ptr && this_dyna_param.type != DLL_ARG_xSTR)
+				else if (tp == SYM_STRING && this_dyna_param.is_ptr &&
+					this_dyna_param.type != DLL_ARG_xSTR && this_dyna_param.type != DLL_ARG_U8STR)
 				{
 					this_dyna_param.ptr = ParamIndexToString(i);
 					continue;
@@ -809,7 +810,7 @@ has_valid_return_type:
 		if (this_param_obj && this_dyna_param.type != DLL_ARG_STRUCT)
 		{
 			if ((this_dyna_param.passed_by_address || this_dyna_param.type == DLL_ARG_STR)
-				&& dynamic_cast<VarRef*>(this_param_obj))
+				&& this_param_obj->Base() == Object::sVarRefPrototype)
 			{
 				aParam[i] = (ExprTokenType *)_alloca(sizeof(ExprTokenType));
 				aParam[i]->SetVarRef(static_cast<VarRef*>(this_param_obj));
@@ -878,15 +879,14 @@ has_valid_return_type:
 				_f_throw_type(_T("String"), this_param);
 			// String needing translation: ASTR on Unicode build, WSTR on ANSI build.
 			pStr[nStr++] = new UorA(CStringCharFromWChar,CStringWCharFromChar)(TokenToString(this_param));
-			this_dyna_param.ptr = pStr[nStr-1]->GetBuffer();
+			this_dyna_param.ptr = (void*)pStr[nStr-1]->GetString();
 			break;
 		case DLL_ARG_U8STR:
 			// See the section above for comments.
 			if (IS_NUMERIC(this_param.symbol) || this_param_obj)
 				_f_throw_type(_T("String"), this_param);
-			// String needing translation: ASTR on Unicode build, WSTR on ANSI build.
-			pStr[nStr++] = new UorA(CStringUTF8FromWChar, CStringUTF8FromChar)(TokenToString(this_param));
-			this_dyna_param.ptr = pStr[nStr - 1]->GetBuffer();
+			pStr[nStr++] = new UorA(CStringUTF8FromWChar,CStringUTF8FromChar)(TokenToString(this_param));
+			this_dyna_param.ptr = (void*)pStr[nStr-1]->GetString();
 			break;
 
 		case DLL_ARG_DOUBLE:
@@ -912,14 +912,13 @@ has_valid_return_type:
 				aResultToken.symbol = SYM_STRING; // Set default for Invoke (New set aResultToken to obj without calling AddRef).
 				aResultToken.marker = _T("");
 				auto result = obj->Invoke(aResultToken, IT_SET | IF_BYPASS_METAFUNC | IF_NO_NEW_PROPS
-					, _T("__value"), ExprTokenType(obj), aParam + i, 1);
+					, _T("__Value"), ExprTokenType(obj), aParam + i, 1);
 				if (result == INVOKE_NOT_HANDLED)
 				{
 					if (this_param.symbol == SYM_MISSING)
 						_f_throw(ERR_PARAM_REQUIRED);
-					ExprTokenType tn;
-					_f_throw_type(param_proto->GetOwnProp(tn, _T("__Class")) && tn.symbol == SYM_STRING
-						? tn.marker : _T("Object"), *aParam[i]);
+					auto classname = param_proto->GetOwnPropString(_T("__Class"));
+					_f_throw_type(classname ? classname : _T("Object"), *aParam[i]);
 				}
 				if (aResultToken.Exited())
 					return;
@@ -1106,13 +1105,17 @@ has_valid_return_type:
 				LPCSTR result = (LPCSTR)return_value.Pointer;
 #else
 				LPCWSTR result = (LPCWSTR)return_value.Pointer;
+				if (result && return_attrib.type == DLL_ARG_U8STR)
+					result = CStringWCharFromChar((LPCSTR)return_value.Pointer, -1, CP_UTF8).DetachBuffer();
 #endif
 				if (result && *result)
 				{
 #ifdef UNICODE		// Perform the translation:
 					CStringWCharFromChar result_buf(result, -1, return_attrib.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
 #else
-					CStringCharFromWChar result_buf(result, -1, return_attrib.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
+					CStringCharFromWChar result_buf(result);
+					if (return_attrib.type == DLL_ARG_U8STR)
+						free(result);
 #endif
 					// Store the length of the translated string first since DetachBuffer() clears it.
 					aResultToken.marker_length = result_buf.GetLength();
@@ -1167,6 +1170,7 @@ has_valid_return_type:
 
 	// Store any output parameters back into the input variables.  This allows a function to change the
 	// contents of a variable for the following arg types: String and Pointer to <various number types>.
+	int nxStr = -1;
 	for (arg_count = 0, i = step - 1; i < aParamCount; ++arg_count, i += step) // Same loop as used above, so maintain them together.
 	{
 		ExprTokenType &this_param = *aParam[i];  // Resolved for performance and convenience.
@@ -1178,6 +1182,9 @@ has_valid_return_type:
 				SetObjectIntProperty(obj, _T("Ptr"), this_dyna_param.value_uintptr, aResultToken);
 			continue;
 		}
+
+		if (this_dyna_param.type == DLL_ARG_xSTR || this_dyna_param.type == DLL_ARG_U8STR)
+			++nxStr; // Must be done for all args of this type in case a later arg needs its index.
 
 		if (this_param.symbol != SYM_VAR)
 			continue;
@@ -1245,9 +1252,9 @@ has_valid_return_type:
 			break;
 		case DLL_ARG_xSTR: // AStr* on Unicode builds and WStr* on ANSI builds.
 		case DLL_ARG_U8STR:
-			if (this_dyna_param.ptr != output_var.Contents(FALSE)
-				&& !output_var.AssignStringFromCodePage(UorA(LPSTR, LPWSTR)this_dyna_param.ptr, -1, this_dyna_param.type == DLL_ARG_U8STR ? CP_UTF8 : 0))
-				aResultToken.SetExitResult(FAIL);
+			if (this_dyna_param.ptr != pStr[nxStr]->GetString())
+				if (!output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr, -1, this_dyna_param.type == DLL_ARG_U8STR ? CP_UTF8 : 0))
+					aResultToken.SetExitResult(FAIL);
 		}
 	}
 
@@ -1255,7 +1262,7 @@ has_valid_return_type:
 	{
 		aResultToken.symbol = SYM_STRING; // Set default for Invoke.
 		aResultToken.marker = _T("");
-		auto result = pObj[0]->Invoke(aResultToken, IT_GET | IF_BYPASS_METAFUNC, _T("__value"), ExprTokenType(pObj[0]), nullptr, 0);
+		auto result = pObj[0]->Invoke(aResultToken, IT_GET | IF_BYPASS_METAFUNC, _T("__Value"), ExprTokenType(pObj[0]), nullptr, 0);
 		if (result == INVOKE_NOT_HANDLED)
 		{
 			aResultToken.SetValue(pObj[0]);
@@ -1386,7 +1393,7 @@ BIF_DECL(BIF_DynaCall)
 			// Support Buffer.Ptr, but only for "Ptr" type.  All other types are reserved for possible
 			// future use, which might be general like obj.ToValue(), or might be specific to DllCall
 			// or the particular type of this arg (Int, Float, etc.).
-			if (this_dyna_param.is_ptr || this_dyna_param.type == DLL_ARG_STR || this_dyna_param.type == DLL_ARG_xSTR)
+			if (this_dyna_param.is_ptr)
 			{
 				GetDllArgObjectPtr(aResultToken, this_param_obj, this_dyna_param.value_uintptr);
 				if (aResultToken.Exited())
@@ -1439,7 +1446,7 @@ BIF_DECL(BIF_DynaCall)
 			//case DLL_ARG_SHORT:
 			//case DLL_ARG_CHAR:
 			//case DLL_ARG_INT64:
-			if (tp == SYM_STRING && this_dyna_param.is_ptr == 1) {
+			if (tp == SYM_STRING && this_dyna_param.is_ptr) {
 				this_dyna_param.ptr = TokenToString(this_param);
 				if (this_param.symbol == SYM_VAR)
 					this_dyna_param.ptr = _tcsdup((LPTSTR)this_dyna_param.ptr), param_free[i] = true;

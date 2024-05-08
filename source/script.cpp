@@ -45,7 +45,6 @@ FuncEntry g_BIF[] =
 	BIFn(ASin, 1, 1, BIF_ASinACos),
 	BIF1(ATan, 1, 1),
 	BIF1(ATan2, 2, 2),
-	BIF1(CaretGetPos, 0, 2, {1, 2}),
 	BIF1(Cast, 3, 3),
 	BIFn(Ceil, 1, 1, BIF_FloorCeil),
 	BIF1(Chr, 1, 1),
@@ -127,14 +126,11 @@ FuncEntry g_BIF[] =
 	BIFn(RegCreateKey, 0, 1, BIF_Reg),
 	BIFn(RegDelete, 0, 2, BIF_Reg),
 	BIFn(RegDeleteKey, 0, 1, BIF_Reg),
-	BIFn(RegExMatch, 2, 4, BIF_RegEx, {3}),
-	BIFn(RegExReplace, 2, 6, BIF_RegEx, {4}),
 	BIFn(RegRead, 0, 3, BIF_Reg),
 	BIFn(RegWrite, 0, 4, BIF_Reg),
 	BIF1(ResourceLoadLibrary, 1, 1),
 	BIF1(Round, 1, 2),
 	BIFn(RTrim, 1, 2, BIF_Trim),
-	BIF1(RunWait, 1, 4, {4}),
 	BIF1(Sin, 1, 1),
 	BIF1(Sort, 1, 3),
 	BIFn(SoundGetInterface, 1, 3, BIF_Sound),
@@ -143,7 +139,6 @@ FuncEntry g_BIF[] =
 	BIFn(SoundGetVolume, 0, 2, BIF_Sound),
 	BIFn(SoundSetMute, 1, 3, BIF_Sound),
 	BIFn(SoundSetVolume, 1, 3, BIF_Sound),
-	BIF1(SplitPath, 1, 6, {2, 3, 4, 5, 6}),
 	BIFn(Sqrt, 1, 1, BIF_SqrtLogLn),
 	BIF1(StrCompare, 2, 3),
 	BIFn(StrGet, 1, 3, BIF_StrGetPut),
@@ -151,7 +146,6 @@ FuncEntry g_BIF[] =
 	BIFn(StrLower, 1, 1, BIF_StrCase),
 	BIF1(StrPtr, 1, 1),
 	BIFn(StrPut, 1, 4, BIF_StrGetPut),
-	BIF1(StrReplace, 2, 6, {5}),
 	BIFn(StrTitle, 1, 1, BIF_StrCase),
 	BIF1(StructFromPtr, 2, 2),
 	BIFn(StrUpper, 1, 1, BIF_StrCase),
@@ -447,6 +441,11 @@ Script::~Script() // Destructor.
 	g_MsgMonitor->Dispose();
 	mOnExit.Dispose();
 	mOnClipboardChange.Dispose();
+
+	// The following fixes being unable to paste text copied from an error dialog after the
+	// program exits (if it wasn't already pasted at least once), and may similarly be of
+	// benefit to scripts which directly or indirectly use OLE for clipboard.
+	OleFlushClipboard();
 
 	// DestroyWindow() will cause MainWindowProc() to immediately receive and process the
 	// WM_DESTROY msg, which should in turn result in any child windows being destroyed
@@ -2526,8 +2525,14 @@ process_completed_line:
 						return FAIL;
 					if (IsFunctionDefinition(buf, next_buf)) // x::y(ThisHotkey){
 						goto process_completed_line;
+					auto open_block = mLineParent;
 					if (!ParseAndAddLineInBlock(buf)) // Function body - one line
 						return FAIL;
+					if (open_block != mLineParent) // key::try { or similar.
+					{
+						mCurrLine = nullptr;
+						return ScriptError(ERR_HOTKEY_MISSING_BRACE);
+					}
 				}
 			}
 			goto continue_main_loop; // In lieu of "continue", for performance.
@@ -3300,7 +3305,7 @@ bool Script::IsSOLContExpr(LineBuffer &next_buf)
 		//  MsgBox
 		//  +!'::'  ; 0
 		*hotkey_flag = '\0';
-		bool valid_hotkey = Hotkey::TextInterpret(next_buf, NULL, true);
+		bool valid_hotkey = Hotkey::TextInterpret(next_buf, NULL, true) == OK;
 		*hotkey_flag = *HOTKEY_FLAG;
 		if (!valid_hotkey)
 			return true; // It's not valid hotkey syntax, so treat it as continuation even if it's ultimately a syntax error.
@@ -5924,6 +5929,8 @@ ResultType Script::ParseOperands(LPTSTR aArgText, DerefList &aDeref, int *aPos, 
 							DerefType &d = *aDeref.Last();
 							if (d.type == DT_VAR && d.marker + d.length == op_begin)
 								op_begin = d.marker;
+							else if (op_begin > aArgText && IS_IDENTIFIER_CHAR(op_begin[-1])) // Something like x.y() => z.
+								return ScriptError(ERR_EXPR_SYNTAX, d.marker);
 						}
 						if (!ParseFatArrow(aArgText, aDeref, op_begin, close_paren, cp + 2, op_begin))
 							return FAIL;
@@ -6663,7 +6670,7 @@ ResultType Script::DefineClass(LPTSTR aBuf)
 	if (mClassObjectCount) // Nested class definition.
 	{
 		outer_class = mClassObject[mClassObjectCount - 1];
-		if (outer_class->GetOwnProp(token, class_name))
+		if (outer_class->HasOwnProp(class_name))
 		{
 			conflict_found = true;
 			// If "continuing" a predefined class was permitted, this is where we would
@@ -7168,13 +7175,12 @@ ResultType Script::ResolveClasses()
 	if (!base)
 		return OK;
 	// There is at least one unresolved class.
-	ExprTokenType token;
-	if (base->GetOwnProp(token, _T("Line")))
+	if (__int64 line = base->GetOwnPropInt64(_T("Line")))
 	{
 		// In this case (an object in the mUnresolvedClasses list), it is always an integer
 		// containing the file index and line number:
-		mCurrFileIndex = int(token.value_int64 >> 32);
-		mCombinedLineNumber = LineNumberType(token.value_int64);
+		mCurrFileIndex = int(line >> 32);
+		mCombinedLineNumber = LineNumberType(line);
 	}
 	base->Release();
 	mCurrLine = NULL;
@@ -7301,7 +7307,7 @@ void Script::IncludeLibrary(LPTSTR aFuncName, size_t aFuncNameLength, bool &aErr
 
 #endif
 
-Var* Script::LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength)
+Var* Script::LoadVarFromWinApi(LPTSTR aFuncName)
 {
 	if (!g_hWinAPI) {
 		EnterCriticalSection(&g_Critical);
@@ -7332,18 +7338,21 @@ Var* Script::LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength)
 		LeaveCriticalSection(&g_Critical);
 	}
 	// WinApi and #DllImport are always global functions
-	auto* aCurrent_func = g->CurrentFunc;
-	g->CurrentFunc = NULL;
+	auto aFuncNameLength = _tcslen(aFuncName);
 	TCHAR parameter[1024] = { 0 }; // Should be enough room for any dll function definition
 	memcpy(parameter, aFuncName, aFuncNameLength * sizeof(TCHAR));
-	parameter[aFuncNameLength] = L',';
+	parameter[aFuncNameLength] = ',';
 
 	// parameterlow is used to find the function definition
-	char parameterlowercase[MAX_PATH] = { '\\' };
+	char parameterlowercase[MAX_PATH] = { '\\',0 };
+#ifdef UNICODE
 	WideCharToMultiByte(CP_ACP, 0, aFuncName, (int)aFuncNameLength, &parameterlowercase[1], (int)aFuncNameLength + 1, 0, 0);
+#else
+	memcpy(&parameterlowercase[1], aFuncName, aFuncNameLength);
+#endif
 	CharLowerA(parameterlowercase);
-	parameterlowercase[aFuncNameLength + 1] = L',';
-	parameterlowercase[aFuncNameLength + 2] = L'\0';
+	parameterlowercase[aFuncNameLength + 1] = ',';
+	parameterlowercase[aFuncNameLength + 2] = '\0';
 	LPSTR found;
 	if (found = strstr(g_hWinAPIlowercase, parameterlowercase))
 	{
@@ -7358,15 +7367,15 @@ Var* Script::LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength)
 		}
 		MultiByteToWideChar(CP_UTF8, 0, found + 1, (int)aFuncNameLength + 1, aDest, (int)aFuncNameLength * sizeof(TCHAR) + sizeof(TCHAR));
 		// Override _ in the end of definition (ahk function like SendMessage, Sleep, Send, SendInput ...
-		if (*(aFuncName + aFuncNameLength - 1) == L'_')
+		if (*(aFuncName + aFuncNameLength - 1) == '_')
 		{
-			*(aDest + aFuncNameLength - 1) = L',';
-			*(aDest + aFuncNameLength) = L'\0';
+			*(aDest + aFuncNameLength - 1) = ',';
+			*(aDest + aFuncNameLength) = '\0';
 			aDest = aDest + aFuncNameLength;
 		}
 		else
 		{
-			*(aDest + aFuncNameLength) = L',';
+			*(aDest + aFuncNameLength) = ',';
 			aDest = aDest + aFuncNameLength + 1;
 		}
 		_tcscpy(aDest, _T("   ="));
@@ -7377,17 +7386,18 @@ Var* Script::LoadVarFromWinApi(LPTSTR aFuncName, size_t aFuncNameLength)
 			*aDest = (*found);
 			aDest++;
 		}
-		if (*(--aDest) == _T('*') || *aDest == _T('p') || *aDest == _T('P'))
+		if (*(--aDest) == '*' || *aDest == 'p' || *aDest == 'P')
 			*t = *aDest, t--, aDest--;
 		*t = *aDest, t--, aDest--;
-		if (*aDest == _T('u') || *aDest == _T('U'))
+		if (*aDest == 'u' || *aDest == 'U')
 			*t = *aDest, aDest--;
-		*(aDest + 1) = _T('\0');
+		*(aDest + 1) = '\0';
+		auto aCurrent_func = g->CurrentFunc;
+		g->CurrentFunc = nullptr;
 		Var* var = LoadDllFunction(parameter);
 		g->CurrentFunc = aCurrent_func;
 		return var;
 	}
-	g->CurrentFunc = aCurrent_func;
 	return NULL;
 }
 
@@ -9122,7 +9132,7 @@ ResultType Line::ExpressionToPostfix(ArgStruct &aArg, ExprTokenType *&aInfix)
 					{
 						++cp;
 						this_infix_item.callsite = new CallSite();
-						this_infix_item.callsite->func = ExprOp<BIF_RegEx, FID_RegExMatch>();
+						this_infix_item.callsite->func = ExprOp<Op_RegEx, 0>();
 						this_infix_item.callsite->param_count = 2;
 						this_infix_item.symbol = SYM_REGEXMATCH;
 					}
@@ -10124,11 +10134,22 @@ standard_pop_into_postfix: // Use of a goto slightly reduces code size.
 			{
 				if (this_postfix->callsite->param_count == 1 && this_postfix->callsite->func == &sIsSetFunc)
 				{
-					if (postfix[postfix_count - 1]->symbol != SYM_VAR && postfix[postfix_count - 1]->symbol != SYM_DYNAMIC)
+					auto &last_postfix = *postfix[postfix_count - 1];
+					if (last_postfix.symbol == SYM_VAR || last_postfix.symbol == SYM_DYNAMIC)
 					{
-						return LineError(_T("IsSet requires a variable."), FAIL, this_postfix->error_reporting_marker);
+						last_postfix.var_usage = VARREF_ISSET;
+						break;
 					}
-					postfix[postfix_count - 1]->var_usage = VARREF_ISSET;
+					if (last_postfix.symbol == SYM_ASSIGN)
+					{
+						auto &left_of_assign = (&last_postfix)[-1];
+						if ((left_of_assign.symbol == SYM_VAR || left_of_assign.symbol == SYM_DYNAMIC) && left_of_assign.var_usage == VARREF_LVALUE)
+						{
+							left_of_assign.var_usage = VARREF_LVALUE_ISSET;
+							break;
+						}
+					}
+					return LineError(_T("IsSet requires a variable."), FAIL, this_postfix->error_reporting_marker);
 				}
 			}
 			break;
@@ -10260,6 +10281,18 @@ standard_pop_into_postfix: // Use of a goto slightly reduces code size.
 			postfix_symbol = postfix[postfix_count - 1]->symbol;
 			if (postfix_symbol == SYM_VAR || postfix_symbol == SYM_DYNAMIC)
 				postfix[postfix_count - 1]->var_usage = VARREF_REF;
+			else if (postfix_symbol == SYM_FUNC
+				&& (postfix[postfix_count - 1]->callsite->flags & IT_BITMASK) == IT_GET
+				&&  postfix[postfix_count - 1]->callsite->param_count == 0) // &x.y
+			{
+				// Change { x, get y } to { x, 'y', call __Ref }
+				auto callsite = postfix[postfix_count - 1]->callsite;
+				this_postfix->SetValue(callsite->member ? callsite->member : _T("__Item"));
+				callsite->flags = IT_CALL | IF_BYPASS_METAFUNC;
+				callsite->member = _T("__Ref");
+				callsite->param_count = 1;
+				swap(this_postfix, postfix[postfix_count - 1]);
+			}
 			else if (!IS_OPERATOR_VALID_LVALUE(postfix_symbol))
 				return LineError(_T("\"&\" requires a variable."));
 			break;
@@ -10586,46 +10619,44 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 					this_postfix->var_usage = VARREF_REF;
 					continue;
 				}
+				Var *var = nullptr;
+				auto name = this_postfix->var->mName;
 				bool error_was_shown;
 				g_script->mCurrLine = this;
 				if (this_postfix->var->mScope == VAR_GLOBAL)
 				{
-					if (g_script->LoadVarFromLib(this_postfix->var->mName, error_was_shown))
-						continue;
+					var = g_script->LoadVarFromLib(name, error_was_shown);
 					if (error_was_shown)
 						return FAIL;
-					if (g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))
-						continue;
+					if (!var)
+						var = g_script->LoadVarFromWinApi(name);
 				}
 				else if (curfunc)
 				{
-					auto var = g_script->FindGlobalVar(this_postfix->var->mName);
+					var = g_script->FindGlobalVar(name);
 					if (var && var->mType == VAR_NORMAL && !var->IsAssignedSomewhere())
-						var = NULL;
+						var = nullptr;
 					if (!var)
 					{
-						var = g_script->LoadVarFromLib(this_postfix->var->mName, error_was_shown);
+						var = g_script->LoadVarFromLib(name, error_was_shown);
 						if (error_was_shown)
 							return FAIL;
 					}
-					if (var || (var = g_script->LoadVarFromWinApi(this_postfix->var->mName, _tcslen(this_postfix->var->mName)))) {
-						g->CurrentFunc->mVars.Remove(this_postfix->var->mName);
-						if (g->CurrentFunc->mVars.mCount == 0 && g->CurrentFunc->mVars.mItem)
-						{
-							free(g->CurrentFunc->mVars.mItem);
-							g->CurrentFunc->mVars.mItem = NULL;
-						}
+					if (var || (var = g_script->LoadVarFromWinApi(name)))
+					{
+						auto &vars = curfunc->mVars;
+						vars.Remove(name);
+						if (!vars.mCount)
+							free(vars.mItem), vars.mItem = nullptr;
 						delete this_postfix->var;
-						auto obj = var->ToObject();
-						if (!aArg.is_expression || !obj)
-							this_postfix->var = var;
-						else
-						{
-							this_postfix->SetValue(obj);
-							obj->AddRef();
-						}
-						continue;
+						this_postfix->var = var;
 					}
+				}
+				if (var)
+				{
+					if (var->IsDirectConstant() && !var->IsUninitialized())
+						var->ToToken(*this_postfix);
+					continue;
 				}
 			}
 			g_script->WarnUnassignedVar(this_postfix->var, this);
@@ -12824,7 +12855,7 @@ ResultType Script::DerefInclude(LPTSTR &aOutput, LPTSTR aBuf)
 						if (which_pass) // 2nd pass
 						{
 							size_t var_length = var->CharLength();
-							tmemcpy(dest, var->Contents(), var_length);
+							tmemcpy(dest, var->Contents(FALSE), var_length); // Pass FALSE since first iteration already populated Contents().
 							var->Free();
 							dest += var_length;
 						}
@@ -13331,8 +13362,12 @@ ResultType Script::PreparseVarRefs()
 LPTSTR ListVarsHelper(LPTSTR aBuf, int aBufSize, LPTSTR aBuf_orig, VarList &aVars)
 {
 	for (int i = 0; i < aVars.mCount; ++i)
-		if (aVars.mItem[i]->Type() == VAR_NORMAL) // Don't bother showing VAR_CONSTANT; ToText() doesn't support VAR_VIRTUAL.
+		switch (aVars.mItem[i]->Type()) // Don't bother showing VAR_CONSTANT or VAR_VIRTUAL.
+		{
+		case VAR_NORMAL:
+		case VAR_VIRTUAL_OBJ:
 			aBuf = aVars.mItem[i]->ToText(aBuf, BUF_SPACE_REMAINING, true);
+		}
 	return aBuf;
 }
 

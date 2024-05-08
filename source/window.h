@@ -228,7 +228,7 @@ struct point_and_hwnd_type
 HWND WinActivate(global_struct &aSettings, LPTSTR aTitle, LPTSTR aText, LPTSTR aExcludeTitle, LPTSTR aExcludeText
 	, bool aFindLastMatch = false
 	, HWND aAlreadyVisited[] = NULL, int aAlreadyVisitedCount = 0);
-HWND SetForegroundWindowEx(HWND aTargetWindow);
+HWND SetForegroundWindowEx(HWND aTargetWindow, bool aBackgroundActivation = false);
 
 // Defaulting to a non-zero wait-time solves a lot of script problems that would otherwise
 // require the user to specify the last param (or use WinWaitClose):

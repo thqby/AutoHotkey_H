@@ -85,7 +85,7 @@ HWND AttemptSetForeground(HWND aTargetWindow, HWND aForeWindow)
 
 
 
-HWND SetForegroundWindowEx(HWND aTargetWindow)
+HWND SetForegroundWindowEx(HWND aTargetWindow, bool aBackgroundActivation)
 // Caller must have ensured that aTargetWindow is a valid window or NULL, since we
 // don't call IsWindow() here.
 {
@@ -114,7 +114,7 @@ HWND SetForegroundWindowEx(HWND aTargetWindow)
 	// Fix for v1.1.28.02: Restore the window *before* checking if it is already active.
 	// This was supposed to be done in v1.1.20, but was only done for WinTitle = "A".
 	// See "IsIconic" in WinActivate() for comments.
-	if (IsIconic(aTargetWindow))
+	if (IsIconic(aTargetWindow) && !aBackgroundActivation)
 		// This might never return if aTargetWindow is a hung window.  But it seems better
 		// to do it this way than to use the PostMessage() method, which might not work
 		// reliably with apps that don't handle such messages in a standard way.
@@ -295,7 +295,7 @@ HWND SetForegroundWindowEx(HWND aTargetWindow)
 	// is a bit messed up, because when you dismiss the MessageBox, an unexpected
 	// window (probably the one two levels down) becomes active rather than the
 	// window that's only 1 level down in the z-order:
-	if (new_foreground_wnd) // success.
+	if (new_foreground_wnd && !aBackgroundActivation) // success.
 	{
 		// Even though this is already done for the IE 5.5 "hack" above, must at
 		// a minimum do it here: The above one may be optional, not sure (safest
@@ -308,10 +308,8 @@ HWND SetForegroundWindowEx(HWND aTargetWindow)
 		// possible other issues:
 		BringWindowToTop(aTargetWindow);
 		//SetWindowPos(aTargetWindow, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-		return new_foreground_wnd; // Return this rather than aTargetWindow because it's more appropriate.
 	}
-	else
-		return NULL;
+	return new_foreground_wnd; // Return this rather than aTargetWindow because it's more appropriate.
 }
 
 
@@ -1410,13 +1408,16 @@ ResultType WindowSearch::SetCriteria(ScriptThreadSettings &aSettings, LPCTSTR aT
 		switch (this_criterion)
 		{
 		case CRITERION_ID:
-			mCriterionHwnd = (HWND)ATOU64(start);
+			HWND hwnd;
+			hwnd = (HWND)ATOU64(start);
 			// Note that this can validly be the HWND of a child window; i.e. ahk_id %ChildWindowHwnd% is supported.
-			if (mCriterionHwnd != HWND_BROADCAST && !IsWindow(mCriterionHwnd)) // Checked here once rather than each call to IsMatch().
+			if (hwnd != HWND_BROADCAST && !IsWindow(hwnd) // Checked here once rather than each call to IsMatch().
+				|| (mCriteria & CRITERION_ID) && hwnd != mCriterionHwnd) // Two different IDs have been specified, so there can never be a match.
 			{
 				mCriterionHwnd = NULL;
 				return FAIL; // Inform caller of invalid criteria.  No need to do anything else further below.
 			}
+			mCriterionHwnd = hwnd;
 			break;
 		case CRITERION_PARENT:
 			mCriterionParentHwnd = (HWND)ATOU64(start);

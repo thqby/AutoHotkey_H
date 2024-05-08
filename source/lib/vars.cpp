@@ -991,35 +991,21 @@ BIV_DECL_R(BIV_MyDocuments) // Called by multiple callers.
 
 
 
-BIF_DECL(BIF_CaretGetPos)
+BOOL CaretGetPos(ResultToken *aX, ResultToken *aY)
 {
-	Var *varX = ParamIndexToOutputVar(0);
-	Var *varY = ParamIndexToOutputVar(1);
-	
 	// I believe only the foreground window can have a caret position due to relationship with focused control.
-	HWND target_window = GetForegroundWindow(); // Variable must be named target_window for ATTACH_THREAD_INPUT.
-	if (!target_window) // No window is in the foreground, report blank coordinate.
-	{
-		if (varX)
-			varX->Assign();
-		if (varY)
-			varY->Assign();
-		_f_return_i(FALSE);
-	}
-
-	DWORD now_tick = GetTickCount();
+	HWND target_window = GetForegroundWindow();
 
 	GUITHREADINFO info;
 	info.cbSize = sizeof(GUITHREADINFO);
-	BOOL result = GetGUIThreadInfo(GetWindowThreadProcessId(target_window, NULL), &info) // Got info okay...
+	BOOL result = target_window // A window is in the foreground (usually true).
+		&& GetGUIThreadInfo(GetWindowThreadProcessId(target_window, NULL), &info) // Got info okay...
 		&& info.hwndCaret; // ...and there is a caret.
 	if (!result)
 	{
-		if (varX)
-			varX->Assign();
-		if (varY)
-			varY->Assign();
-		_f_return_i(FALSE);
+		if (aX) aX->SetValue(_T(""), 0); // For backward-compatibility, these must be made "blank".
+		if (aY) aY->SetValue(_T(""), 0);
+		return FALSE;
 	}
 	POINT pt;
 	pt.x = info.rcCaret.left;
@@ -1032,11 +1018,9 @@ BIF_DECL(BIF_CaretGetPos)
 	pt.x -= origin.x;
 	pt.y -= origin.y;
 	
-	if (varX)
-		varX->Assign(pt.x);
-	if (varY)
-		varY->Assign(pt.y);
-	_f_return_i(TRUE);
+	if (aX) aX->SetValue(pt.x);
+	if (aY) aY->SetValue(pt.y);
+	return TRUE;
 }
 
 

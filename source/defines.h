@@ -242,7 +242,7 @@ enum SymbolType // For use with ExpandExpression() and IsNumeric().
 		|| sym == SYM_PRE_INCREMENT || sym == SYM_PRE_DECREMENT)
 
 enum VarRefUsageType { VARREF_READ = 0, VARREF_ISSET, VARREF_READ_MAYBE
-	, VARREF_REF, VARREF_LVALUE, VARREF_LVALUE_MAYBE, VARREF_OUTPUT_VAR };
+	, VARREF_REF, VARREF_LVALUE, VARREF_LVALUE_MAYBE, VARREF_LVALUE_ISSET, VARREF_OUTPUT_VAR };
 #define VARREF_IS_WRITE(var_usage) ((var_usage) >= VARREF_REF)
 #define VARREF_IS_READ(var_usage) ((var_usage) == VARREF_READ || (var_usage) == VARREF_READ_MAYBE) // But not VARREF_ISSET.
 
@@ -309,6 +309,7 @@ struct DECLSPEC_NOVTABLE IDebugProperties
 	virtual void WriteEnumItems(IObject *aEnumerable, int aStart, int aEnd) = 0;
 	virtual void BeginProperty(LPCSTR aName, LPCSTR aType, int aNumChildren, DebugCookie &aCookie) = 0;
 	virtual void EndProperty(DebugCookie aCookie) = 0;
+	virtual ExprTokenType &ThisToken() = 0;
 };
 
 #endif
@@ -322,12 +323,13 @@ struct DECLSPEC_NOVTABLE IDebugProperties
 
 #define BIMF_UNSET_ARG_1	8 // Flag used by BuiltInMethod.
 
-#define IF_IGNORE_DEFAULT   0x000008
+#define IF_IGNORE_DEFAULT   0x000004
 #define IF_BYPASS_METAFUNC	0x000010 // Skip invocation of meta-functions, such as when calling __Init or __Delete.
 #define IF_SUBSTITUTE_THIS	0x000020 // Target is a substitute object (i.e. ValueBase()), so refer to "aThisToken" instead of "this".
 #define IF_SUPER			0x000040 // super.something invocation.
 #define IF_NO_NEW_PROPS		0x000080 // Don't permit new properties.
 #define IF_NEWENUM			0x000200 // Workaround for COM objects which don't resolve "_NewEnum" to DISPID_NEWENUM.
+#define IF_BYPASS___VALUE	0x000400
 
 #define EIF_VARIADIC		0x010000
 #define EIF_STACK_MEMBER	0x020000
@@ -442,11 +444,16 @@ struct ExprTokenType  // Something in the compiler hates the name TokenType, so 
 	// overwritten by a subsequent concat/function call while still on the stack).
 	// Yielding SYM_VAR means subsequent assignments may affect it, but in a safer way
 	// that doesn't risk dangling pointers.
-	void SetVar(Var *aVar)
+	void SetVar(Var *aVar, VarRefUsageType aRefType = VARREF_READ)
 	{
 		symbol = SYM_VAR;
 		var = aVar;
-		var_usage = VARREF_READ;
+		var_usage = aRefType;
+	}
+
+	bool IsOptimizedOutputVar()
+	{
+		return symbol == SYM_VAR && !VARREF_IS_READ(var_usage); // VARREF_ISSET is tolerated for use by IsSet().
 	}
 
 private: // Force code to use one of the CopyFrom() methods, for clarity.

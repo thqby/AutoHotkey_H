@@ -317,18 +317,16 @@ void SendKeys(LPCTSTR aKeys, SendRawModes aSendRaw, SendModes aSendModeOrig, HWN
 	sModifiersLR_remapped &= mods_current;
 
 	// Make a best guess of what the physical state of the keys is prior to starting (there's no way
-	// to be certain without the keyboard hook). Note: We only want those physical
-	// keys that are also logically down (it's possible for a key to be down physically
-	// but not logically such as when R-control, for example, is a suffix hotkey and the
-	// user is physically holding it down):
-	modLR_type mods_down_physically_orig, mods_down_physically_and_logically
-		, mods_down_physically_but_not_logically_orig;
+	// to be certain without the keyboard hook). Note: It's possible for a key to be down physically
+	// but not logically such as when RControl, for example, is a suffix hotkey and the user is
+	// physically holding it down.
+	modLR_type mods_down_physically_orig, mods_down_physically_but_not_logically_orig;
 	if (g_KeybdHook)
 	{
 		// Since hook is installed, use its more reliable tracking to determine which
 		// modifiers are down.
 		mods_down_physically_orig = g_modifiersLR_physical;
-		mods_down_physically_and_logically = g_modifiersLR_physical & g_modifiersLR_logical; // intersect
+		//mods_down_physically_and_logically = g_modifiersLR_physical & g_modifiersLR_logical; // intersect
 		mods_down_physically_but_not_logically_orig = g_modifiersLR_physical & ~g_modifiersLR_logical;
 	}
 	else // Use best-guess instead.
@@ -343,27 +341,39 @@ void SendKeys(LPCTSTR aKeys, SendRawModes aSendRaw, SendModes aSendModeOrig, HWN
 			// based on the action that will occur below, to assume that no hotkey modifiers
 			// are physically down:
 			mods_down_physically_orig = 0;
-		mods_down_physically_and_logically = mods_down_physically_orig;
+		//mods_down_physically_and_logically = mods_down_physically_orig;
 		mods_down_physically_but_not_logically_orig = 0; // There's no way of knowing, so assume none.
 	}
 
 	// Any of the external modifiers that are down but NOT due to the hotkey are probably
 	// logically down rather than physically (perhaps from a prior command such as
-	// "Send, {CtrlDown}".  Since there's no way to be sure without the keyboard hook or some
-	// driver-level monitoring, it seems best to assume that
-	// they are logically vs. physically down.  This value contains the modifiers that
-	// we will not attempt to change (e.g. "Send, A" will not release the LWin
-	// before sending "A" if this value indicates that LWin is down).  The below sets
-	// the value to be all the down-keys in mods_current except any that are physically
-	// down due to the hotkey itself.  UPDATE: To improve the above, we now exclude from
+	// `Send "{CtrlDown}"`.  Since there's no way to be sure without the keyboard hook
+	// or some driver-level monitoring, it seems best to assume that they are logically
+	// vs. physically down.  
+	// persistent_modifiers_for_this_SendKeys contains the modifiers that we will not
+	// attempt to change (e.g. `Send "A"` will not release LWin before sending "A" if
+	// this value indicates that LWin is down).
+	// This used to be = modifiersLR_current & ~modifiersLR_down_physically_and_logically,
+	// but v1.0.13 added g_modifiersLR_persistent to limit it to only mods which the script
+	// put into effect.  Old comment explains: [[ To improve the above, we now exclude from
 	// the set of persistent modifiers any that weren't made persistent by this script.
 	// Such a policy seems likely to do more good than harm as there have been cases where
 	// a modifier was detected as persistent just because A_HotkeyModifierTimeout expired
 	// while the user was still holding down the key, but then when the user released it,
 	// this logic here would think it's still persistent and push it back down again
 	// to enforce it as "always-down" during the send operation.  Thus, the key would
-	// basically get stuck down even after the send was over:
-	sModifiersLR_persistent &= mods_current & ~mods_down_physically_and_logically;
+	// basically get stuck down even after the send was over. ]]
+	// v2.0.13: The original bitmask ~modifiersLR_down_physically_and_logically is removed.
+	// It was originally described as "all the down-keys in mods_current except any that are
+	// physically down due to the hotkey itself".  For example, ^a::Send,b requires the user
+	// to hold Ctrl to activate the hotkey, so he probably doesn't want to send ^b.
+	// However, sModifiersLR_persistent achieves the purpose of preventing Ctrl from being
+	// sent in such cases, while the original bitmask only serves to prevent {Ctrl Down} from
+	// being persistent if the user happens to physically hold Ctrl (for any purpose).
+	// For example, when Send "{Shift Down}" and *KEY::Send "a" are used in combination,
+	// the result should be "A" regardless of whether KEY = Shift.
+	//sModifiersLR_persistent &= mods_current & ~mods_down_physically_and_logically;
+	sModifiersLR_persistent &= mods_current;
 	modLR_type persistent_modifiers_for_this_SendKeys;
 	modLR_type mods_released_for_selective_blind = 0;
 	if (sInBlindMode)
@@ -1808,6 +1818,7 @@ BIF_DECL(BIF_Click)
 		sntprintfcat(args, _countof(args), _T("%s,"), arg);
 	}
 	PerformClick(args);
+	_f_return_empty;
 }
 
 

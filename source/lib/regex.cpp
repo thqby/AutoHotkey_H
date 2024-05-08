@@ -24,8 +24,40 @@ GNU General Public License for more details.
 #include "script_func_impl.h"
 
 
+struct RegExSearch
+{
+	pcret *re;
+	LPTSTR re_text;
+	pcret_extra *extra;
+	LPTSTR haystack;
+	LPTSTR mark;
+	int haystack_length;
+	int options_length;
+	int pattern_count;
+	int starting_offset;
+	int number_of_ints_in_offset;
+	FResult fresult; // Used by Prepare() and callouts.
+	TCHAR haystack_buf[MAX_NUMBER_SIZE];
+	pcret_extra extra_buf;
 
-ResultType RegExCreateMatchArray(LPCTSTR haystack, pcret *re, pcret_extra *extra, int *offset, int pattern_count, int captured_pattern_count, IObject *&match_object)
+	bool Prepare(ExprTokenType &aHaystack, StrArg aNeedle, optl<int> aStartingPos);
+	FResult Match(IObject** aMatchObj, int &aFoundPos) const;
+	FResult Replace(ExprTokenType *aReplacement, int *aOutCount, optl<int> aLimit, ResultToken &aRetVal) const;
+	FResult CreateMatchArray(int *offset, int captured_pattern_count, IObject *&match_object) const;
+};
+
+
+
+FResult PCREExecError(int n)
+{
+	TCHAR err_info[MAX_INTEGER_SIZE];
+	ITOA(n, err_info);
+	return FError(ERR_PCRE_EXEC, err_info);
+}
+
+
+
+FResult RegExSearch::CreateMatchArray(int *offset, int captured_pattern_count, IObject *&match_object) const
 {
 	// For lookup performance, create a table of subpattern names indexed by subpattern number.
 	LPCTSTR *subpat_name = NULL; // Set default as "no subpattern names present or available".
@@ -63,9 +95,9 @@ ResultType RegExCreateMatchArray(LPCTSTR haystack, pcret *re, pcret_extra *extra
 	//else one of the pcre_fullinfo() calls may have failed.  The PCRE docs indicate that this realistically never
 	// happens unless bad inputs were given.  So due to rarity, just leave subpat_name==NULL; i.e. "no named subpatterns".
 
-	LPTSTR mark = (extra->flags & PCRE_EXTRA_MARK) ? (LPTSTR)*extra->mark : NULL;
-	return RegExMatchObject::Create(haystack, offset, subpat_name, pattern_count, captured_pattern_count, mark, match_object);
+	return RegExMatchObject::Create(haystack, offset, subpat_name, pattern_count, captured_pattern_count, mark, match_object) ? OK : FR_E_OUTOFMEM;
 }
+
 
 
 ResultType RegExMatchObject::Create(LPCTSTR aHaystack, int *aOffset, LPCTSTR *aPatternName
@@ -177,6 +209,7 @@ ResultType RegExMatchObject::Create(LPCTSTR aHaystack, int *aOffset, LPCTSTR *aP
 }
 
 
+
 void RegExMatchObject::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
 	switch (aID)
@@ -232,15 +265,6 @@ void RegExMatchObject::Invoke(ResultToken &aResultToken, int aID, int aFlags, Ex
 }
 
 
-struct RegExCalloutData // L14: Used by BIF_RegEx to pass necessary info to RegExCallout.
-{
-	pcret *re;
-	LPTSTR re_text; // original NeedleRegEx
-	int options_length; // used to adjust cb->pattern_position
-	int pattern_count; // to save calling pcre_fullinfo unnecessarily for each callout
-	pcret_extra *extra;
-	ResultToken *result_token;
-};
 
 int RegExCallout(pcret_callout_block *cb)
 {
@@ -252,7 +276,7 @@ int RegExCallout(pcret_callout_block *cb)
 
 	if (!cb->callout_data) // Callout not coming from RegExMatch/RegExReplace.
 		return 0;
-	RegExCalloutData &cd = *(RegExCalloutData *)cb->callout_data;
+	RegExSearch &cd = *(RegExSearch *)cb->callout_data;
 
 	// Callout functions must be resolved each time, since patterns are cached, and the scope
 	// may be different each time the pattern is executed.  Aside from potentially having the
@@ -262,7 +286,7 @@ int RegExCallout(pcret_callout_block *cb)
 	auto callout_func = callout_var ? callout_var->ToObject() : nullptr;
 	if (!callout_func)
 	{
-		cd.result_token->ValueError(_T("Invalid callout"), callout_name);
+		cd.fresult = FValueError(_T("Invalid callout"), callout_name);
 		return PCRE_ERROR_CALLOUT;
 	}
 
@@ -287,7 +311,7 @@ int RegExCallout(pcret_callout_block *cb)
 
 	current_position:	can be derived from start_match and strlen(param1), or param1 itself if P option is used.
 	offset_vector:		not very useful as same information available in local variables in more convenient form.
-	callout_data:		not relevant, maybe use "user data" field of (RegExCalloutData*)callout_data if implemented.
+	callout_data:		not relevant, maybe use "user data" field of (RegExSearch*)callout_data if implemented.
 	subject_length:		not useful, use strlen(subject).
 	version:			not important.
 	*/
@@ -303,11 +327,9 @@ int RegExCallout(pcret_callout_block *cb)
 		*cd.extra->mark = UorA(wchar_t *, UCHAR *) cb->mark;
 	
 	IObject *match_object;
-	if (!RegExCreateMatchArray(cb->subject, cd.re, cd.extra, cb->offset_vector, cd.pattern_count, cb->capture_top, match_object))
-	{
-		cd.result_token->MemoryError();
+	cd.fresult = cd.CreateMatchArray(cb->offset_vector, cb->capture_top, match_object);
+	if (FAILED(cd.fresult))
 		return PCRE_ERROR_CALLOUT; // Abort.
-	}
 
 	// Restore to former offsets (probably -1):
 	cb->offset_vector[0] = offset[0];
@@ -331,15 +353,16 @@ int RegExCallout(pcret_callout_block *cb)
 	if (result == FAIL || result == EARLY_EXIT)
 	{
 		number_to_return = PCRE_ERROR_CALLOUT;
-		cd.result_token->SetExitResult(result);
+		cd.fresult = FR_FAIL;
 	}
-
+	
 	g->EventInfo = EventInfo_saved;
 	match_object->Release();
 
 	// Behaviour of return values is defined by PCRE.
 	return (int)number_to_return;
 }
+
 
 
 // SET UP THE CACHE.
@@ -386,7 +409,7 @@ void free_compiled_regex()
 	sLastFound = -1;
 }
 
-pcret *get_compiled_regex(LPCTSTR aRegEx, pcret_extra *&aExtra, int *aOptionsLength, ResultToken *aResultToken)
+pcret *get_compiled_regex(LPCTSTR aRegEx, pcret_extra *&aExtra, int *aOptionsLength, FResult *aFError = nullptr)
 // Returns the compiled RegEx, or NULL on failure.
 // This function is called by things other than built-in functions so it should be kept general-purpose.
 // Upon failure, if aResultToken!=NULL:
@@ -582,14 +605,14 @@ break_both:
 	// COMPILE THE REGEX.
 	if (   !(re_compiled = pcret_compile2(pat, pcre_options, &error_code, &error_msg, &error_offset, NULL))   )
 	{
-		if (aResultToken) // A non-NULL value indicates our caller is RegExMatch() or RegExReplace() in a script.
+		if (aFError) // A non-NULL value indicates our caller is RegExMatch() or RegExReplace() in a script.
 		{
 			sntprintf(error_buf, _countof(error_buf), _T("Compile error %d at offset %d: %hs"), error_code
 				, error_offset, error_msg);
 			// Seems best to bring the error to the user's attention rather than letting it potentially
 			// escape their notice.  This sort of error should be corrected immediately, not handled
 			// within the script (such as by try-catch).
-			aResultToken->Error(error_buf);
+			*aFError = FError(error_buf, pat);
 		}
 		goto error;
 	}
@@ -693,52 +716,61 @@ LPCTSTR RegExMatch(LPCTSTR aHaystack, LPCTSTR aNeedleRegEx)
 
 
 
-void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount
-	, pcret *aRE, pcret_extra *aExtra, LPTSTR aHaystack, int aHaystackLength
-	, int aStartingOffset, int aOffset[], int aNumberOfIntsInOffset)
+FResult RegExReplace(ExprTokenType &aHaystack, StrArg aNeedle, ExprTokenType *aReplacement, int *aOutCount, optl<int> aLimit, optl<int> aStartingPos, ResultToken &aRetVal)
 {
-	// If an output variable was provided for the count, resolve it early in case of early goto.
-	// Fix for v1.0.47.05: In the unlikely event that output_var_count is the same script-variable as
-	// as the haystack, needle, or replacement (i.e. the same memory), don't set output_var_count until
-	// immediately prior to returning.  Otherwise, haystack, needle, or replacement would corrupted while
-	// it's still being used here.
-	Var *output_var_count = ParamIndexToOutputVar(3);
-	int replacement_count = 0; // This value will be stored in output_var_count, but only at the very end due to the reason above.
+	RegExSearch ss;
+	if (!ss.Prepare(aHaystack, aNeedle, aStartingPos))
+		return ss.fresult;
+	return ss.Replace(aReplacement, aOutCount, aLimit, aRetVal);
+}
+
+
+
+FResult RegExSearch::Replace(ExprTokenType *aReplacement, int *aOutCount, optl<int> aLimit, ResultToken &aRetVal) const
+{
+	int starting_offset = this->starting_offset; // Reduces code size and allows this function to be const.
+	FResult fresult = OK;
+
+	auto offset = (int *)_alloca(number_of_ints_in_offset * sizeof(int)); // _alloca() boosts performance and seems safe because subpattern_count would usually have to be ridiculously high to cause a stack overflow.
+
+	int replacement_count = 0;
 
 	// Get the replacement text (if any) from the incoming parameters.  If it was omitted, treat it as "".
 	TCHAR repl_buf[MAX_NUMBER_SIZE];
 	LPTSTR replacement = _T("");
+	size_t replacement_length = 0;
 	ResultToken result_token;
 	ExprTokenType matchobj_token, *params;
 	IObject *callback_obj = nullptr;
 	result_token.mem_to_free = nullptr;
-	if (!ParamIndexIsOmitted(2))
+	if (aReplacement)
 	{
-		if (callback_obj = ParamIndexToObject(2))
+		if (callback_obj = TokenToObject(*aReplacement))
 		{
-			if (!ValidateFunctor(callback_obj, 1, aResultToken))
-				return;
+			fresult = ValidateFunctor(callback_obj, 1);
+			if (FAILED(fresult))
+				return fresult;
 			params = &matchobj_token;
 			matchobj_token.symbol = SYM_OBJECT;
 			result_token.InitResult(repl_buf);
 		}
 		else
-			replacement = ParamIndexToOptionalString(2, repl_buf);
+			replacement = TokenToString(*aReplacement, repl_buf, &replacement_length);
 	}
 
 	// In PCRE, lengths and such are confined to ints, so there's little reason for using unsigned for anything.
 	int captured_pattern_count, empty_string_is_not_a_match, match_length, ref_num
 		, result_size, new_result_length, haystack_portion_length, second_iteration, substring_name_length
 		, extra_offset, pcre_options;
-	TCHAR *haystack_pos, *match_pos, *src, *src_orig, *closing_brace, *substring_name_pos;
+	TCHAR *haystack_pos, *match_pos, *src, *src_end, *src_orig, *closing_brace, *substring_name_pos;
 	TCHAR *dest, char_after_dollar
 		, substring_name[33] // In PCRE, "Names consist of up to 32 alphanumeric characters and underscores."
 		, transform;
 
 	// Caller has provided mem_to_free (initially NULL) as a means of passing back memory we allocate here.
 	// So if we change "result" to be non-NULL, the caller will take over responsibility for freeing that memory.
-	LPTSTR &result = aResultToken.mem_to_free; // Make an alias for convenience.
-	size_t &result_length = aResultToken.marker_length; // MANDATORY FOR USERS OF MEM_TO_FREE: set marker_length to the length of the string.
+	LPTSTR &result = aRetVal.mem_to_free; // Make an alias for convenience.
+	size_t &result_length = aRetVal.marker_length; // MANDATORY FOR USERS OF MEM_TO_FREE: set marker_length to the length of the string.
 	result_size = 0;   // And caller has already set "result" to be NULL.  The buffer is allocated only upon
 	result_length = 0; // first use to avoid a potentially massive allocation that might be wasted and cause swapping (not to mention that we'll have better ability to estimate the correct total size after the first replacement is discovered).
 
@@ -754,28 +786,23 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 	}
 
 	// See if a replacement limit was specified.  If not, use the default (-1 means "replace all").
-	int limit = -1;
-	if (!ParamIndexIsOmitted(4))
-	{
-		Throw_if_Param_NaN(4);
-		limit = ParamIndexToInt(4);
-	}
+	int limit = aLimit.value_or(-1);
 
 	// aStartingOffset is altered further on in the loop; but for its initial value, the caller has ensured
 	// that it lies within aHaystackLength.  Also, if there are no replacements yet, haystack_pos ignores
 	// aStartingOffset because otherwise, when the first replacement occurs, any part of haystack that lies
 	// to the left of a caller-specified aStartingOffset wouldn't get copied into the result.
-	for (empty_string_is_not_a_match = 0, haystack_pos = aHaystack
-		;; haystack_pos = aHaystack + aStartingOffset) // See comment above.
+	for (empty_string_is_not_a_match = 0, haystack_pos = haystack
+		;; haystack_pos = haystack + starting_offset) // See comment above.
 	{
 		// Execute the expression to find the next match.
 		captured_pattern_count = (limit == 0) ? PCRE_ERROR_NOMATCH // Only when limit is exactly 0 are we done replacing.  All negative values are "replace all".
-			: pcret_exec(aRE, aExtra, aHaystack, aHaystackLength, aStartingOffset
-				, empty_string_is_not_a_match, aOffset, aNumberOfIntsInOffset);
+			: pcret_exec(re, extra, haystack, haystack_length, starting_offset
+				, empty_string_is_not_a_match, offset, number_of_ints_in_offset);
 
 		if (captured_pattern_count == PCRE_ERROR_NOMATCH)
 		{
-			if (empty_string_is_not_a_match && aStartingOffset < aHaystackLength && limit != 0) // replacement_count>0 whenever empty_string_is_not_a_match!=0.
+			if (empty_string_is_not_a_match && starting_offset < haystack_length && limit != 0) // replacement_count>0 whenever empty_string_is_not_a_match!=0.
 			{
 				// This situation happens when a previous iteration found a match but it was the empty string.
 				// That iteration told the pcre_exec that just occurred above to try to match something other than ""
@@ -789,12 +816,12 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 				{
 					result[result_length++] = c;
 					result[result_length++] = haystack_pos[1];
-					aStartingOffset += 2; // Supplementary characters are in the range U+010000 to U+10FFFF,
+					starting_offset += 2; // Supplementary characters are in the range U+010000 to U+10FFFF,
 					continue;
 				}
 #endif
 				result[result_length++] = *haystack_pos; // This can't overflow because the size calculations in a previous iteration reserved 3 bytes: 1 for this character, 1 for the possible LF that follows CR, and 1 for the terminator.
-				++aStartingOffset; // Advance to next candidate section of haystack.
+				++starting_offset; // Advance to next candidate section of haystack.
 				// v1.0.46.06: This following section was added to avoid finding a match between a CR and LF
 				// when PCRE_NEWLINE_ANY mode is in effect.  The fact that this is the only change for
 				// PCRE_NEWLINE_ANY relies on the belief that any pattern that matches the empty string in between
@@ -816,11 +843,11 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					// pcre_fullinfo() is a fast call, so it's called every time to simplify the code (I don't think
 					// this whole "empty_string_is_not_a_match" section of code executes for most patterns anyway,
 					// so performance seems less of a concern).
-					if (!pcret_fullinfo(aRE, aExtra, PCRE_INFO_OPTIONS, &pcre_options) // Success.
+					if (!pcret_fullinfo(re, extra, PCRE_INFO_OPTIONS, &pcre_options) // Success.
 						&& (pcre_options & PCRE_NEWLINE_ANY))
 					{
 						result[result_length++] = '\n'; // This can't overflow because the size calculations in a previous iteration reserved 3 bytes: 1 for this character, 1 for the possible LF that follows CR, and 1 for the terminator.
-						++aStartingOffset; // Skip over this LF because it "belongs to" the CR that preceded it.
+						++starting_offset; // Skip over this LF because it "belongs to" the CR that preceded it.
 					}
 				}
 				continue; // i.e. we're not done yet because the "no match" above was a special one and there's still more haystack to check.
@@ -829,7 +856,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 			// haystack into the result (if applicable).
 			if (replacement_count) // And by definition, result!=NULL due in this case to prior iterations.
 			{
-				if (haystack_portion_length = aHaystackLength - aStartingOffset) // This is the remaining part of haystack that needs to be copied over as-is.
+				if (haystack_portion_length = haystack_length - starting_offset) // This is the remaining part of haystack that needs to be copied over as-is.
 				{
 					new_result_length = (int)result_length + haystack_portion_length;
 					if (new_result_length >= result_size)
@@ -839,31 +866,29 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 				}
 				result[result_length] = '\0'; // result!=NULL when replacement_count!=0.  Also, must terminate it unconditionally because other sections usually don't do it.
 				// Set RegExMatch()'s return value to be "result":
-				aResultToken.marker = result;  // Caller will take care of freeing result's memory.
+				aRetVal.marker = result;  // Caller will take care of freeing result's memory.
 			}
 			else // No replacements were actually done, so just return the original string to avoid malloc+memcpy
 				 // (in addition, returning the original might help the caller make other optimizations).
 			{
-				aResultToken.marker = aHaystack;
-				aResultToken.marker_length = aHaystackLength;
+				aRetVal.marker = haystack;
+				aRetVal.marker_length = haystack_length;
 				
 				// There's no need to do the following because it should already be that way when replacement_count==0.
 				//if (result)
 				//	free(result);
 				//result = NULL; // This tells the caller that we already freed it (i.e. from its POV, we never allocated anything).
 			}
-			aResultToken.symbol = SYM_STRING;
+			aRetVal.symbol = SYM_STRING;
 			goto set_count_and_return; // All done.
 		}
 
 		// Otherwise:
 		if (captured_pattern_count < 0) // An error other than "no match". These seem very rare, so it seems best to abort rather than yielding a partially-converted result.
 		{
-			if (!aResultToken.Exited()) // Checked in case a callout already exited/raised an error.
-			{
-				ITOA(captured_pattern_count, repl_buf);
-				aResultToken.Error(ERR_PCRE_EXEC, repl_buf);
-			}
+			fresult = this->fresult;
+			if (fresult == OK) // Checked in case a callout already exited/raised an error.
+				fresult = PCREExecError(captured_pattern_count);
 			goto abort; // Goto vs. break to leave replacement_count set to 0.
 		}
 
@@ -872,8 +897,8 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		// when offset[] is too small, which it isn't).
 		++replacement_count;
 		--limit; // It's okay if it goes below -1 because all negatives are treated as "replace all".
-		match_pos = aHaystack + aOffset[0]; // This is the location in aHaystack of the entire-pattern match.
-		int match_end_offset = aOffset[1];
+		match_pos = haystack + offset[0]; // This is the location in aHaystack of the entire-pattern match.
+		int match_end_offset = offset[1];
 		haystack_portion_length = (int)(match_pos - haystack_pos); // The length of the haystack section between the end of the previous match and the start of the current one.
 
 		// Handle this replacement by making two passes through the replacement-text: The first calculates the size
@@ -894,7 +919,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					// Above is the length difference between the current replacement text and what it's
 					// replacing (it's negative when replacement is smaller than what it replaces).
 					REGEX_REALLOC((int)PredictReplacementSize((new_result_length - match_end_offset) / replacement_count // See above.
-						, replacement_count, limit, aHaystackLength, new_result_length+2, match_end_offset)); // +2 in case of empty_string_is_not_a_match (which needs room for up to two extra characters).  The function will also do another +1 to convert length to size (for terminator).
+						, replacement_count, limit, haystack_length, new_result_length+2, match_end_offset)); // +2 in case of empty_string_is_not_a_match (which needs room for up to two extra characters).  The function will also do another +1 to convert length to size (for terminator).
 					// The above will return if an alloc error occurs.
 				}
 				//else result_size is not only large enough, but also non-zero.  Other sections rely on it always
@@ -924,8 +949,9 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 				}
 				else
 				{
-					if (!RegExCreateMatchArray(aHaystack, aRE, aExtra, aOffset, static_cast<RegExCalloutData *>(aExtra->callout_data)->pattern_count, captured_pattern_count, matchobj_token.object))
-						goto out_of_mem;
+					fresult = CreateMatchArray(offset, captured_pattern_count, matchobj_token.object);
+					if (FAILED(fresult))
+						goto abort;
 					result_token.SetValue(_T(""));
 					callback_obj->Invoke(result_token, IT_CALL, nullptr, ExprTokenType{ callback_obj }, &params, 1);
 					matchobj_token.object->Release();
@@ -938,33 +964,33 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					}
 					if (result_token.Exited())
 					{
-						aResultToken.SetExitResult(result_token.Result());
+						fresult = FR_FAIL;
 						goto abort;
 					}
-					replacement = TokenToString(result_token, repl_buf, &result_token.marker_length);
-					new_result_length += (int)result_token.marker_length;
+					replacement = TokenToString(result_token, repl_buf, &replacement_length);
+					new_result_length += (int)replacement_length;
 				}
 				continue;
 			}
 
 			// DOLLAR SIGN ($) is the only method supported because it simplifies the code, improves performance,
 			// and avoids the need to escape anything other than $ (which simplifies the syntax).
-			for (src = replacement; ; ++src)  // For each '$' (increment to skip over the symbol just found by the inner for()).
+			for (src = replacement, src_end = src + replacement_length; ; ++src)  // For each '$' (increment to skip over the symbol just found by the inner for()).
 			{
 				// Find the next '$', if any.
 				src_orig = src; // Init once for both loops below.
 				if (second_iteration) // Mode: copy src-to-dest.
 				{
-					while (*src && *src != '$') // While looking for the next '$', copy over everything up until the '$'.
+					while (src < src_end && *src != '$') // While looking for the next '$', copy over everything up until the '$'.
 						*dest++ = *src++;
 					result_length += (int)(src - src_orig);
 				}
 				else // This is the first iteration (mode: size-calculation).
 				{
-					for (; *src && *src != '$'; ++src); // Find the next '$', if any.
+					for (; src < src_end && *src != '$'; ++src); // Find the next '$', if any.
 					new_result_length += (int)(src - src_orig); // '$' or '\0' was found: same expansion either way.
 				}
-				if (!*src)  // Reached the end of the replacement text.
+				if (src == src_end)  // Reached the end of the replacement text.
 					break;  // Nothing left to do, so if this is the first major iteration, begin the second.
 
 				// Otherwise, a '$' has been found.  Check if it's a backreference and handle it.
@@ -1002,7 +1028,7 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 								if (IsNumeric(substring_name, true, false, true)) // Seems best to allow floating point such as 1.0 because it will then get truncated to an integer.  It seems to rare that anyone would want to use floats as names.
 									ref_num = _ttoi(substring_name); // Uses _ttoi() vs. ATOI to avoid potential overlap with non-numeric names such as ${0x5}, which should probably be considered a name not a number?  In other words, seems best not to make some names that start with numbers "special" just because they happen to be hex numbers.
 								else // For simplicity, no checking is done to ensure it consists of the "32 alphanumeric characters and underscores".  Let pcre_get_stringnumber() figure that out for us.
-									ref_num = pcret_get_first_set(aRE, substring_name, aOffset); // Returns a negative on failure, which when stored in ref_num is relied upon as an indicator.
+									ref_num = pcret_get_first_set(re, substring_name, offset); // Returns a negative on failure, which when stored in ref_num is relied upon as an indicator.
 							}
 							//else it's too long, so it seems best (debatable) to treat it as a unmatched/unfound name, i.e. "".
 							src = closing_brace; // Set things up for the next iteration to resume at the char after "${..}"
@@ -1050,14 +1076,14 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 					// copied over literally.  So that would have to be checked for if this is changed.
 					if (ref_num >= 0 && ref_num < captured_pattern_count) // Treat ref_num==0 as reference to the entire-pattern's match.
 					{
-						int ref_num0 = aOffset[ref_num*2];
-						int ref_num1 = aOffset[ref_num*2 + 1];
+						int ref_num0 = offset[ref_num*2];
+						int ref_num1 = offset[ref_num*2 + 1];
 						match_length = ref_num1 - ref_num0;
 						if (match_length)
 						{
 							if (second_iteration)
 							{
-								tmemcpy(dest, aHaystack + ref_num0, match_length);
+								tmemcpy(dest, haystack + ref_num0, match_length);
 								if (transform)
 								{
 									dest[match_length] = '\0'; // Terminate for use below (shouldn't cause overflow because REALLOC reserved space for terminator; nor should there be any need to undo the termination afterward).
@@ -1119,14 +1145,14 @@ void RegExReplace(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		// PCRE_NOTEMPTY-mode for one extra iteration.  Otherwise there are too few replacements (4 vs. 5)
 		// in examples like:
 		//    RegExReplace("ABC", "Z*|A", "x")
-		empty_string_is_not_a_match = (aOffset[0] == aOffset[1]) ? PCRE_NOTEMPTY|PCRE_ANCHORED : 0;
-		aStartingOffset = match_end_offset; // In either case, set starting offset to the candidate for the next search.
+		empty_string_is_not_a_match = (offset[0] == offset[1]) ? PCRE_NOTEMPTY|PCRE_ANCHORED : 0;
+		starting_offset = match_end_offset; // In either case, set starting offset to the candidate for the next search.
 	} // for()
 
 	// All paths above should return (or goto some other label), so execution should never reach here except
 	// through goto:
 out_of_mem:
-	aResultToken.MemoryError();
+	fresult = FR_E_OUTOFMEM;
 abort:
 	if (result)
 	{
@@ -1136,46 +1162,35 @@ abort:
 	// Now fall through to below so that count is set even for out-of-memory error.
 set_count_and_return:
 	free(result_token.mem_to_free);
-	if (output_var_count)
-		output_var_count->Assign(replacement_count); // v1.0.47.05: Must be done last in case output_var_count shares the same memory with haystack, needle, or replacement.
+	if (aOutCount)
+		*aOutCount = replacement_count;
+	return fresult;
 }
 
 
 
-BIF_DECL(BIF_RegEx)
-// This function is the initial entry point for both RegExMatch() and RegExReplace().
-// Caller has set aResultToken.symbol to a default of SYM_INTEGER.
+bool RegExSearch::Prepare(ExprTokenType &aHaystack, StrArg aNeedle, optl<int> aStartingPos)
 {
-	if (ParamIndexToObject(0))
-		_f_throw_param(0, _T("String"));
-	if (ParamIndexToObject(1))
-		_f_throw_param(1, _T("String"));
-
-	bool mode_is_replace = _f_callee_id == FID_RegExReplace;
-	LPTSTR needle = ParamIndexToString(1, _f_number_buf); // Caller has already ensured that at least two actual parameters are present.
-
-	pcret_extra *extra;
-	pcret *re;
-	int options_length;
+	if (TokenToObject(aHaystack))
+	{
+		fresult = FParamError(0, &aHaystack, _T("String"));
+		return false;
+	}
 
 	// COMPILE THE REGEX OR GET IT FROM CACHE.
-	if (   !(re = get_compiled_regex(needle, extra, &options_length, &aResultToken))   ) // Compiling problem.
-		return; // It already set aResultToken for us.
+	if (   !(re = get_compiled_regex(aNeedle, extra, &options_length, &fresult))   ) // Compiling problem.
+		return false; // It already reported the error.
 
 	// Since compiling succeeded, get info about other parameters.
-	TCHAR haystack_buf[MAX_NUMBER_SIZE];
 	size_t temp_length;
-	LPTSTR haystack = ParamIndexToString(0, haystack_buf, &temp_length); // Caller has already ensured that at least two actual parameters are present.
-	int haystack_length = (int)temp_length;
+	haystack = TokenToString(aHaystack, haystack_buf, &temp_length);
+	haystack_length = (int)temp_length;
 
-	int param_index = mode_is_replace ? 5 : 3;
-	int starting_offset;
-	if (ParamIndexIsOmitted(param_index))
+	if (!aStartingPos.has_value())
 		starting_offset = 0; // The one-based starting position in haystack (if any).  Convert it to zero-based.
 	else
 	{
-		Throw_if_Param_NaN(param_index);
-		starting_offset = ParamIndexToInt(param_index);
+		starting_offset = aStartingPos.value();
 		if (starting_offset <= 0) // Same convention as SubStr(): Treat negative StartingPos as a position relative to the end of the string.
 		{
 			starting_offset += haystack_length;
@@ -1194,79 +1209,82 @@ BIF_DECL(BIF_RegEx)
 	}
 
 	// SET UP THE OFFSET ARRAY, which consists of int-pairs containing the start/end offset of each match.
-	int pattern_count;
 	pcret_fullinfo(re, extra, PCRE_INFO_CAPTURECOUNT, &pattern_count); // The number of capturing subpatterns (i.e. all except (?:xxx) I think). Failure is not checked because it seems too unlikely in this case.
 	++pattern_count; // Increment to include room for the entire-pattern match.
-	int number_of_ints_in_offset = pattern_count * 3; // PCRE uses 3 ints for each (sub)pattern: 2 for offsets and 1 for its internal use.
-	int *offset = (int *)_alloca(number_of_ints_in_offset * sizeof(int)); // _alloca() boosts performance and seems safe because subpattern_count would usually have to be ridiculously high to cause a stack overflow.
+	number_of_ints_in_offset = pattern_count * 3; // PCRE uses 3 ints for each (sub)pattern: 2 for offsets and 1 for its internal use.
 
-	// The following section supports callouts (?C) and (*MARK:NAME).
-	LPTSTR mark;
-	RegExCalloutData callout_data;
-	callout_data.re = re;
-	callout_data.re_text = needle;
-	callout_data.options_length = options_length;
-	callout_data.pattern_count = pattern_count;
-	callout_data.result_token = &aResultToken;
+	// The remaining setup is for callouts (?C) and (*MARK:NAME):
+	re_text = const_cast<LPTSTR>(aNeedle);
 	if (extra)
 	{	// S (study) option was specified, use existing pcre_extra struct.
 		extra->flags |= PCRE_EXTRA_CALLOUT_DATA | PCRE_EXTRA_MARK;	
 	}
 	else
-	{	// Allocate a pcre_extra struct to pass callout_data.
-		extra = (pcret_extra *)_alloca(sizeof(pcret_extra));
+	{	// Use caller-allocated pcre_extra struct to pass callout_data.
+		extra = &extra_buf;
 		extra->flags = PCRE_EXTRA_CALLOUT_DATA | PCRE_EXTRA_MARK;
 	}
 	// extra->callout_data is used to pass callout_data to PCRE.
-	extra->callout_data = &callout_data;
-	// callout_data.extra is used by RegExCallout, which only receives a pointer to callout_data.
-	callout_data.extra = extra;
+	extra->callout_data = this;
 	// extra->mark is used by PCRE to return the NAME of a (*MARK:NAME), if encountered.
 	extra->mark = UorA(wchar_t **, UCHAR **) &mark;
 
-	if (mode_is_replace) // Handle RegExReplace() completely then return.
-	{
-		RegExReplace(aResultToken, aParam, aParamCount, re, extra, haystack, haystack_length
-			, starting_offset, offset, number_of_ints_in_offset);
-		return;
-	}
-	// OTHERWISE, THIS IS RegExMatch() not RegExReplace().
+	fresult = OK;
+	return true;
+}
+
+
+
+FResult RegExMatch(ExprTokenType &aHaystack, StrArg aNeedle, IObject** aMatchObj, optl<int> aStartingPos, int &aFoundPos)
+{
+	RegExSearch ss;
+	if (!ss.Prepare(aHaystack, aNeedle, aStartingPos))
+		return ss.fresult;
+	return ss.Match(aMatchObj, aFoundPos);
+}
+
+
+
+FResult RegExSearch::Match(IObject** aMatchObj, int &aFoundPos) const
+{
+	auto offset = (int *)_alloca(number_of_ints_in_offset * sizeof(int)); // _alloca() boosts performance and seems safe because subpattern_count would usually have to be ridiculously high to cause a stack overflow.
 
 	// EXECUTE THE REGEX.
 	int captured_pattern_count = pcret_exec(re, extra, haystack, haystack_length
 		, starting_offset, 0, offset, number_of_ints_in_offset);
 
-	int match_offset = 0; // Set default for no match/error cases below.
-
 	// SET THE RETURN VALUE BASED ON THE RESULTS OF EXECUTING THE EXPRESSION.
 	if (captured_pattern_count == PCRE_ERROR_NOMATCH)
 	{
-		aResultToken.value_int64 = 0;
-		// BUT CONTINUE ON so that the output variable (if any) is fully reset (made blank).
+		aFoundPos = 0;
 	}
 	else if (captured_pattern_count < 0) // An error other than "no match".
 	{
-		if (aResultToken.Exited()) // A callout exited/raised an error.
-			return;
-		TCHAR err_info[MAX_INTEGER_SIZE];
-		ITOA(captured_pattern_count, err_info);
-		aResultToken.Error(ERR_PCRE_EXEC, err_info);
+		if (fresult != OK) // A callout exited/raised an error.
+			return fresult;
+		return PCREExecError(captured_pattern_count);
 	}
 	else // Match found, and captured_pattern_count >= 0 (but should never be 0 in this case because that only happens when offset[] is too small, which it isn't).
 	{
-		match_offset = offset[0];
-		aResultToken.value_int64 = match_offset + 1; // i.e. the position of the entire-pattern match is the function's return value.
+		aFoundPos = offset[0] + 1; // i.e. the position of the entire-pattern match is the function's return value.
 	}
 
-	Var *output_var = ParamIndexToOutputVar(2);
-	if (!output_var)
-		return;
+	if (aMatchObj)
+		return CreateMatchArray(offset, captured_pattern_count, *aMatchObj);
+	return OK;
+}
 
-	IObject *match_object;
-	if (!RegExCreateMatchArray(haystack, re, extra, offset, pattern_count, captured_pattern_count, match_object))
-		aResultToken.MemoryError();
-	if (match_object)
-		output_var->AssignSkipAddRef(match_object);
-	else // Out-of-memory or there were no captured patterns.
-		output_var->Assign();
+
+
+BIF_DECL(Op_RegEx)
+{
+	if (ParamIndexToObject(1))
+		_f_throw_param(1, _T("String"));
+	auto needle = TokenToString(*aParam[1], aResultToken.buf);
+	int found_pos;
+	auto fresult = RegExMatch(*aParam[0], needle, nullptr, nullptr, found_pos);
+	if (FAILED(fresult))
+		FResultToError(aResultToken, aParam, aParamCount, fresult, 0);
+	else
+		aResultToken.SetValue(found_pos);
 }
