@@ -337,7 +337,7 @@ private:
 	int mMaxPropertyData = 1024, mMaxChildren = 20, mMaxDepth = 2;
 
 	HookType mDisabledHooks = 0;
-	bool mProcessingCommands;
+	bool mProcessingCommands = false;
 
 
 	enum PropertyType

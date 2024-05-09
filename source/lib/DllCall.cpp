@@ -1212,13 +1212,17 @@ BIF_DECL(BIF_DllCall)
 				LPCSTR result = (LPCSTR)return_value.Pointer;
 #else
 				LPCWSTR result = (LPCWSTR)return_value.Pointer;
+				if (result && return_attrib.type == DLL_ARG_U8STR)
+					result = CStringWCharFromChar((LPCSTR)return_value.Pointer, -1, CP_UTF8).DetachBuffer();
 #endif
 				if (result && *result)
 				{
 #ifdef UNICODE		// Perform the translation:
 					CStringWCharFromChar result_buf(result, -1, return_attrib.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
 #else
-					CStringCharFromWChar result_buf(result, -1, return_attrib.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
+					CStringCharFromWChar result_buf(result);
+					if (return_attrib.type == DLL_ARG_U8STR)
+						free(result);
 #endif
 					// Store the length of the translated string first since DetachBuffer() clears it.
 					aResultToken.marker_length = result_buf.GetLength();
@@ -1355,9 +1359,9 @@ BIF_DECL(BIF_DllCall)
 			// passed_by_address for all other types.  However, it must be used carefully since
 			// there's no way for Str* to know how or whether the function requires the string
 			// to be freed (e.g. by calling CoTaskMemFree()).
-			if (this_dyna_param.ptr != p_str_or_obj[arg_count])
-				if (!output_var.AssignString((LPTSTR)this_dyna_param.ptr))
-					aResultToken.SetExitResult(FAIL);
+			if (this_dyna_param.ptr != output_var.Contents(FALSE)
+				&& !output_var.AssignString((LPTSTR)this_dyna_param.ptr))
+				aResultToken.SetExitResult(FAIL);
 			break;
 		case DLL_ARG_xSTR: // AStr* on Unicode builds and WStr* on ANSI builds.
 		case DLL_ARG_U8STR:

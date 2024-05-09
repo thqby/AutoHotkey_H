@@ -1218,7 +1218,7 @@ void Object::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPag
 			i++; // Count it even if it wasn't within the current page.
 		}
 		// For each field in the requested page...
-		for (int j = page_start - i; i < page_end && (index_t)j < mFields.Length(); ++i, ++j)
+		for (int j = page_start ? page_start - i : 0; i < page_end && (index_t)j < mFields.Length(); ++i, ++j)
 		{
 			Object::FieldType &field = mFields[j];
 			ExprTokenType value;
@@ -3043,11 +3043,7 @@ void Debugger::PropertyWriter::_WriteProperty(ExprTokenType &aValue, IObject *aI
 	if (mError)
 		return;
 	PropertyInfo prop(mProp.fullname, mProp.value.buf);
-	if (aInvokee)
-	{
-		aInvokee->AddRef();
-		prop.invokee = aInvokee;
-	}
+	prop.invokee = aInvokee;
 	// Find the property's "relative" name at the end of the buffer:
 	prop.name = mProp.fullname.GetString() + mNameLength;
 	if (*prop.name == '.')

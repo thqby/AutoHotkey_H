@@ -7456,19 +7456,21 @@ Var* Script::LoadVarFromWinApi(LPTSTR aFuncName)
 		LeaveCriticalSection(&g_Critical);
 	}
 	// WinApi and #DllImport are always global functions
-	auto *aCurrent_func = g->CurrentFunc;
-	auto aFuncNameLength = _tclen(aFuncName);
-	g->CurrentFunc = NULL;
+	auto aFuncNameLength = _tcslen(aFuncName);
 	TCHAR parameter[1024] = { 0 }; // Should be enough room for any dll function definition
 	memcpy(parameter, aFuncName, aFuncNameLength * sizeof(TCHAR));
-	parameter[aFuncNameLength] = L',';
+	parameter[aFuncNameLength] = ',';
 
 	// parameterlow is used to find the function definition
-	char parameterlowercase[MAX_PATH] = { '\\' };
+	char parameterlowercase[MAX_PATH] = { '\\',0 };
+#ifdef UNICODE
 	WideCharToMultiByte(CP_ACP, 0, aFuncName, (int)aFuncNameLength, &parameterlowercase[1], (int)aFuncNameLength + 1, 0, 0);
+#else
+	memcpy(&parameterlowercase[1], aFuncName, aFuncNameLength);
+#endif
 	CharLowerA(parameterlowercase);
-	parameterlowercase[aFuncNameLength + 1] = L',';
-	parameterlowercase[aFuncNameLength + 2] = L'\0';
+	parameterlowercase[aFuncNameLength + 1] = ',';
+	parameterlowercase[aFuncNameLength + 2] = '\0';
 	LPSTR found;
 	if (found = strstr(g_hWinAPIlowercase, parameterlowercase))
 	{
@@ -7483,15 +7485,15 @@ Var* Script::LoadVarFromWinApi(LPTSTR aFuncName)
 		}
 		MultiByteToWideChar(CP_UTF8, 0, found + 1, (int)aFuncNameLength + 1, aDest, (int)aFuncNameLength * sizeof(TCHAR) + sizeof(TCHAR));
 		// Override _ in the end of definition (ahk function like SendMessage, Sleep, Send, SendInput ...
-		if (*(aFuncName + aFuncNameLength - 1) == L'_')
+		if (*(aFuncName + aFuncNameLength - 1) == '_')
 		{
-			*(aDest + aFuncNameLength - 1) = L',';
-			*(aDest + aFuncNameLength) = L'\0';
+			*(aDest + aFuncNameLength - 1) = ',';
+			*(aDest + aFuncNameLength) = '\0';
 			aDest = aDest + aFuncNameLength;
 		}
 		else
 		{
-			*(aDest + aFuncNameLength) = L',';
+			*(aDest + aFuncNameLength) = ',';
 			aDest = aDest + aFuncNameLength + 1;
 		}
 		_tcscpy(aDest, _T("   ="));
@@ -7502,17 +7504,18 @@ Var* Script::LoadVarFromWinApi(LPTSTR aFuncName)
 			*aDest = (*found);
 			aDest++;
 		}
-		if (*(--aDest) == _T('*') || *aDest == _T('p') || *aDest == _T('P'))
+		if (*(--aDest) == '*' || *aDest == 'p' || *aDest == 'P')
 			*t = *aDest, t--, aDest--;
 		*t = *aDest, t--, aDest--;
-		if (*aDest == _T('u') || *aDest == _T('U'))
+		if (*aDest == 'u' || *aDest == 'U')
 			*t = *aDest, aDest--;
-		*(aDest + 1) = _T('\0');
+		*(aDest + 1) = '\0';
+		auto aCurrent_func = g->CurrentFunc;
+		g->CurrentFunc = nullptr;
 		Var* var = LoadDllFunction(parameter);
 		g->CurrentFunc = aCurrent_func;
 		return var;
 	}
-	g->CurrentFunc = aCurrent_func;
 	return NULL;
 }
 
