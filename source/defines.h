@@ -118,6 +118,7 @@ enum ExcptModeType {EXCPTMODE_NONE = 0
 	, EXCPTMODE_CATCH = 2 // Exception will be suppressed or caught.
 	, EXCPTMODE_DELETE = 4 // Unhandled exceptions will display ERR_ABORT_DELETE vs. ERR_ABORT.
 	, EXCPTMODE_CAUGHT = 0x10 // An exception is already being handled within a CATCH, and is not shadowed by TRY.
+	, EXCPTMODE_DEBUGGER = 0x20 // Debugger is evaluating a property and wants uncaught errors suppressed.
 };
 
 #define SEND_MODES { _T("Event"), _T("Input"), _T("Play"), _T("InputThenPlay") } // Must match the enum below.

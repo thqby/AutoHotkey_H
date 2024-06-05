@@ -143,12 +143,8 @@ ResultType Line::SetThrownToken(global_struct &g, ResultToken *aToken, ResultTyp
 {
 #ifdef CONFIG_DEBUGGER
 	if (g_Debugger->IsConnected())
-		if (g_Debugger->IsAtBreak() || g_Debugger->PreThrow(aToken) && !(g.ExcptMode & EXCPTMODE_CATCH))
+		if (g_Debugger->PreThrow(aToken) && !(g.ExcptMode & EXCPTMODE_CATCH))
 		{
-			// IsAtBreak() indicates the debugger was already in a break state, likely
-			// processing a property_get or context_get which caused script execution.
-			// In that case, silence all error dialogs and don't set g.ThrownToken since
-			// the debugger is lax about detecting/clearing it.  If PreThrow was called:
 			// The debugger has entered (and left) a break state, so the client has had a
 			// chance to inspect the exception and report it.  There's nothing in the DBGp
 			// spec about what to do next, probably since PHP would just log the error.
@@ -257,11 +253,6 @@ ResultType Script::RuntimeError(LPCTSTR aErrorText, LPCTSTR aExtraInfo, ResultTy
 	ASSERT(aErrorText);
 	if (!aExtraInfo)
 		aExtraInfo = _T("");
-
-#ifdef CONFIG_DEBUGGER
-	if (g_Debugger->IsAtBreak()) // i.e. the debugger is processing a property_get or context_get.
-		return FAIL; // Silent abort, no g->ThrownToken.
-#endif
 
 	if ((g->ExcptMode || mOnError.Count()
 #ifdef CONFIG_DEBUGGER
@@ -744,7 +735,7 @@ ResultType Script::ScriptError(LPCTSTR aErrorText, LPCTSTR aExtraInfo)
 	if (g_script->mErrorStdOut && !g_script->mIsReadyToExecute) // i.e. runtime errors are always displayed via dialog.
 	{
 		// See LineError() for details.
-		PrintErrorStdOut(aErrorText, aExtraInfo, mCurrFileIndex, mCombinedLineNumber);
+		PrintErrorStdOut(aErrorText, aExtraInfo, mCurrLine ? mCurrLine->mFileIndex : mCurrFileIndex, CurrentLine());
 	}
 	else
 	{
@@ -942,6 +933,8 @@ ResultType TypeError(LPCTSTR aExpectedType, ExprTokenType &aActualValue)
 {
 	TCHAR number_buf[MAX_NUMBER_SIZE];
 	LPCTSTR actual_type, value_as_string;
+	if (aActualValue.symbol == SYM_VAR && aActualValue.var->IsUninitializedNormalVar())
+		return g_script->VarUnsetError(aActualValue.var);
 	TokenTypeAndValue(aActualValue, actual_type, value_as_string, number_buf);
 	return TypeError(aExpectedType, actual_type, value_as_string);
 }
@@ -1094,9 +1087,17 @@ ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
 	// This includes OnError callbacks explicitly called below, but also COM events
 	// and CallbackCreate callbacks that execute while MsgBox() is waiting.
 	g.ThrownToken = NULL;
-
+	
+#ifdef CONFIG_DEBUGGER
+	if (g.ExcptMode & EXCPTMODE_DEBUGGER)
+	{
+		FreeExceptionToken(token);
+		return FAIL;
+	}
+#endif
+	
 	// OnError: Allow the script to handle it via a global callback.
-	static bool sOnErrorRunning = false;
+	thread_local bool sOnErrorRunning = false;
 	if (mOnError.Count() && !sOnErrorRunning)
 	{
 		__int64 retval;
@@ -1258,7 +1259,7 @@ void Script::WarnUnassignedVar(Var *var, Line *aLine)
 		return;
 
 	// Currently only the first reference to each var generates a warning even when using
-	// StdOut/OutputDebug, since MarkAlreadyWarned() is used to suppress warnings for any
+	// StdOut/OutputDebug. MarkAlreadyWarned() is also used to suppress warnings for any
 	// var which is checked with IsSet().
 	//if (warnMode == WARNMODE_MSGBOX)
 	{
@@ -1270,26 +1271,23 @@ void Script::WarnUnassignedVar(Var *var, Line *aLine)
 		var->MarkAlreadyWarned();
 	}
 
-	bool isUndeclaredLocal = (var->Scope() & (VAR_LOCAL | VAR_DECLARED)) == VAR_LOCAL;
-	LPCTSTR sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName) ? _T("  (same name as a global)") : _T("");
-	TCHAR buf[DIALOG_TITLE_SIZE];
-	sntprintf(buf, _countof(buf), _T("%s %s%s"), Var::DeclarationType(var->Scope()), var->mName, sameNameAsGlobal);
-	ScriptWarning(warnMode, WARNING_ALWAYS_UNSET_VARIABLE, buf, aLine);
+	// No check for a global variable is done because var is unassigned and therefore should
+	// have resolved to a global if there was one, unless it was declared local.
+	TCHAR buf[1024];
+	sntprintf(buf, _countof(buf), _T("This %s appears to never be assigned a value."), Var::DeclarationType(var->Scope()));
+	ScriptWarning(warnMode, buf, var->mName, aLine);
 }
 
 
 
 ResultType Script::VarUnsetError(Var *var)
 {
+	TCHAR buf[1024];
 	bool isUndeclaredLocal = (var->Scope() & (VAR_LOCAL | VAR_DECLARED)) == VAR_LOCAL;
-	TCHAR buf[DIALOG_TITLE_SIZE];
-	if (*var->mName) // Avoid showing "Specifically: global " for temporary VarRefs of unspecified scope, such as those used by Array::FromEnumerable or the debugger.
-	{
-		LPCTSTR sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName) ? _T("  (same name as a global)") : _T("");
-		sntprintf(buf, _countof(buf), _T("%s %s%s"), Var::DeclarationType(var->Scope()), var->mName, sameNameAsGlobal);
-	}
-	else *buf = '\0';
-	return RuntimeError(ERR_VAR_UNSET, buf, FAIL_OR_OK, nullptr, ErrorPrototype::Unset);
+	bool sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName);
+	sntprintf(buf, _countof(buf), _T("This %s has not been assigned a value.%s"), Var::DeclarationType(var->Scope())
+		, sameNameAsGlobal ? _T("\nA global declaration inside the function may be required.") : _T(""));
+	return RuntimeError(buf, var->mName, FAIL_OR_OK, nullptr, ErrorPrototype::Unset);
 }
 
 

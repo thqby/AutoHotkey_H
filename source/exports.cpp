@@ -329,10 +329,6 @@ UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 				auto &fn = (UserFunc *&)funcs[i];
 				if (fn->mClass)
 					fn->mClass->Release();
-#ifndef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
-				if (fn->mIsFuncExpression == -1)
-					fn->mJumpToLine->Free();
-#endif // !KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
 				fn->Release(), fn = nullptr;
 			}
 			g_script->mFuncs.mCount = aFuncCount;
@@ -485,10 +481,6 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 			auto &fn = (UserFunc *&)funcs[i];
 			if (fn->mClass)
 				fn->mClass->Release();
-#ifndef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
-			if (fn->mIsFuncExpression == -1)
-				fn->mJumpToLine->Free();
-#endif // !KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
 			fn->Release(), fn = nullptr;
 		}
 		g_script->mFuncs.mCount = aFuncCount;

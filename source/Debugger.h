@@ -191,36 +191,15 @@ public:
 	void Exit(ExitReasons aExitReason, char *aCommandName=NULL); // Called when exiting AutoHotkey.
 	inline bool IsConnected() { return mSocket != INVALID_SOCKET; }
 	inline bool IsStepping() { return mInternalState >= DIS_StepInto; }
-	inline bool IsAtBreak() { return mProcessingCommands; }
 	inline bool HasStdErrHook() { return mStdErrMode != SR_Disabled; }
 	inline bool HasStdOutHook() { return mStdOutMode != SR_Disabled; }
 	inline bool BreakOnExceptionIsEnabled() { return mBreakOnException; }
 
 	LPCTSTR WhatThrew();
 
-	__declspec(noinline) // Avoiding inlining should reduce the code size of ExpandExpression(), which might help performance since this is only called when the debugger is connected.
-	void PostExecFunctionCall(Line *aExpressionLine)
-	{
-		// If the debugger is stepping into/over/out from a function call, we want to
-		// break at the line which called that function, since the next line to execute
-		// might be a line in some other function (i.e. because the line which called
-		// the function is "return func()" or calls another function after this one).
-		if ((mInternalState == DIS_StepInto
-			|| ((mInternalState == DIS_StepOut || mInternalState == DIS_StepOver)
-				// Always '<' since '<=' (for StepOver) shouldn't be possible,
-				// since we just returned from a function call:
-				&& mStack.Depth() < mContinuationDepth))
-			// The final check ensures we don't repeatedly break at a line containing
-			// multiple built-in function calls; i.e. don't break unless some script
-			// has been executed since we began evaluating aExpressionLine.  Something
-			// like "return recursivefunc()" should work if this is StepInto or StepOver
-			// since mCurrLine would probably be the '}' of that function:
-			&& mCurrLine != aExpressionLine)
-			PreExecLine(aExpressionLine);
-	}
-
 	// Code flow notification functions:
 	int PreExecLine(Line *aLine); // Called before executing each line.
+	void LeaveFunction();
 	bool PreThrow(ExprTokenType *aException);
 	
 	// Receive and process commands. Returns when a continuation command is received.

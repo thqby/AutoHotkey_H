@@ -528,10 +528,6 @@ Script::~Script() // Destructor.
 		auto fn = (UserFunc *&)mFuncs.mItem[i];
 		if (fn->mClass)
 			fn->mClass->Release();
-#ifndef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
-		if (fn->mIsFuncExpression == -1)
-			fn->mJumpToLine->Free();
-#endif // !KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST
 		fn->Release();
 	}
 	free(mFuncs.mItem);
@@ -1572,7 +1568,10 @@ ResultType Script::ExitApp(ExitReasons aExitReason)
 // for times when it would be unsafe to call MsgBox() due to the possibility that it would
 // make the situation even worse).
 {
-	int aExitCode = mPendingExitCode; // It's done this way so Exit() can pass an exit code indirectly.
+	// If we're called before the script has loaded, it is almost certainly by the ExitApp
+	// button on an error/warning dialog.  Treat it as a load-time error either way since
+	// that's probably what the user wants.
+	int aExitCode = mIsReadyToExecute ? mPendingExitCode : CRITICAL_ERROR;
 	auto aReload = g_Reloading;
 	if (!g_Reloading)
 		g_Reloading = -1;
@@ -8431,7 +8430,6 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 					// all skip an initial ACT_BLOCK_BEGIN (to avoid an extra ExecUntil call),
 					// which would result in executing the function's body instead of skipping it.
 					Line *body = line->mNextLine;
-				#ifdef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST // Currently unused.
 					block_begin = parent->mNextLine; // In case there are multiple fat arrow functions on one line.
 					Line *after_body = parent->mRelatedLine;
 					Line *body_end = after_body->mPrevLine; // In case body is multiple lines (such as a nested IF or LOOP).
@@ -8439,13 +8437,6 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 					parent   ->mNextLine = body       , body       ->mPrevLine = parent;
 					body_end ->mNextLine = block_begin, block_begin->mPrevLine = body_end;
 					line     ->mNextLine = after_body , after_body ->mPrevLine = line;
-				#else
-					// Remove the fat arrow functions to allow the correct body to execute.
-					// This relies on there being no need for the fat arrow functions to
-					// remain in the Line list after this point (so for instance, there's
-					// no possibility of setting a breakpoint in one of these functions).
-					parent->mNextLine = body, body->mPrevLine = parent, func.mIsFuncExpression = -1;
-				#endif
 				}
 				else if (parent && parent->mActionType != ACT_BLOCK_BEGIN)
 				{

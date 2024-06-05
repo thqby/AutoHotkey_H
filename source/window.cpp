@@ -651,6 +651,9 @@ BOOL CALLBACK EnumChildFind(HWND aWnd, LPARAM lParam)
 		else // For backward compatibility, all modes other than RegEx behave as follows.
 			if (_tcsstr(win_text, ws.mCriterionText)) // Match found.
 				ws.mFoundChild = aWnd;
+
+		if (ws.mFoundChild && !*ws.mCriterionExcludeText)
+			return FALSE; // Match found and no ExcludeText to evaluate against later controls, so stop searching.
 	}
 
 	// UPDATE to the below: The MSDN docs state that EnumChildWindows() already handles the

@@ -968,8 +968,15 @@ bif_impl FResult Download(StrArg aURL, StrArg aFilespec)
 	if (!hFile)
 	{
 		DWORD last_error = GetLastError(); // Save this before calling InternetCloseHandle, otherwise it is set to 0.
-		InternetCloseHandle(hInet);
-		return FR_E_WIN32(last_error);
+		// The following error can be returned if the server requests authentication.  If authentication
+		// isn't required, sending the request again using the same handles "authenticates" anonymously.
+		if (  !(last_error == ERROR_INTERNET_CLIENT_AUTH_CERT_NEEDED
+			&& (hFile = InternetOpenUrl(hInet, aURL, NULL, 0, flags_for_open_url, 0)))  )
+		{
+			last_error = GetLastError();
+			InternetCloseHandle(hInet);
+			return FR_E_WIN32(last_error);
+		}
 	}
 
 	// Open our output file (overwrite if necessary)

@@ -225,8 +225,6 @@ enum CommandIDs {CONTROL_ID_FIRST = IDCANCEL + 1
 #define ERR_SOUND_COMPONENT _T("Component not found")
 #define ERR_SOUND_CONTROLTYPE _T("Component doesn't support this control type")
 #define ERR_TIMEOUT _T("Timeout")
-#define ERR_VAR_UNSET _T("This variable has not been assigned a value.")
-#define WARNING_ALWAYS_UNSET_VARIABLE _T("This variable appears to never be assigned a value.")
 #define WARNING_LOCAL_SAME_AS_GLOBAL _T("This local variable has the same name as a global variable.")
 
 //----------------------------------------------------------------------------------
@@ -1535,7 +1533,7 @@ public:
 	int mClosureCount = 0;
 
 	// Keep small members adjacent to each other to save space and improve perf. due to byte alignment:
-	char mIsFuncExpression; // Whether this function was defined *within* an expression and is therefore allowed under a control flow statement.
+	bool mIsFuncExpression; // Whether this function was defined *within* an expression and is therefore allowed under a control flow statement.
 	bool mIsStatic = false; // Whether the "static" keyword was used with a function (not method); this prevents a nested function from becoming a closure.
 #define VAR_DECLARE_GLOBAL (VAR_DECLARED | VAR_GLOBAL)
 #define VAR_DECLARE_LOCAL  (VAR_DECLARED | VAR_LOCAL)

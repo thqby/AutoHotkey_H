@@ -617,12 +617,14 @@ public:
 		if (aDeclType & VAR_LOCAL)
 		{
 			if (aDeclType & VAR_LOCAL_STATIC)
-				return _T("static");
+				return _T("static variable");
 			if (aDeclType & VAR_LOCAL_FUNCPARAM)
 				return _T("parameter");
-			return _T("local");
+			return _T("local variable");
 		}
-		return _T("global");
+		if (aDeclType & VAR_GLOBAL)
+			return _T("global variable");
+		return _T("variable");
 	}
 
 	bool IsAssignedSomewhere()

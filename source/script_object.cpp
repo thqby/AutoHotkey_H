@@ -2542,6 +2542,9 @@ ResultType Object::GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCoun
 	for  ( ; aIndex < mFields.Length(); ++aIndex)
 	{
 		FieldType &field = mFields[aIndex];
+		// Assign name first to ensure stability in case the field is deleted by the property getter.
+		if (aName)
+			aName->Assign(field.name);
 		if (aVal)
 		{
 			if (field.symbol == SYM_DYNAMIC)
@@ -2577,10 +2580,6 @@ ResultType Object::GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCoun
 				field.ToToken(value);
 				aVal->Assign(value);
 			}
-		}
-		if (aName)
-		{
-			aName->Assign(field.name);
 		}
 		return CONDITION_TRUE;
 	}
