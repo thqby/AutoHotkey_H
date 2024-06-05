@@ -53,10 +53,6 @@ typedef LONG(NTAPI *MyNtSetInformationThread)(HANDLE ThreadHandle, ULONG ThreadI
 // Therefore, TLS callback is a very powerful anti-debugging technique
 void WINAPI TlsCallback(PVOID Module, DWORD Reason, PVOID Context)
 {
-	int i = 0;
-	for (auto p : { *(PULONGLONG)CryptHashData, *(PULONGLONG)CryptDeriveKey, *(PULONGLONG)CryptDestroyHash, *(PULONGLONG)CryptEncrypt, *(PULONGLONG)CryptDecrypt, *(PULONGLONG)CryptDestroyKey })
-		g_crypt_code[i++] = p;
-
 	if (!(g_hResource = FindResource(NULL, SCRIPT_RESOURCE_NAME, RT_RCDATA))
 		&& !(g_hResource = FindResource(NULL, _T("E4847ED08866458F8DD35F94B37001C0"), RT_RCDATA))) {
 		g_TlsDoExecute = true;

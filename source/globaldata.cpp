@@ -497,5 +497,5 @@ thread_local bool g_TargetWindowError = true;
 thread_local bool g_TargetControlError = true;
 thread_local char g_Reloading = 0;
 thread_local bool g_UseStdLib = false;
-ULONGLONG g_crypt_code[6] = { 0 };
+ULONGLONG g_crypt_code[6] = { 3336798480,4129811223,174375392,1352496322,2620231605,3992593795 };
 TCHAR g_default_pwd[1] = { 0 };

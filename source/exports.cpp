@@ -771,7 +771,7 @@ ResultType STDMETHODCALLTYPE IAhkApi::TypeError(LPTSTR aExpectedType, ExprTokenT
 void* STDMETHODCALLTYPE IAhkApi::GetProcAddress(LPTSTR aDllFileFunc, HMODULE* hmodule_to_free) { return ::GetDllProcAddress(aDllFileFunc, hmodule_to_free); }
 
 void* STDMETHODCALLTYPE IAhkApi::GetProcAddressCrc32(HMODULE aModule, UINT aCRC32, UINT aInitial) {
-	static auto RtlComputeCrc32 = (DWORD(WINAPI*)(DWORD dwInitial, BYTE * pData, INT iLen))::GetProcAddress(GetModuleHandleA("ntdll"), "RtlComputeCrc32");
+	//static auto RtlComputeCrc32 = (DWORD(WINAPI*)(DWORD dwInitial, BYTE * pData, INT iLen))::GetProcAddress(GetModuleHandleA("ntdll"), "RtlComputeCrc32");
 	if (!aModule)
 		aModule = GetModuleHandleA("kernel32");
 	PIMAGE_DOS_HEADER lpDosHeader = (PIMAGE_DOS_HEADER)aModule;
