@@ -1503,6 +1503,9 @@ bool Promise::Init(ExprTokenType *aParam[], int aParamCount) {
 
 void Promise::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
 {
+	if (mState) { //cannot set .Then/.Catch when already finished
+		return;
+	}
 	Object *callback = dynamic_cast<Object *>(TokenToObject(*aParam[0]));
 	if (!callback)
 		_o_throw(ERR_INVALID_FUNCTOR);
@@ -1512,25 +1515,17 @@ void Promise::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTy
 	auto &stream_to_set = mStream[aID - 1];
 	auto &callback_to_set = aID == M_Then ? mComplete : mError;
 	IStream *pstm = nullptr;
-	if (!(mState & aID)) {
-		if (FAILED(CoMarshalInterThreadInterfaceInStream(IID_IDispatch, callback, &pstm))) {
-			LeaveCriticalSection(&mCritical);
-			_o_throw_oom;
-		}
-		callback = nullptr;
+	if (FAILED(CoMarshalInterThreadInterfaceInStream(IID_IDispatch, callback, &pstm))) {
+		LeaveCriticalSection(&mCritical);
+		_o_throw_oom;
 	}
+	callback_to_set = callback;
 	if (stream_to_set) {
 		CoReleaseMarshalData(stream_to_set);
 		stream_to_set->Release();
 	}
 	stream_to_set = pstm;
-	callback_to_set = callback;
 	LeaveCriticalSection(&mCritical);
-	if (callback) {
-		AddRef();
-		mReply = (HWND)-1;
-		OnFinish();
-	}
 	AddRef();
 	_o_return(this);
 }
