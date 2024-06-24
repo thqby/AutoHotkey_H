@@ -2737,6 +2737,14 @@ bif_impl FResult Thread(StrArg aCommand, optl<int> aValue1, optl<int> aValue2)
 	case THREAD_CMD_NOTIMERS:
 		g->AllowTimers = (aValue1.has_value() && *aValue1 == 0); // Double-negative NoTimers=false -> allow timers.
 		return OK;
+	case THREAD_CMD_TERMINATE: {
+		auto j = g_nThreads, i = 0;
+		if (!aValue1.has_value() || !*aValue1)
+			i = j > 1 ? --j - 1 : j;
+		for (; i < j; i++)
+			*(char *)&g_array[i].IsPaused = -1;
+		return OK;
+	}
 	default:
 		return FR_E_ARG(0);
 	}

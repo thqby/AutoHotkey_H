@@ -10441,6 +10441,14 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 							param[0]->SetValue((__int64)function);
 					}
 				}
+				else if (bif == &BIF_Alias && param_count)
+				{
+					if (param[0]->symbol == SYM_VAR)
+					{
+						param[0]->var_usage = VARREF_REF;
+						param[0]->var->MarkAssignedSomewhere();
+					}
+				}
 			}
 			stack[stack_count++] = this_postfix;
 		} // SYM_FUNC
@@ -10468,10 +10476,6 @@ ResultType Line::FinalizeExpression(ArgStruct &aArg)
 			{
 				if (this_postfix->var->HasAlreadyWarned())
 					continue;
-				if (this_postfix > aArg.postfix && (this_postfix - 1)->symbol == SYM_OBJECT && static_cast<BuiltInFunc*>((this_postfix - 1)->object)->mBIF == &BIF_Alias) {
-					this_postfix->var_usage = VARREF_REF;
-					continue;
-				}
 				Var *var = nullptr;
 				auto name = this_postfix->var->mName;
 				bool error_was_shown;

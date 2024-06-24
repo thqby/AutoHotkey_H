@@ -3522,8 +3522,10 @@ void Promise::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTy
 	auto &stream_to_set = mStream[aID - 1];
 	auto &callback_to_set = aID == M_Then ? mComplete : mError;
 	IStream *pstm = nullptr;
+	callback_to_set = callback;
 	if (!(mState & aID)) {
 		if (FAILED(CoMarshalInterThreadInterfaceInStream(IID_IDispatch, callback, &pstm))) {
+			callback_to_set = nullptr;
 			LeaveCriticalSection(&mCritical);
 			_o_throw_oom;
 		}
@@ -3534,7 +3536,6 @@ void Promise::Invoke(ResultToken& aResultToken, int aID, int aFlags, ExprTokenTy
 		stream_to_set->Release();
 	}
 	stream_to_set = pstm;
-	callback_to_set = callback;
 	LeaveCriticalSection(&mCritical);
 	if (callback) {
 		AddRef();
