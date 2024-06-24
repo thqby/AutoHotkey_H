@@ -28,7 +28,7 @@ MdFuncEntry sMdFunc[]
 };
 
 
-Func *Script::GetBuiltInMdFunc(LPTSTR aFuncName)
+Func *Script::GetBuiltInMdFunc(LPCTSTR aFuncName)
 {
 #ifdef _DEBUG
 	static bool sChecked = false;
@@ -150,7 +150,7 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 
 	DEBUGGER_STACK_PUSH(this) // See comments in BuiltInFunc::Call.
 
-	// rtp stores the results of ToString() calls if needed.
+	// rtp is currently used only for Out Variant params unless ENABLE_IMPLICIT_TOSTRING is defined.
 	ResultToken *rtp = mMaxResultTokens == 0 ? nullptr
 		: (ResultToken *)_alloca(mMaxResultTokens * sizeof(ResultToken));
 	int rt_count = 0;
@@ -446,12 +446,6 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		else if (retval_arg_type != MdType::Variant) // Variant type passes aResultToken directly.
 			TypedPtrToToken(retval_arg_type, (void*)args[retval_index], aResultToken);
 	}
-	if (aborted)
-	{
-		aResultToken.Free(); // In case memory was allocated or an object was returned, despite the return value indicating failure.
-		aResultToken.mem_to_free = nullptr; // Because Free() doesn't clear it.
-		aResultToken.SetValue(_T(""), 0);
-	}
 
 	// Copy output parameters
 	atp = mArgType;
@@ -470,56 +464,87 @@ bool MdFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParam
 		if (out == MdType::Void || ParamIndexIsOmitted(pi))
 			continue;
 		--output_var_count;
-		auto var = aParam[pi]->IsOptimizedOutputVar() ? aParam[pi]->var
-			: new (_alloca(sizeof(Var))) Var(ParamIndexToObject(pi)); // mType = VAR_VIRTUAL_OBJ
 		auto arg_value = args[ai];
+		ExprTokenType value;
+		LPTSTR mem_to_free = nullptr;
 		if (*atp == MdType::String)
 		{
 			auto strret = (StrRet*)arg_value;
 			if (!strret->Value())
-				var->Assign();
-			else if (strret->UsedMalloc())
-				var->AcceptNewMem(const_cast<LPTSTR>(strret->Value()), strret->Length());
+				value.SetValue(_T(""), 0);
 			else
-				var->AssignString(strret->Value(), strret->Length());
+				value.SetValue(const_cast<LPTSTR>(strret->Value()), strret->Length());
+			if (strret->UsedMalloc())
+				mem_to_free = const_cast<LPTSTR>(strret->Value());
 		}
 		else if (*atp == MdType::Variant)
 		{
-			ResultToken &value = *(ResultToken*)arg_value;
-			if (value.mem_to_free)
-			{
-				ASSERT(value.symbol == SYM_STRING && value.marker == value.mem_to_free);
-				var->AcceptNewMem(value.marker, value.marker_length);
-				value.mem_to_free = nullptr;
-			}
-			else
-				var->Assign(value);
-			// ResultTokens are allocated from rtp[], and are freed below.
-			//value.Free();
+			ResultToken &rt = *(ResultToken*)arg_value;
+			ASSERT(!rt.mem_to_free || rt.symbol == SYM_STRING && rt.marker == rt.mem_to_free);
+			mem_to_free = rt.mem_to_free;
+			value.CopyValueFrom(rt);
+#ifdef ENABLE_IMPLICIT_TOSTRING
+			// ResultTokens are allocated from rtp and Free() is called upon return,
+			// but in this case any memory or object contained by the contain will
+			// either be moved into var or freed below.
+			rt.mem_to_free = nullptr;
+			rt.symbol = SYM_INVALID;
+#endif
 		}
 		else
 		{
-			ExprTokenType value;
 			TypedPtrToToken(*atp, (void*)arg_value, value);
-			if (value.symbol == SYM_OBJECT)
-				var->AssignSkipAddRef(value.object);
-			else
-				var->Assign(value);
 		}
-		// Now that any memory or object allocated by the function has been assigned:
-		if (aborted)
+		Var *var = nullptr;
+		IObject *obj = nullptr;
+		if (aParam[pi]->IsOptimizedOutputVar())
 		{
+			var = aParam[pi]->var;
+		}
+		else
+		{
+			obj = ParamIndexToObject(pi);
+			if (obj->Base() == Object::sVarRefPrototype)
+				var = static_cast<VarRef *>(obj);
+		}
+		if (!result || aborted)
+		{
+			if (mem_to_free)
+				free(mem_to_free);
+			if (value.symbol == SYM_OBJECT)
+				value.object->Release();
 			// Although 0 or "" is a fairly conventional default, it might not be safe.
 			// For error-detection and to avoid unexpected behaviour, "unset" the var.
-			var->Uninitialize();
+			if (var) // Avoid `obj.__value := unset` as it seems likely to cause another error.
+				var->UninitializeNonVirtual();
 		}
+		else
+		{
+			if (!var)
+				var = new (_alloca(sizeof(Var))) Var(obj); // mType = VAR_VIRTUAL_OBJ
+			if (mem_to_free)
+				result = var->AcceptNewMem(mem_to_free, value.marker_length);
+			else if (value.symbol == SYM_OBJECT)
+				result = var->AssignSkipAddRef(value.object);
+			else
+				result = var->Assign(value);
+		}
+	}
+
+	if (!result || aborted) // An assignment above or the function call itself failed.
+	{
+		aResultToken.Free();
+		aResultToken.mem_to_free = nullptr; // Because Free() doesn't clear it.
+		aResultToken.SetValue(_T(""), 0);
 	}
 
 end:
 	DEBUGGER_STACK_POP()
+#ifdef ENABLE_IMPLICIT_TOSTRING
 	// Free any temporary results of ToString() calls.
 	for (int i = 0; i < rt_count; ++i)
 		rtp[i].Free();
+#endif
 	return result;
 }
 

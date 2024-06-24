@@ -107,7 +107,8 @@ inline bool BreakpointLineIsSlippery(Line *aLine)
 Line *Debugger::FindFirstLineForBreakpoint(int file_index, UINT line_no)
 {
 	Line *found_line = nullptr;
-	for (Line *line = g_script->mFirstLine; line; line = line->mNextLine)
+	for (auto mod = g_script->mLastModule; mod; mod = mod->mPrev)
+	for (Line *line = mod->mFirstLine; line; line = line->mNextLine)
 	{
 		if (line->mFileIndex == file_index && line->mLineNumber >= line_no)
 		{
@@ -129,6 +130,47 @@ Line *Debugger::FindFirstLineForBreakpoint(int file_index, UINT line_no)
 		}
 	}
 	return found_line;
+}
+
+Breakpoint *Debugger::CreateBreakpoint()
+{
+	auto bp = new Breakpoint();
+	mLastBreakpoint->next = bp;
+	mLastBreakpoint = bp;
+	return bp;
+}
+
+void Debugger::DeleteBreakpoints(bool aAll)
+{
+	Breakpoint *next = mFirstBreakpoint, *del = nullptr, *p;
+	do
+	{
+		for (p = next, next = p->next; next && (aAll || next->state == BS_Deleted);)
+		{
+			del = next;
+			next = next->next;
+			delete del;
+		}
+		if (del)
+			p->next = next, del = nullptr;
+	} while (next);
+	mLastBreakpoint = p;
+}
+
+void Debugger::DeleteBreakpoint(Breakpoint *aBp)
+{
+	// aBp != mFirstBreakpoint, because that's currently always &mBreakOnException.
+	for (Breakpoint *p = mFirstBreakpoint;; p = p->next)
+	{
+		if (p->next == aBp)
+		{
+			p->next = aBp->next;
+			if (mLastBreakpoint == aBp)
+				mLastBreakpoint = p;
+			break;
+		}
+	}
+	delete aBp;
 }
 
 // Set Line::mBreakpoint for all executable lines that share the line's number,
@@ -153,6 +195,9 @@ int Debugger::PreExecLine(Line *aLine)
 	// small amount of complexity in stack_get (which is only called by request of the debugger client):
 	//	mStack.mTop->line = aLine;
 	mCurrLine = aLine;
+
+	if (mProcessingCommands) // Reentry into ProcessCommands() isn't possible, so Break() would be ignored.
+		return DEBUGGER_E_OK; // Skip the rest; in particular, don't delete any temporary breakpoints.
 	
 	// Check for a breakpoint on the current line:
 	Breakpoint *bp = aLine->mBreakpoint;
@@ -164,7 +209,7 @@ int Debugger::PreExecLine(Line *aLine)
 			while ((prev = line->mPrevLine) && prev->mLineNumber == line->mLineNumber && prev->mFileIndex == line->mFileIndex)
 				line = prev;
 			SetBreakpointForLineGroup(line, nullptr);
-			delete bp;
+			DeleteBreakpoint(bp);
 		}
 		return Break();
 	}
@@ -175,7 +220,7 @@ int Debugger::PreExecLine(Line *aLine)
 		// Although IF/ELSE/LOOP skips its block-begin, standalone/function-body block-begin still gets here; we want to skip it,
 		// unless it's the block-end of a function, to allow breaking there after a "return" to inspect variables while still in scope.
 		&& !PreExecLineIsSlippery(aLine)
-		&& aLine->mLineNumber) // Some scripts (i.e. LowLevel/code.ahk) use mLineNumber==0 to indicate the Line has been generated and injected by the script.
+		&& aLine->mLineNumber) // Lines with no number should be skipped (e.g. lines inserted by Script::DefineClassInit).
 	{
 		return Break();
 	}
@@ -194,12 +239,27 @@ int Debugger::PreExecLine(Line *aLine)
 }
 
 
+void Debugger::LeaveFunction()
+{
+	// If the debugger is stepping out from a user-defined function, break at the line
+	// which called the function.  Otherwise, a step might appear to jump from one
+	// function to another called by the same line, or to the next line, or to some line
+	// further up the stack.  Into/Over count as stepping out only if the function we're
+	// leaving is the one in which the step command was issued.
+	if (mInternalState == DIS_StepInto
+		|| ((mInternalState == DIS_StepOut || mInternalState == DIS_StepOver)
+			&& mStack.Depth() < mContinuationDepth) // Always '<' and not '<=' (for StepOver) because we just returned from a function call.
+		&& mStack.mTop > mStack.mBottom) // More than one entry, otherwise mCurrLine has no meaning.
+		PreExecLine(mCurrLine);
+}
+
+
 bool Debugger::PreThrow(ExprTokenType *aException)
 {
-	if (!mBreakOnException)
+	if (mBreakOnException.state != BS_Enabled)
 		return false;
-	if (mBreakOnExceptionIsTemporary)
-		mBreakOnException = mBreakOnExceptionWasSet = false;
+	if (mBreakOnException.temporary)
+		mBreakOnException.state = BS_Disabled;
 	mThrownToken = aException;
 	// The spec doesn't provide a way to differentiate between handled and unhandled exceptions,
 	// nor when to use the "exception" and "error" statuses, so we'll use them for that:
@@ -281,6 +341,13 @@ int Debugger::ProcessCommands(LPCSTR aBreakReason)
 		if (err = EnterBreakState(aBreakReason))
 			return err;
 	mProcessingCommands = true;
+	// Set a non-zero ExcptMode so that UnhandledException will be called for runtime
+	// errors, and use EXCPTMODE_DEBUGGER so that UnhandledException will immediately
+	// free the exception and return FAIL without doing any reporting.
+	// Any ExcptMode flags of the interrupted thread don't apply to code executed by the
+	// debugger, since it isn't executing within or being called by the current block.
+	auto excptmode = g->ExcptMode;
+	g->ExcptMode = EXCPTMODE_DEBUGGER;
 
 	// Disable notification of READ readiness and reset socket to synchronous mode.
 	u_long zero = 0;
@@ -380,6 +447,7 @@ int Debugger::ProcessCommands(LPCSTR aBreakReason)
 	}
 	ASSERT(mInternalState != DIS_Break);
 	mProcessingCommands = false;
+	g->ExcptMode = excptmode;
 	// Register for message-based notification of data arrival.  If a command
 	// is received asynchronously, control will be passed back to the debugger
 	// to process it.  This allows the debugger engine to respond even if the
@@ -713,15 +781,12 @@ DEBUGGER_COMMAND(Debugger::breakpoint_set)
 	{
 		if (!strcmp(type, "exception") && lineno == 0 && !filename)
 		{
-			mBreakOnException = state;
-			mBreakOnExceptionIsTemporary = temporary;
-			mBreakOnExceptionWasSet = true;
-			if (!mBreakOnExceptionID)
-				mBreakOnExceptionID = Breakpoint::AllocateID();
+			mBreakOnException.state = state;
+			mBreakOnException.temporary = temporary;
 			
 			return mResponseBuf.WriteF(
 				"<response command=\"breakpoint_set\" transaction_id=\"%e\" state=\"%s\" id=\"%i\"/>"
-				, aTransactionId, state ? "enabled" : "disabled", mBreakOnExceptionID);
+				, aTransactionId, state ? "enabled" : "disabled", mBreakOnException.id);
 		}
 		return DEBUGGER_E_BREAKPOINT_TYPE;
 	}
@@ -750,7 +815,8 @@ DEBUGGER_COMMAND(Debugger::breakpoint_set)
 		Breakpoint *bp = line->mBreakpoint;
 		if (!bp)
 		{
-			bp = new Breakpoint();
+			bp = CreateBreakpoint();
+			bp->line = line;
 			SetBreakpointForLineGroup(line, bp);
 		}
 		bp->state = state;
@@ -764,17 +830,14 @@ DEBUGGER_COMMAND(Debugger::breakpoint_set)
 	return DEBUGGER_E_BREAKPOINT_INVALID;
 }
 
-int Debugger::WriteBreakpointXml(Breakpoint *aBreakpoint, Line *aLine)
+int Debugger::WriteBreakpointXml(Breakpoint *aBreakpoint)
 {
+	if (aBreakpoint->type == BT_Exception)
+		return mResponseBuf.WriteF("<breakpoint id=\"%i\" type=\"exception\" state=\"%s\" exception=\"Any\"/>"
+			, aBreakpoint->id, aBreakpoint->state == BS_Enabled ? "enabled" : "disabled");
 	return mResponseBuf.WriteF("<breakpoint id=\"%i\" type=\"line\" state=\"%s\" filename=\"%r\" lineno=\"%u\"/>"
 		, aBreakpoint->id, aBreakpoint->state ? "enabled" : "disabled"
-		, Line::sSourceFile[aLine->mFileIndex], aLine->mLineNumber);
-}
-
-int Debugger::WriteExceptionBreakpointXml()
-{
-	return mResponseBuf.WriteF("<breakpoint id=\"%i\" type=\"exception\" state=\"%s\" exception=\"Any\"/>"
-		, mBreakOnExceptionID, mBreakOnException ? "enabled" : "disabled");
+		, Line::sSourceFile[aBreakpoint->line->mFileIndex], aBreakpoint->line->mLineNumber);
 }
 
 DEBUGGER_COMMAND(Debugger::breakpoint_get)
@@ -785,24 +848,16 @@ DEBUGGER_COMMAND(Debugger::breakpoint_get)
 
 	int breakpoint_id = atoi(ArgValue(aArgV, 0));
 
-	Line *line;
-	for (line = g_script->mFirstLine; line; line = line->mNextLine)
+	for (auto bp = mFirstBreakpoint; bp; bp = bp->next)
 	{
-		if (line->mBreakpoint && line->mBreakpoint->id == breakpoint_id)
+		if (bp->id == breakpoint_id)
 		{
 			mResponseBuf.WriteF("<response command=\"breakpoint_get\" transaction_id=\"%e\">", aTransactionId);
-			WriteBreakpointXml(line->mBreakpoint, line);
+			WriteBreakpointXml(bp);
 			mResponseBuf.Write("</response>");
 
 			return DEBUGGER_E_OK;
 		}
-	}
-
-	if (breakpoint_id == mBreakOnExceptionID && mBreakOnExceptionWasSet)
-	{
-		mResponseBuf.WriteF("<response command=\"breakpoint_get\" transaction_id=\"%e\">", aTransactionId);
-		WriteExceptionBreakpointXml();
-		return mResponseBuf.Write("</response>");
 	}
 
 	return DEBUGGER_E_BREAKPOINT_NOT_FOUND;
@@ -812,7 +867,7 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 {
 	char arg, *value;
 	
-	int breakpoint_id = 0; // Breakpoint IDs begin at 1.
+	int breakpoint_id = -1;
 	LineNumberType lineno = 0;
 	char state = -1;
 
@@ -823,6 +878,8 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 		switch (arg)
 		{
 		case 'd':
+			if (!cisdigit(*value))
+				return DEBUGGER_E_INVALID_OPTIONS;
 			breakpoint_id = atoi(value);
 			break;
 
@@ -849,25 +906,22 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 		}
 	}
 
-	if (!breakpoint_id)
-		return DEBUGGER_E_INVALID_OPTIONS;
-
-	Line *line;
-	for (line = g_script->mFirstLine; line; line = line->mNextLine)
+	for (auto bp = mFirstBreakpoint; bp; bp = bp->next)
 	{
-		Breakpoint *bp = line->mBreakpoint;
-
-		if (bp && bp->id == breakpoint_id)
+		if (bp->id == breakpoint_id)
 		{
-			if (lineno && line->mLineNumber != lineno)
+			if (lineno && !bp->line)
+				return DEBUGGER_E_INVALID_OPTIONS;
+
+			if (lineno && bp->line->mLineNumber != lineno)
 			{
 				// Move the breakpoint within its current file.
-				Line *new_line = FindFirstLineForBreakpoint(line->mFileIndex, lineno);
-				if (new_line != line)
+				Line *new_line = FindFirstLineForBreakpoint(bp->line->mFileIndex, lineno);
+				if (new_line != bp->line)
 				{
 					if (!new_line)
 						return DEBUGGER_E_BREAKPOINT_INVALID;
-					SetBreakpointForLineGroup(line, nullptr);
+					SetBreakpointForLineGroup(bp->line, nullptr);
 					SetBreakpointForLineGroup(new_line, bp);
 				}
 			}
@@ -879,12 +933,6 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 		}
 	}
 
-	if (breakpoint_id == mBreakOnExceptionID)
-	{
-		mBreakOnException = state;
-		return DEBUGGER_E_OK;
-	}
-
 	return DEBUGGER_E_BREAKPOINT_NOT_FOUND;
 }
 
@@ -894,24 +942,26 @@ DEBUGGER_COMMAND(Debugger::breakpoint_remove)
 	if (aArgCount != 1 || ArgChar(aArgV, 0) != 'd')
 		return DEBUGGER_E_INVALID_OPTIONS;
 
-	int breakpoint_id = atoi(ArgValue(aArgV, 0));
-
-	Line *line;
-	for (line = g_script->mFirstLine; line; line = line->mNextLine)
+	auto arg = ArgValue(aArgV, 0);
+	if (!cisdigit(*arg)) // Don't interpret empty/non-numeric values as ID 0.
+		return DEBUGGER_E_INVALID_OPTIONS;
+	int breakpoint_id = atoi(arg);
+	
+	if (breakpoint_id == mBreakOnException.id)
 	{
-		if (line->mBreakpoint && line->mBreakpoint->id == breakpoint_id)
-		{
-			delete line->mBreakpoint;
-			SetBreakpointForLineGroup(line, nullptr);
-			return DEBUGGER_E_OK;
-		}
+		mBreakOnException.state = BS_Disabled;
+		return DEBUGGER_E_OK;
 	}
 
-	if (breakpoint_id == mBreakOnExceptionID && mBreakOnExceptionWasSet)
+	// mFirstBreakpoint itself is currently always &mBreakOnException.
+	for (auto bp = mFirstBreakpoint->next; bp; bp = bp->next)
 	{
-		mBreakOnException = false;
-		mBreakOnExceptionWasSet = false;
-		return DEBUGGER_E_OK;
+		if (bp->id == breakpoint_id)
+		{
+			SetBreakpointForLineGroup(bp->line, nullptr);
+			DeleteBreakpoint(bp);
+			return DEBUGGER_E_OK;
+		}
 	}
 
 	return DEBUGGER_E_BREAKPOINT_NOT_FOUND;
@@ -924,22 +974,8 @@ DEBUGGER_COMMAND(Debugger::breakpoint_list)
 	
 	mResponseBuf.WriteF("<response command=\"breakpoint_list\" transaction_id=\"%e\">", aTransactionId);
 	
-	int last_id = -1;
-	Line *line;
-	for (line = g_script->mFirstLine; line; line = line->mNextLine)
-	{
-		if (line->mBreakpoint && last_id != line->mBreakpoint->id)
-		{
-			WriteBreakpointXml(line->mBreakpoint, line);
-			// A breakpoint could be on a group of lines that have the same number, but might
-			// not be consecutive lines (i.e. some lines in-between might have no breakpoint).
-			// So just track the last ID to avoid writing the same breakpoint multiple times.
-			last_id = line->mBreakpoint->id;
-		}
-	}
-
-	if (mBreakOnExceptionWasSet)
-		WriteExceptionBreakpointXml();
+	for (auto bp = mFirstBreakpoint->state ? mFirstBreakpoint : mFirstBreakpoint->next; bp; bp = bp->next)
+		WriteBreakpointXml(bp);
 
 	return mResponseBuf.Write("</response>");
 }
@@ -1148,23 +1184,10 @@ int Debugger::GetPropertyInfo(VarBkp &aBkp, PropertyInfo &aProp)
 
 int Debugger::GetPropertyValue(Var &aVar, ResultToken &aValue)
 {
-	if (aVar.IsVirtual())
-	{
-		aValue.Free();
-		aValue.InitResult(aValue.buf);
-		aVar.Get(aValue);
-		if (aValue.symbol == SYM_OBJECT)
-			aValue.object->AddRef(); // See comments in ExpandExpression and BIV_TrayMenu.
-		if (aValue.Exited())
-			return DEBUGGER_E_EVAL_FAIL;
-	}
-	else
-	{
-		aValue.Free();
-		aValue.mem_to_free = nullptr; // Any value would be overwritten but this must be cleared manually.
-		aVar.ToToken(aValue);
-	}
-	return DEBUGGER_E_OK;
+	aValue.Free();
+	aValue.InitResult(aValue.buf);
+	aVar.Get(aValue);
+	return aValue.Exited() ? DEBUGGER_E_EVAL_FAIL : DEBUGGER_E_OK;
 }
 
 int Debugger::GetPropertyValue(VarBkp &aBkp, ResultToken &aValue)
@@ -1181,8 +1204,13 @@ int Debugger::WritePropertyObjectXml(PropertyInfo &aProp)
 	if (!aProp.invokee)
 		aProp.invokee = aProp.value.object;
 	PropertyWriter pw(*this, aProp);
-	// Ask the object to write out its properties:
-	aProp.invokee->DebugWriteProperty(&pw, aProp.page, aProp.pagesize, aProp.max_depth);
+	// Write out the object's properties.
+	Object *defs;
+	if (aProp.invokee->IsOfType(Object::sPrototype))
+		defs = static_cast<Object*>(aProp.invokee);
+	else
+		defs = aProp.invokee->Base();
+	defs->DebugWriteProperty(&pw, aProp.page, aProp.pagesize, aProp.max_depth);
 	aProp.fullname.Truncate(pw.mNameLength);
 	// For simplicity/code size, instead of requiring error handling in aObject,
 	// any failure during the above sets pw.mError, which causes it to ignore
@@ -1190,6 +1218,7 @@ int Debugger::WritePropertyObjectXml(PropertyInfo &aProp)
 	// code (even if it's "OK"):
 	return pw.mError;
 }
+
 
 void Object::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPageSize, int aDepth)
 {
@@ -1232,6 +1261,9 @@ void Object::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPag
 			aDebugger->WriteProperty(vname.Contents(), value);
 		}
 
+		vname.Free();
+		vval.Free();
+
 		if (enum_method && i < page_end)
 		{
 			if (dynamic_cast<NativeFunc *>(enum_method))
@@ -1249,12 +1281,11 @@ void Object::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPag
 		}
 
 		props->Release();
-		vname.Free();
-		vval.Free();
 	}
 
 	aDebugger->EndProperty(cookie);
 }
+
 
 int Debugger::WriteEnumItems(PropertyInfo &aProp)
 {
@@ -3155,16 +3186,9 @@ void Debugger::PropertyWriter::WriteBaseProperty(IObject *aBase)
 void Debugger::PropertyWriter::WriteDynamicProperty(LPTSTR aName)
 {
 	FuncResult result_token;
-	auto excpt_mode = g->ExcptMode;
-	g->ExcptMode |= EXCPTMODE_CATCH;
 	auto result = mProp.invokee->Invoke(result_token, IT_GET, aName, mProp.value, nullptr, 0);
-	g->ExcptMode = excpt_mode;
 	if (!result)
-	{
-		if (g->ThrownToken)
-			g_script->FreeExceptionToken(g->ThrownToken);
 		result_token.SetValue(_T("<error>"), 7);
-	}
 	mDbg.AppendPropertyName(mProp.fullname, mNameLength, CStringUTF8FromTChar(aName));
 	_WriteProperty(result_token);
 	result_token.Free();
@@ -3176,7 +3200,8 @@ void Debugger::PropertyWriter::_WriteProperty(ExprTokenType &aValue, IObject *aI
 	if (mError)
 		return;
 	PropertyInfo prop(mProp.fullname, mProp.value.buf);
-	prop.invokee = aInvokee;
+	if (aInvokee)
+		prop.invokee = aInvokee;
 	// Find the property's "relative" name at the end of the buffer:
 	prop.name = mProp.fullname.GetString() + mNameLength;
 	if (*prop.name == '.')
@@ -3204,9 +3229,15 @@ void Debugger::PropertyWriter::BeginProperty(LPCSTR aName, LPCSTR aType, int aNu
 
 	if (mDepth == 1) // Write <property> for the object itself.
 	{
-		LPTSTR classname = mProp.invokee->Type();
-		mError = mDbg.mResponseBuf.WriteF("<property name=\"%e\" fullname=\"%e\" type=\"%s\" facet=\"%s\" classname=\"%s\" address=\"%p\" size=\"0\" page=\"%i\" pagesize=\"%i\" children=\"%i\">"
-					, mProp.name, mProp.fullname.GetString(), aType, mProp.facet, U4T(classname), mProp.invokee, mProp.page, mProp.pagesize, aNumChildren > 0);
+		LPTSTR classname;
+		LPSTR class_suffix = "";
+		if (   mProp.invokee->IsOfType(Object::sPrototype)
+			&& (classname = static_cast<Object*>(mProp.invokee)->GetOwnPropString(_T("__Class")))   )
+			class_suffix = ".Prototype";
+		else
+			classname = mProp.invokee->Type();
+		mError = mDbg.mResponseBuf.WriteF("<property name=\"%e\" fullname=\"%e\" type=\"%s\" facet=\"%s\" classname=\"%s%s\" address=\"%p\" size=\"0\" page=\"%i\" pagesize=\"%i\" children=\"%i\">"
+					, mProp.name, mProp.fullname.GetString(), aType, mProp.facet, U4T(classname), class_suffix, mProp.invokee, mProp.page, mProp.pagesize, aNumChildren > 0);
 		return;
 	}
 

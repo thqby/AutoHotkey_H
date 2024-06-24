@@ -20,6 +20,7 @@ GNU General Public License for more details.
 #include "application.h" // for MsgSleep()
 #include "window.h" // for SetForegroundWindowEx()
 #include "script_func_impl.h"
+#include "script_gui.h"
 
 
 
@@ -1277,8 +1278,8 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 			return OK; // The other actions below are unlikely to apply in this case.
 		// We made it modeless, so wait until the menu closes before returning.
 		while (g_MenuIsTempModeless == mMenu)
-			if ((char)g->IsPaused == -1)	// ahk_h: Used to terminate a thread
-				return EARLY_RETURN;
+			if (g->Exited())
+				return EARLY_EXIT;
 			else
 				MsgSleep(INTERVAL_UNSPECIFIED);
 	}

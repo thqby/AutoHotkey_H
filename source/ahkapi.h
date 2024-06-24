@@ -31,6 +31,17 @@
 
 #define _f_callee_id			(aResultToken.func->mFID)
 
+#ifdef _WIN64
+#define Exp32or64(exp32, exp64) (exp64)
+#else
+#define Exp32or64(exp32, exp64) (exp32)
+#endif
+
+#define VAR_NEVER_FREE			0
+#define VAR_ALWAYS_FREE			1
+#define VAR_FREE_IF_LARGE		2
+#define VAR_CLEAR_ALIASES		4
+#define VAR_REQUIRE_INIT		8
 
 enum ResultType {
 	FAIL = 0, OK, WARN = OK, CRITICAL_ERROR
@@ -69,13 +80,6 @@ struct DECLSPEC_NOVTABLE IObject : public IDispatch
 #define IObject_Type_Impl LPTSTR Type() { return _T(CLASSNAME); }
 	virtual Object* Base() = 0;
 	virtual bool IsOfType(Object* aPrototype) = 0;
-
-#ifdef CONFIG_DEBUGGER
-#define IObject_DebugWriteProperty_Def void DebugWriteProperty(void *aDebugger, int aPage, int aPageSize, int aMaxDepth)
-	virtual void DebugWriteProperty(void* aDebugger, int aPage, int aPageSize, int aMaxDepth) = 0;
-#else
-#define IObject_DebugWriteProperty_Def
-#endif
 };
 
 #define MAXP_VARIADIC 255
@@ -264,6 +268,7 @@ public:
 		};
 		SymbolType symbol;
 		TCHAR key_c;
+		bool enumerable;
 	};
 
 	struct FieldType : Variant
@@ -436,6 +441,59 @@ public:
 	UCHAR mMIT;
 };
 
+enum class MdType : UINT8
+{
+	Void		= 0,
+	Int8		= 1,
+	UInt8		= 2,
+	Int16		= 3,
+	UInt16		= 4,
+	Int32		= 5,
+	UInt32		= 6,
+	Int64		= 7,
+	UInt64		= 8,
+	Float64		= 9,
+	Float32		= 10,
+	String,
+	Object,
+	Variant, // Currently only for input (ExprTokenType) or retval (ResultToken).
+	Bool32,
+	ResultType,
+	FResult,
+	//NzIntWin32, // BOOL result where FALSE means failure and GetLastError() is applicable.
+	Params,
+#ifdef ENABLE_MD_BITS
+	BitsBase	= 99, // For encoding a small literal value to insert into the parameter list.
+#endif
+	Optional	= 0x80,
+	RetVal,
+	Out,
+#ifdef ENABLE_MD_THISCALL
+	ThisCall, // Only valid at the beginning of the args.
+#endif
+	// Only aliases from here on
+	FirstNumberType = Int8,
+	LastNumberType = Float32,
+	FirstIntType = Int8,
+	LastIntType = UInt64,
+	First64bitNumType = Int64,
+	Last64bitNumType = Float64,
+	FirstModifier = Optional,
+	BitsUpperBound = Optional,
+	UIntPtr = Exp32or64(UInt32, UInt64),
+	IntPtr = Exp32or64(Int32, Int64)
+};
+class MdFunc : public NativeFunc
+{
+	void *mMcFunc; // Pointer to native function.
+	Object *mPrototype; // Prototype object used for type checking; a non-null value implies mMcFunc is a member function.
+	MdType *mArgType; // Sequence of native arg types and modifiers.
+	MdType mRetType; // Type of native return value (not necessarily the script return value).
+	UINT8 mMaxResultTokens; // Number of ResultTokens that might be allocated for conversions.
+	UINT8 mArgSlots; // Number of DWORD_PTRs needed for the parameter list.
+	bool mThisCall;
+};
+
 struct ObjectMember
 {
 	LPTSTR name;
@@ -501,70 +559,72 @@ public:
 		size_t mSize = 0;
 		void (*OnDispose)() = nullptr;
 		~Prototype();
-		virtual Object* New(ExprTokenType* aParam[], int aParamCount);
+		virtual Object *New(ExprTokenType *aParam[], int aParamCount);
 	};
 
 	// IUnknown
 	ULONG STDMETHODCALLTYPE AddRef();
 	ULONG STDMETHODCALLTYPE Release();
-	STDMETHODIMP QueryInterface(REFIID riid, void** ppv);
+	STDMETHODIMP QueryInterface(REFIID riid, void **ppv);
 
-	virtual void* STDMETHODCALLTYPE Malloc(size_t aSize);
-	virtual void* STDMETHODCALLTYPE Realloc(void* aPtr, size_t aSize);
-	virtual void STDMETHODCALLTYPE Free(void* aPtr);
+	virtual void *STDMETHODCALLTYPE Malloc(size_t aSize);
+	virtual void *STDMETHODCALLTYPE Realloc(void *aPtr, size_t aSize);
+	virtual void STDMETHODCALLTYPE Free(void *aPtr);
 
 	// Don't need free when return by `ExprTokenType` or call `TokenToString`
-	virtual LPTSTR STDMETHODCALLTYPE TokenToString(ExprTokenType& aToken, TCHAR aBuf[] = nullptr, size_t* aLength = nullptr);
-	virtual bool STDMETHODCALLTYPE TokenToNumber(ExprTokenType& aInput, ExprTokenType& aOutput);
-	virtual bool STDMETHODCALLTYPE VarAssign(Var* aVar, ExprTokenType& aToken);
-	virtual void STDMETHODCALLTYPE VarToToken(Var* aVar, ExprTokenType& aToken);
-	virtual void STDMETHODCALLTYPE VarFree(Var* aVar, bool aExcludeAliasesAndRequireInit = false);
-	virtual bool STDMETHODCALLTYPE VariantAssign(Object::Variant& aVariant, ExprTokenType& aValue);
-	virtual void STDMETHODCALLTYPE VariantToToken(Object::Variant& aVariant, ExprTokenType& aToken);
-	virtual void STDMETHODCALLTYPE VariantToToken(VARIANT& aVariant, ResultToken& aToken, bool aRetainVar = true);
-	virtual void STDMETHODCALLTYPE ResultTokenFree(ResultToken& aToken);
+	virtual LPTSTR STDMETHODCALLTYPE TokenToString(ExprTokenType &aToken, TCHAR aBuf[] = nullptr, size_t *aLength = nullptr);
+	virtual bool STDMETHODCALLTYPE TokenToNumber(ExprTokenType &aInput, ExprTokenType &aOutput);
+	virtual bool STDMETHODCALLTYPE VarAssign(Var *aVar, ExprTokenType &aToken);
+	virtual void STDMETHODCALLTYPE VarToToken(Var *aVar, ResultToken &aToken);
+	virtual void STDMETHODCALLTYPE VarFree(Var *aVar, int aWhenToFree = VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES);
+	virtual bool STDMETHODCALLTYPE VariantAssign(Object::Variant &aVariant, ExprTokenType &aValue);
+	virtual void STDMETHODCALLTYPE VariantToToken(Object::Variant &aVariant, ExprTokenType &aToken);
+	virtual void STDMETHODCALLTYPE VariantToToken(VARIANT &aVariant, ResultToken &aToken, bool aRetainVar = true);
+	virtual void STDMETHODCALLTYPE ResultTokenFree(ResultToken &aToken);
 	virtual ResultType STDMETHODCALLTYPE Error(LPTSTR aErrorText, LPTSTR aExtraInfo = _T(""), ErrorType aType = ErrorType::Error);
-	virtual ResultType STDMETHODCALLTYPE TypeError(LPTSTR aExpectedType, ExprTokenType& aToken);
+	virtual ResultType STDMETHODCALLTYPE TypeError(LPTSTR aExpectedType, ExprTokenType &aToken);
 
-	virtual void* STDMETHODCALLTYPE GetProcAddress(LPTSTR aDllFileFunc, HMODULE* hmodule_to_free = nullptr);
-	virtual void* STDMETHODCALLTYPE GetProcAddressCrc32(HMODULE aModule, UINT aCRC32, UINT aInitial = 0);
+	virtual void *STDMETHODCALLTYPE GetProcAddress(LPTSTR aDllFileFunc, HMODULE *hmodule_to_free = nullptr);
+	virtual void *STDMETHODCALLTYPE GetProcAddressCrc32(HMODULE aModule, UINT aCRC32, UINT aInitial = 0);
 
-	virtual bool STDMETHODCALLTYPE Script_GetVar(LPTSTR aVarName, ExprTokenType& aValue);
-	virtual bool STDMETHODCALLTYPE Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue);
+	virtual bool STDMETHODCALLTYPE Script_GetVar(LPTSTR aVarName, ResultToken &aValue, LPTSTR aModuleName = nullptr);
+	virtual bool STDMETHODCALLTYPE Script_SetVar(LPTSTR aVarName, ExprTokenType &aValue, LPTSTR aModuleName = nullptr);
 
-	virtual Func* STDMETHODCALLTYPE Func_New(FuncEntry& aBIF);
-	virtual Func* STDMETHODCALLTYPE Method_New(LPTSTR aFullName, ObjectMember& aMember, Object* aPrototype);
+	virtual Func *STDMETHODCALLTYPE Func_New(FuncEntry &aBIF);
+	virtual Func *STDMETHODCALLTYPE Method_New(LPTSTR aFullName, ObjectMember &aMember, Object *aPrototype);
 	// `aPrototype` does not need to be released, `obj->IsOfType(aPrototype)` is used to check the object type
-	virtual Object* STDMETHODCALLTYPE Class_New(LPTSTR aClassName, size_t aClassSize, ObjectMember aMembers[], int aMemberCount, Prototype*& aPrototype, Object* aBase = nullptr);
+	virtual Object *STDMETHODCALLTYPE Class_New(LPTSTR aClassName, size_t aClassSize, ObjectMember aMembers[], int aMemberCount, Prototype *&aPrototype, Object *aBase = nullptr);
 
-	virtual IObject* STDMETHODCALLTYPE GetEnumerator(IObject* aObj, int aVarCount);
-	virtual bool STDMETHODCALLTYPE CallEnumerator(IObject* aEnumerator, ExprTokenType* aParam[], int aParamCount);
+	virtual IObject *STDMETHODCALLTYPE GetEnumerator(IObject *aObj, int aVarCount);
+	virtual bool STDMETHODCALLTYPE CallEnumerator(IObject *aEnumerator, ExprTokenType *aParam[], int aParamCount);
 
-	virtual IObject* STDMETHODCALLTYPE Object_New(ObjectType aType = ObjectType::Object, ExprTokenType* aParam[] = nullptr, int aParamCount = 0);
-	virtual bool STDMETHODCALLTYPE Object_CallProp(ResultToken& aResultToken, Object* aObject, LPTSTR aName, ExprTokenType* aParam[], int aParamCount);
-	virtual bool STDMETHODCALLTYPE Object_GetProp(ResultToken& aResultToken, Object* aObject, LPTSTR aName, bool aOwnProp = false, ExprTokenType* aParam[] = nullptr, int aParamCount = 0);
-	virtual bool STDMETHODCALLTYPE Object_SetProp(Object* aObject, LPTSTR aName, ExprTokenType& aValue, bool aOwnProp = false, ExprTokenType* aParam[] = nullptr, int aParamCount = 0);
-	virtual bool STDMETHODCALLTYPE Object_DeleteOwnProp(ResultToken& aResultToken, Object* aObject, LPTSTR aName);
-	virtual void STDMETHODCALLTYPE Object_Clear(Object* aObject);
+	virtual IObject *STDMETHODCALLTYPE Object_New(ObjectType aType = ObjectType::Object, ExprTokenType *aParam[] = nullptr, int aParamCount = 0);
+	virtual bool STDMETHODCALLTYPE Object_CallProp(ResultToken &aResultToken, Object *aObject, LPTSTR aName, ExprTokenType *aParam[], int aParamCount);
+	virtual bool STDMETHODCALLTYPE Object_GetProp(ResultToken &aResultToken, Object *aObject, LPTSTR aName, bool aOwnProp = false, ExprTokenType *aParam[] = nullptr, int aParamCount = 0);
+	virtual bool STDMETHODCALLTYPE Object_SetProp(Object *aObject, LPTSTR aName, ExprTokenType &aValue, bool aOwnProp = false, ExprTokenType *aParam[] = nullptr, int aParamCount = 0);
+	virtual bool STDMETHODCALLTYPE Object_DeleteOwnProp(ResultToken &aResultToken, Object *aObject, LPTSTR aName);
+	virtual void STDMETHODCALLTYPE Object_Clear(Object *aObject);
 
-	virtual bool STDMETHODCALLTYPE Array_GetItem(Array* aArray, UINT aIndex, ExprTokenType& aValue);
-	virtual bool STDMETHODCALLTYPE Array_SetItem(Array* aArray, UINT aIndex, ExprTokenType& aValue);
-	virtual bool STDMETHODCALLTYPE Array_InsertItem(Array* aArray, ExprTokenType& aValue, UINT* aIndex = nullptr);
-	virtual bool STDMETHODCALLTYPE Array_DeleteItem(ResultToken& aResultToken, Array* aArray, UINT aIndex);
-	virtual bool STDMETHODCALLTYPE Array_RemoveItems(Array* aArray, UINT aIndex = 0, UINT aCount = -1);
-	virtual Array* STDMETHODCALLTYPE Array_FromEnumerable(IObject* aEnumerable, UINT aIndex = 0);
+	virtual bool STDMETHODCALLTYPE Array_GetItem(Array *aArray, UINT aIndex, ExprTokenType &aValue);
+	virtual bool STDMETHODCALLTYPE Array_SetItem(Array *aArray, UINT aIndex, ExprTokenType &aValue);
+	virtual bool STDMETHODCALLTYPE Array_InsertItem(Array *aArray, ExprTokenType &aValue, UINT *aIndex = nullptr);
+	virtual bool STDMETHODCALLTYPE Array_DeleteItem(ResultToken &aResultToken, Array *aArray, UINT aIndex);
+	virtual bool STDMETHODCALLTYPE Array_RemoveItems(Array *aArray, UINT aIndex = 0, UINT aCount = -1);
+	virtual Array *STDMETHODCALLTYPE Array_FromEnumerable(IObject *aEnumerable, UINT aIndex = 0);
 
-	virtual bool STDMETHODCALLTYPE Buffer_Resize(BufferObject* aBuffer, size_t aSize);
+	virtual bool STDMETHODCALLTYPE Buffer_Resize(BufferObject *aBuffer, size_t aSize);
 
-	virtual bool STDMETHODCALLTYPE Map_GetItem(Map* aMap, ExprTokenType& aKey, ExprTokenType& aValue);
-	virtual bool STDMETHODCALLTYPE Map_SetItem(Map* aMap, ExprTokenType& aKey, ExprTokenType& aValue);
-	virtual bool STDMETHODCALLTYPE Map_DeleteItem(ResultToken& aResultToken, Map* aMap, ExprTokenType& aKey);
-	virtual void STDMETHODCALLTYPE Map_Clear(Map* aMap);
+	virtual bool STDMETHODCALLTYPE Map_GetItem(Map *aMap, ExprTokenType &aKey, ExprTokenType &aValue);
+	virtual bool STDMETHODCALLTYPE Map_SetItem(Map *aMap, ExprTokenType &aKey, ExprTokenType &aValue);
+	virtual bool STDMETHODCALLTYPE Map_DeleteItem(ResultToken &aResultToken, Map *aMap, ExprTokenType &aKey);
+	virtual void STDMETHODCALLTYPE Map_Clear(Map *aMap);
 
-	virtual Object* STDMETHODCALLTYPE JSON_Parse(LPTSTR aJSON);
-	virtual LPTSTR STDMETHODCALLTYPE JSON_Stringify(IObject* aObject, LPTSTR aIndent = nullptr);
+	virtual Object *STDMETHODCALLTYPE JSON_Parse(LPTSTR aJSON);
+	virtual LPTSTR STDMETHODCALLTYPE JSON_Stringify(IObject *aObject, LPTSTR aIndent = nullptr);
 
 	virtual void STDMETHODCALLTYPE PumpMessages();
+
+	virtual Func *STDMETHODCALLTYPE MdFunc_New(LPCTSTR aName, void *aFuncPtr, MdType *aSig, Object *aPrototype = nullptr);
 };
 
 EXPORT IAhkApi* ahkGetApi(void* options = nullptr);

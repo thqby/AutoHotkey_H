@@ -23,18 +23,9 @@ GNU General Public License for more details.
 #include <richedit.h>
 
 
-Line *Line::PreparseError(LPTSTR aErrorText, LPTSTR aExtraInfo)
-// Returns a different type of result for use with the Pre-parsing methods.
+ResultType Line::PreparseError(LPTSTR aErrorText, LPTSTR aExtraInfo)
 {
-	// Make all preparsing errors critical because the runtime reliability
-	// of the program relies upon the fact that the aren't any kind of
-	// problems in the script (otherwise, unexpected behavior may result).
-	// Update: It's okay to return FAIL in this case.  CRITICAL_ERROR should
-	// be avoided whenever OK and FAIL are sufficient by themselves, because
-	// otherwise, callers can't use the NOT operator to detect if a function
-	// failed (since FAIL is value zero, but CRITICAL_ERROR is non-zero):
-	LineError(aErrorText, FAIL, aExtraInfo);
-	return NULL; // Always return NULL because the callers use it as their return value.
+	return LineError(aErrorText, FAIL, aExtraInfo);
 }
 
 
@@ -143,12 +134,8 @@ ResultType Line::SetThrownToken(global_struct &g, ResultToken *aToken, ResultTyp
 {
 #ifdef CONFIG_DEBUGGER
 	if (g_Debugger->IsConnected())
-		if (g_Debugger->IsAtBreak() || g_Debugger->PreThrow(aToken) && !(g.ExcptMode & EXCPTMODE_CATCH))
+		if (g_Debugger->PreThrow(aToken) && !(g.ExcptMode & EXCPTMODE_CATCH))
 		{
-			// IsAtBreak() indicates the debugger was already in a break state, likely
-			// processing a property_get or context_get which caused script execution.
-			// In that case, silence all error dialogs and don't set g.ThrownToken since
-			// the debugger is lax about detecting/clearing it.  If PreThrow was called:
 			// The debugger has entered (and left) a break state, so the client has had a
 			// chance to inspect the exception and report it.  There's nothing in the DBGp
 			// spec about what to do next, probably since PHP would just log the error.
@@ -292,11 +279,6 @@ ResultType Script::RuntimeError(LPCTSTR aErrorText, LPCTSTR aExtraInfo, ResultTy
 	ASSERT(aErrorText);
 	if (!aExtraInfo)
 		aExtraInfo = _T("");
-
-#ifdef CONFIG_DEBUGGER
-	if (g_Debugger->IsAtBreak()) // i.e. the debugger is processing a property_get or context_get.
-		return FAIL; // Silent abort, no g->ThrownToken.
-#endif
 
 	if ((g->ExcptMode || mOnError.Count()
 #ifdef CONFIG_DEBUGGER
@@ -821,7 +803,7 @@ ResultType Script::ScriptError(LPCTSTR aErrorText, LPCTSTR aExtraInfo)
 	if (g_script->mErrorStdOut && !g_script->mIsReadyToExecute) // i.e. runtime errors are always displayed via dialog.
 	{
 		// See LineError() for details.
-		PrintErrorStdOut(aErrorText, aExtraInfo, mCurrFileIndex, mCombinedLineNumber);
+		PrintErrorStdOut(aErrorText, aExtraInfo, mCurrLine ? mCurrLine->mFileIndex : mCurrFileIndex, CurrentLine());
 	}
 	else
 	{
@@ -1017,6 +999,8 @@ ResultType TypeError(LPCTSTR aExpectedType, ExprTokenType &aActualValue)
 {
 	TCHAR number_buf[MAX_NUMBER_SIZE];
 	LPCTSTR actual_type, value_as_string;
+	if (aActualValue.symbol == SYM_VAR && aActualValue.var->IsUninitializedNormalVar())
+		return g_script->VarUnsetError(aActualValue.var);
 	TokenTypeAndValue(aActualValue, actual_type, value_as_string, number_buf);
 	return TypeError(aExpectedType, actual_type, value_as_string);
 }
@@ -1167,7 +1151,15 @@ ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
 	// This includes OnError callbacks explicitly called below, but also COM events
 	// and CallbackCreate callbacks that execute while MsgBox() is waiting.
 	g.ThrownToken = NULL;
-
+	
+#ifdef CONFIG_DEBUGGER
+	if (g.ExcptMode & EXCPTMODE_DEBUGGER)
+	{
+		FreeExceptionToken(token);
+		return FAIL;
+	}
+#endif
+	
 	// OnError: Allow the script to handle it via a global callback.
 	thread_local static bool sOnErrorRunning = false;
 	if (mOnError.Count() && !sOnErrorRunning)
@@ -1248,8 +1240,9 @@ ResultType Script::ShowError(Line* aLine, ResultType aErrorType, ExprTokenType *
 					break;
 			if (!aLine || aLine->mFileIndex != file_index || aLine->mLineNumber != line_no) // Keep aLine if it matches, in case of multiple Lines with the same number.
 			{
-				Line *line;
-				for (line = mFirstLine;
+				Line *line = nullptr;
+				for (auto mod = mLastModule; mod; mod = mod->mPrev)
+				for (line = mod->mFirstLine;
 					line && (line->mLineNumber != line_no || line->mFileIndex != file_index
 						|| !line->mArgc && line->mNextLine && line->mNextLine->mLineNumber == line_no); // Skip any same-line block-begin/end, try, else or finally.
 					line = line->mNextLine);
@@ -1335,6 +1328,8 @@ void Script::ScriptWarning(WarnMode warnMode, LPCTSTR aWarningText, LPCTSTR aExt
 		return;
 #endif
 	
+	if (warnMode == WARNMODE_ON)
+		warnMode = g_WarnMode;
 	if (warnMode == WARNMODE_OFF)
 		return;
 
@@ -1360,12 +1355,12 @@ void Script::ScriptWarning(WarnMode warnMode, LPCTSTR aWarningText, LPCTSTR aExt
 
 void Script::WarnUnassignedVar(Var *var, Line *aLine)
 {
-	auto warnMode = g_Warn_VarUnset;
+	auto warnMode = mCurrentModule->Warn_VarUnset;
 	if (!warnMode)
 		return;
 
 	// Currently only the first reference to each var generates a warning even when using
-	// StdOut/OutputDebug, since MarkAlreadyWarned() is used to suppress warnings for any
+	// StdOut/OutputDebug. MarkAlreadyWarned() is also used to suppress warnings for any
 	// var which is checked with IsSet().
 	//if (warnMode == WARNMODE_MSGBOX)
 	{
@@ -1377,26 +1372,23 @@ void Script::WarnUnassignedVar(Var *var, Line *aLine)
 		var->MarkAlreadyWarned();
 	}
 
-	bool isUndeclaredLocal = (var->Scope() & (VAR_LOCAL | VAR_DECLARED)) == VAR_LOCAL;
-	LPCTSTR sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName) ? _T("  (same name as a global)") : _T("");
-	TCHAR buf[DIALOG_TITLE_SIZE];
-	sntprintf(buf, _countof(buf), _T("%s %s%s"), Var::DeclarationType(var->Scope()), var->mName, sameNameAsGlobal);
-	ScriptWarning(warnMode, WARNING_ALWAYS_UNSET_VARIABLE, buf, aLine);
+	// No check for a global variable is done because var is unassigned and therefore should
+	// have resolved to a global if there was one, unless it was declared local.
+	TCHAR buf[1024];
+	sntprintf(buf, _countof(buf), _T("This %s appears to never be assigned a value."), Var::DeclarationType(var->Scope()));
+	ScriptWarning(warnMode, buf, var->mName, aLine);
 }
 
 
 
 ResultType Script::VarUnsetError(Var *var)
 {
+	TCHAR buf[1024];
 	bool isUndeclaredLocal = (var->Scope() & (VAR_LOCAL | VAR_DECLARED)) == VAR_LOCAL;
-	TCHAR buf[DIALOG_TITLE_SIZE];
-	if (*var->mName) // Avoid showing "Specifically: global " for temporary VarRefs of unspecified scope, such as those used by Array::FromEnumerable or the debugger.
-	{
-		LPCTSTR sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName) ? _T("  (same name as a global)") : _T("");
-		sntprintf(buf, _countof(buf), _T("%s %s%s"), Var::DeclarationType(var->Scope()), var->mName, sameNameAsGlobal);
-	}
-	else *buf = '\0';
-	return RuntimeError(ERR_VAR_UNSET, buf, FAIL_OR_OK, nullptr, ErrorPrototype::Unset);
+	bool sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName);
+	sntprintf(buf, _countof(buf), _T("This %s has not been assigned a value.%s"), Var::DeclarationType(var->Scope())
+		, sameNameAsGlobal ? _T("\nA global declaration inside the function may be required.") : _T(""));
+	return RuntimeError(buf, var->mName, FAIL_OR_OK, nullptr, ErrorPrototype::Unset);
 }
 
 
@@ -1405,11 +1397,10 @@ void Script::WarnLocalSameAsGlobal(LPCTSTR aVarName)
 // Relies on the following pre-conditions:
 //  1) It is an implicit (not declared) variable.
 //  2) Caller has verified that a global variable exists with the same name.
-//  3) g_Warn_LocalSameAsGlobal is on (true).
+//  3) g->CurrentFunc->mModule->Warn_LocalSameAsGlobal is on (true).
 //  4) g->CurrentFunc is the function which contains this variable.
 {
-	auto func_name = g->CurrentFunc ? g->CurrentFunc->mName : _T("");
 	TCHAR buf[DIALOG_TITLE_SIZE];
-	sntprintf(buf, _countof(buf), _T("%s  (in function %s)"), aVarName, func_name);
-	ScriptWarning(g_Warn_LocalSameAsGlobal, WARNING_LOCAL_SAME_AS_GLOBAL, buf);
+	sntprintf(buf, _countof(buf), _T("%s  (in function %s)"), aVarName, g->CurrentFunc->mName);
+	ScriptWarning(g->CurrentFunc->mModule->Warn_LocalSameAsGlobal, WARNING_LOCAL_SAME_AS_GLOBAL, buf);
 }

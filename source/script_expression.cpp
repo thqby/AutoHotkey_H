@@ -215,9 +215,8 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 							error_value = &this_token;
 							goto unset_var;
 						}
-						// Currently SYM_OBJECT is not added to to_free[] as there aren't any built-in
-						// vars that create an object or call AddRef().  If that's changed, must update
-						// BIV_TrayMenu and Debugger::GetPropertyValue.
+						if (result_token.symbol == SYM_OBJECT)
+							to_free[to_free_count++] = &this_token; // A slot was reserved for this SYM_VAR.
 						this_token.CopyValueFrom(result_token);
 						goto push_this_token;
 					}
@@ -229,7 +228,7 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 					if (result_token.marker != left_buf)
 					{
 						if (result_token.mem_to_free) // Persistent memory was already allocated for the result.
-							to_free[to_free_count++] = &this_token; // A slot was reserved for this SYM_DYNAMIC.
+							to_free[to_free_count++] = &this_token; // A slot was reserved for this SYM_VAR.
 							// Also push the value, below.
 						//else: Currently marker is assumed to point to persistent memory, such as a literal
 						// string, which should be safe to use at least until expression evaluation completes.
@@ -399,11 +398,6 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 				result_token.symbol = SYM_MISSING;
 			}
 
-#ifdef CONFIG_DEBUGGER
-			// See PostExecFunctionCall() itself for comments.
-			if (g_Debugger->IsConnected())
-				g_Debugger->PostExecFunctionCall(this);
-#endif
 			g_script->mCurrLine = this; // For error-reporting.
 			
 			if ((flags & EIF_LEAVE_PARAMS)
@@ -889,12 +883,14 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 			if (right_is_number == PURE_INTEGER)
 			{
 				this_token.value_int64 = TokenToInt64(right);
-				right.var->Assign(this_token.value_int64 + delta);
+				if (!right.var->Assign(this_token.value_int64 + delta))
+					goto abort;
 			}
 			else // right_is_number must be PURE_FLOAT because it's the only remaining alternative.
 			{
 				this_token.value_double = TokenToDouble(right, FALSE); // Pass FALSE for aCheckForHex since PURE_FLOAT is never hex.
-				right.var->Assign(this_token.value_double + delta);
+				if (!right.var->Assign(this_token.value_double + delta))
+					goto abort;
 			}
 			if (is_pre_op)
 			{
@@ -1980,8 +1976,11 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 		++mInstances;
 		
 		FreeVars *caller_free_vars = sFreeVars;
-		if (sFreeVars && mOuterFunc && !aUpVars)
-			aUpVars = sFreeVars->ForFunc(mOuterFunc);
+		// The following was originally used to support direct calls while the outer function is running,
+		// but such calls should no longer be possible as the script can only refer to the function via a
+		// Closure, which provides a non-null value for aUpVars:
+		//if (sFreeVars && mOuterFunc && !aUpVars)
+		//	aUpVars = sFreeVars->ForFunc(mOuterFunc);
 
 		if (mDownVarCount)
 		{
@@ -2203,7 +2202,11 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 		// g->CurrentFunc accurate, even amidst the asynchronous saving and restoring of "g" itself:
 		g->CurrentFunc = prev_func;
 
+#ifdef CONFIG_DEBUGGER
 		DEBUGGER_STACK_POP()
+		if (g_Debugger->IsConnected())
+			g_Debugger->LeaveFunction();
+#endif
 		
 		// Setting this unconditionally isn't likely to perform any worse than checking for EXIT/FAIL,
 		// and likely produces smaller code.  Execute() takes care of translating EARLY_RETURN to OK.

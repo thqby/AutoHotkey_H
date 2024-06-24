@@ -182,6 +182,7 @@ public:
 	#define VAR_LOCAL_FUNCPARAM	0x10 // Indicates this local var is a function's parameter.  VAR_LOCAL_DECLARED should also be set.
 	#define VAR_LOCAL_STATIC	0x20 // Indicates this local var retains its value between function calls.
 	#define VAR_DECLARED		0x40 // Indicates this var was declared somehow, not automatic.
+	#define VAR_EXPORTED		0x80 // Exported from a module.
 	UCHAR mScope;  // Bitwise combination of the above flags.
 	VarTypeType mType; // Keep adjacent/contiguous with the above due to struct alignment, to save memory.
 	// Performance: Rearranging mType and the other byte-sized members with respect to each other didn't seem
@@ -492,7 +493,7 @@ public:
 	void Free(int aWhenToFree = VAR_ALWAYS_FREE);
 	ResultType Append(LPTSTR aStr, VarSizeType aLength);
 	ResultType AppendIfRoom(LPTSTR aStr, VarSizeType aLength);
-	void AcceptNewMem(LPTSTR aNewMem, VarSizeType aLength);
+	ResultType AcceptNewMem(LPTSTR aNewMem, VarSizeType aLength);
 	void SetLengthFromContents();
 
 	static ResultType BackupFunctionVars(UserFunc &aFunc, VarBkp *&aVarBackup, int &aVarBackupCount);
@@ -628,6 +629,11 @@ public:
 		return (mScope & VAR_DECLARED);
 	}
 
+	bool IsExported()
+	{
+		return (mScope & VAR_EXPORTED);
+	}
+
 	UCHAR &Scope()
 	{
 		return mScope;
@@ -638,12 +644,14 @@ public:
 		if (aDeclType & VAR_LOCAL)
 		{
 			if (aDeclType & VAR_LOCAL_STATIC)
-				return _T("static");
+				return _T("static variable");
 			if (aDeclType & VAR_LOCAL_FUNCPARAM)
 				return _T("parameter");
-			return _T("local");
+			return _T("local variable");
 		}
-		return _T("global");
+		if (aDeclType & VAR_GLOBAL)
+			return _T("global variable");
+		return _T("variable");
 	}
 
 	bool IsAssignedSomewhere()
@@ -911,7 +919,7 @@ public:
 		var.mAttrib |= VAR_ATTRIB_UNINITIALIZED;
 	}
 
-	ResultType Uninitialize(int aWhenToFree = VAR_FREE_IF_LARGE) 
+	ResultType AssignUnset(int aWhenToFree = VAR_FREE_IF_LARGE) 
 	{
 		if (IsVirtual())
 		{
@@ -919,8 +927,16 @@ public:
 			unset.symbol = SYM_MISSING;
 			return AssignVirtual(unset);
 		}
-		Free(aWhenToFree | VAR_REQUIRE_INIT);
+		UninitializeNonVirtual(aWhenToFree);
 		return OK;
+	}
+
+	// Make var unset; IsVirtual() must be false.  Calling this rather than AssignUnset()
+	// in cases where IsVirtual() can't be true reduces code size due to inlining.
+	void UninitializeNonVirtual(int aWhenToFree = VAR_FREE_IF_LARGE) 
+	{
+		ASSERT(!IsVirtual());
+		Free(aWhenToFree | VAR_REQUIRE_INIT);
 	}
 
 }; // class Var

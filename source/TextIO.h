@@ -53,7 +53,6 @@ public:
 	};
 
 	TextStream()
-		: mFlags(0), mCodePage(-1), mLength(0), mBuffer(NULL), mPos(NULL), mLastRead(0)
 	{
 		SetCodePage(CP_ACP);
 	}
@@ -127,6 +126,7 @@ public:
 	}
 	UINT GetCodePage() { return mCodePage; }
 	DWORD GetFlags() { return mFlags; }
+	int DecodingErrors() { return mDecodingErrors; }
 
 protected:
 	// IO abstraction
@@ -219,23 +219,24 @@ protected:
 		return false;
 	}
 
-	DWORD mFlags;
-	DWORD mLength;		// The length of available data in the buffer, in bytes.
-	DWORD mLastRead;
-	UINT  mCodePage;
+	DWORD mFlags = 0;
+	DWORD mLength = 0;		// The length of available data in the buffer, in bytes.
+	DWORD mLastRead = 0;
+	UINT  mCodePage = -1;
 	CPINFO mCodePageInfo;
+	bool mDecodingErrors = 0;
 	
-	TCHAR mLastWriteChar;
+	TCHAR mLastWriteChar = 0;
 
 	union // Pointer to the next character to read in mBuffer.
 	{
-		LPBYTE  mPos;
+		LPBYTE  mPos = nullptr;
 		LPSTR   mPosA;
 		LPWSTR  mPosW;
 	};
 	union // Used by buffered/translated IO to hold raw file data. 
 	{
-		LPBYTE  mBuffer;
+		LPBYTE  mBuffer = nullptr;
 		LPSTR   mBufferA;
 		LPWSTR  mBufferW;
 	};

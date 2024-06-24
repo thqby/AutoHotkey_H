@@ -5,10 +5,6 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx</Extensions>
     </Filter>
-    <Filter Include="Source Files">
-      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-      <Extensions>cpp;c;cxx;def;odl;idl;hpj;bat</Extensions>
-    </Filter>
     <Filter Include="Core">
       <UniqueIdentifier>{be4f060f-b16c-43ac-a1e2-2d865f148fc1}</UniqueIdentifier>
     </Filter>
@@ -27,14 +23,14 @@
     <Filter Include="Built-in library\Gui">
       <UniqueIdentifier>{d89b1451-308b-4d71-b654-bd52e7e74493}</UniqueIdentifier>
     </Filter>
+    <Filter Include="DLL">
+      <UniqueIdentifier>{16675678-72ca-4a00-af05-6e3801900c77}</UniqueIdentifier>
+    </Filter>
     <Filter Include="H">
       <UniqueIdentifier>{bf30415b-9b32-49f2-b900-42445e0ac5c0}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="source\script2.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="source\lib\input.cpp">
       <Filter>Built-in library</Filter>
     </ClCompile>
@@ -188,8 +184,14 @@
     <ClCompile Include="source\MdFunc.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="source\script_module.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="source\script2.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
     <ClCompile Include="source\ahklib.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>DLL</Filter>
     </ClCompile>
     <ClCompile Include="source\COMServer.cpp">
       <Filter>H</Filter>
@@ -322,8 +324,11 @@
     <ClInclude Include="source\abi.h">
       <Filter>Core</Filter>
     </ClInclude>
+    <ClInclude Include="source\script_module.h">
+      <Filter>Core</Filter>
+    </ClInclude>
     <ClInclude Include="source\DispObject.h">
-      <Filter>Header Files</Filter>
+      <Filter>DLL</Filter>
     </ClInclude>
     <ClInclude Include="source\LiteZip.h">
       <Filter>H</Filter>
@@ -384,7 +389,7 @@
   </ItemGroup>
   <ItemGroup>
     <Midl Include="source\ahklib.idl">
-      <Filter>Source Files</Filter>
+      <Filter>DLL</Filter>
     </Midl>
   </ItemGroup>
 </Project>

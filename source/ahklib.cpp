@@ -165,7 +165,10 @@ public:
 	{
 		if (index->vt != VT_BSTR)
 			return DISP_E_TYPEMISMATCH;
-		auto func = g_script->FindGlobalFunc(index->bstrVal);
+		auto var = g_script->FindGlobalVar(index->bstrVal); // FIXME: Module support.
+		if (!var)
+			return DISP_E_BADINDEX;
+		auto func = dynamic_cast<Func*>(var->ToObject());
 		if (!func)
 			return DISP_E_BADINDEX;
 		value->vt = VT_DISPATCH;
@@ -472,7 +475,7 @@ class EnumLabels : public EnumVARIANT
 	Label *mCurrLabel;
 
 public:
-	EnumLabels() : EnumVARIANT(), mCurrLabel(g_script->mFirstLabel) {}
+	EnumLabels() : EnumVARIANT(), mCurrLabel(g_script->mDefaultModule.mFirstLabel) {}
 
 	STDMETHODIMP Next(ULONG celt, /*out*/ VARIANT *rgVar, /*out*/ ULONG *pCeltFetched)
 	{
@@ -504,7 +507,7 @@ public:
 	{
 		if (index->vt != VT_BSTR)
 			return DISP_E_TYPEMISMATCH;
-		Label *label = g_script->FindLabel(index->bstrVal);
+		Label *label = g_script->FindLabel(index->bstrVal); // FIXME: Module support.
 		if (!label)
 			return DISP_E_BADINDEX;
 		value->vt = VT_DISPATCH;
@@ -513,7 +516,7 @@ public:
 
 	STDMETHODIMP get_Count(int *pCount)
 	{
-		*pCount = g_script->mLabelCount;
+		*pCount = g_script->mLabelCount; // FIXME: This counts all labels, not just those available in this collection.
 		return S_OK;
 	}
 
@@ -598,11 +601,13 @@ public:
 		if (Line::sSourceFileCount)
 			return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
 		EarlyAppInit();
-		if (!g_script->Init(aScriptPath))
-			return E_FAIL;
-		if (g_script->LoadFromFile(aScriptPath) == LOADING_FAILED
+		if (!g_script->Init(aScriptPath, nullptr)
+			|| g_script->LoadFromFile(aScriptPath) == LOADING_FAILED
 			|| !InitForExecution())
+		{
+			g_script->TerminateApp(EXIT_CRITICAL, 0);
 			return E_FAIL;
+		}
 		return S_OK;
 	}
 
@@ -699,7 +704,7 @@ public:
 
 	STDMETHODIMP get_Vars(IDispatch **ppVars)
 	{
-		return VarCollection::Create(&g_script->mVars, ppVars);
+		return VarCollection::Create(&g_script->mDefaultModule.mVars, ppVars);
 	}
 
 	STDMETHODIMP get_Labels(IDispatch **ppLabels)

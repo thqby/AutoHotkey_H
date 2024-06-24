@@ -149,8 +149,11 @@ HotkeyCriterion *AddHotkeyIfExpr()
 
 HotkeyCriterion *FindHotkeyIfExpr(LPCTSTR aExpr)
 {
+	auto mod = g_script->CurrentModule();
 	for (HotkeyCriterion* cp = g_FirstHotExpr; cp; cp = cp->NextExpr)
-		if (cp->OriginalExpr && !_tcscmp(aExpr, cp->OriginalExpr)) // Case-sensitive since the expression might be.
+		if (cp->OriginalExpr // Checked first since it implies Callback is a UserFunc.
+			&& ((UserFunc*)cp->Callback)->mModule == mod // Names in an expression have different meaning depending on module.
+			&& !_tcscmp(aExpr, cp->OriginalExpr)) // Case-sensitive since the expression might be.
 			return cp;
 	return NULL;
 }

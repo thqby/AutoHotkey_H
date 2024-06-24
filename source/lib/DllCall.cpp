@@ -1211,34 +1211,36 @@ has_valid_return_type:
 		if (VARREF_IS_READ(this_param.var_usage))
 			continue; // Output parameters are copied back only if provided with a VarRef (&variable).
 
+		ResultType result = OK;
+
 		switch (this_dyna_param.type)
 		{
 		case DLL_ARG_INT:
 			if (this_dyna_param.is_unsigned)
-				output_var.Assign((DWORD)this_dyna_param.value_int);
+				result = output_var.Assign((DWORD)this_dyna_param.value_int);
 			else // Signed.
-				output_var.Assign(this_dyna_param.value_int);
+				result = output_var.Assign(this_dyna_param.value_int);
 			break;
 		case DLL_ARG_SHORT:
 			if (this_dyna_param.is_unsigned) // Force omission of the high-order word in case it is non-zero from a parameter that was originally and erroneously larger than a short.
-				output_var.Assign(this_dyna_param.value_int & 0x0000FFFF); // This also forces the value into the unsigned domain of a signed int.
+				result = output_var.Assign(this_dyna_param.value_int & 0x0000FFFF); // This also forces the value into the unsigned domain of a signed int.
 			else // Signed.
-				output_var.Assign((int)(SHORT)(WORD)this_dyna_param.value_int); // These casts properly preserve negatives.
+				result = output_var.Assign((int)(SHORT)(WORD)this_dyna_param.value_int); // These casts properly preserve negatives.
 			break;
 		case DLL_ARG_CHAR:
 			if (this_dyna_param.is_unsigned) // Force omission of the high-order bits in case it is non-zero from a parameter that was originally and erroneously larger than a char.
-				output_var.Assign(this_dyna_param.value_int & 0x000000FF); // This also forces the value into the unsigned domain of a signed int.
+				result = output_var.Assign(this_dyna_param.value_int & 0x000000FF); // This also forces the value into the unsigned domain of a signed int.
 			else // Signed.
-				output_var.Assign((int)(char)(BYTE)this_dyna_param.value_int); // These casts properly preserve negatives.
+				result = output_var.Assign((int)(char)(BYTE)this_dyna_param.value_int); // These casts properly preserve negatives.
 			break;
 		case DLL_ARG_INT64: // Unsigned and signed are both written as signed for the reasons described elsewhere above.
-			output_var.Assign(this_dyna_param.value_int64);
+			result = output_var.Assign(this_dyna_param.value_int64);
 			break;
 		case DLL_ARG_FLOAT:
-			output_var.Assign(this_dyna_param.value_float);
+			result = output_var.Assign(this_dyna_param.value_float);
 			break;
 		case DLL_ARG_DOUBLE:
-			output_var.Assign(this_dyna_param.value_double);
+			result = output_var.Assign(this_dyna_param.value_double);
 			break;
 		case DLL_ARG_STR: // Str*
 			// The use of LPWSTR* vs. LPWSTR typically means the function will pass back the
@@ -1246,19 +1248,22 @@ has_valid_return_type:
 			// passed_by_address for all other types.  However, it must be used carefully since
 			// there's no way for Str* to know how or whether the function requires the string
 			// to be freed (e.g. by calling CoTaskMemFree()).
-			if (this_dyna_param.ptr != output_var.Contents(FALSE)
-				&& !output_var.AssignString((LPTSTR)this_dyna_param.ptr))
-				aResultToken.SetExitResult(FAIL);
+			if (this_dyna_param.ptr != output_var.Contents(FALSE))
+				result = output_var.AssignString((LPTSTR)this_dyna_param.ptr);
 			break;
 		case DLL_ARG_xSTR: // AStr* on Unicode builds and WStr* on ANSI builds.
 		case DLL_ARG_U8STR:
 			if (this_dyna_param.ptr != pStr[nxStr]->GetString())
-				if (!output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr, -1, this_dyna_param.type == DLL_ARG_U8STR ? CP_UTF8 : 0))
-					aResultToken.SetExitResult(FAIL);
+				result = output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr, -1, this_dyna_param.type == DLL_ARG_U8STR ? CP_UTF8 : 0);
+		}
+		if (!result)
+		{
+			aResultToken.SetExitResult(FAIL);
+			break;
 		}
 	}
 
-	if (return_struct_size && !aResultToken.Exited()) // This is done late in case of error.
+	if (return_struct_size && !aResultToken.Exited())
 	{
 		aResultToken.symbol = SYM_STRING; // Set default for Invoke.
 		aResultToken.marker = _T("");

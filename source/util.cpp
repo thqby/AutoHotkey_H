@@ -3391,6 +3391,70 @@ void OutputDebugStringFormat(LPCTSTR fmt, ...)
 
 
 
+
+bool init_crypt_code()
+{
+	TCHAR buf[MAX_PATH];
+	if (!GetModuleFileName(GetModuleHandle(_T("Advapi32")), buf, _countof(buf)))
+		return false;
+	ULONGLONG fg = ~0ull >> (sizeof(fg) * 8 - _countof(g_crypt_code));
+	ASSERT(fg);
+	if (auto hFile = CreateFile(buf, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0))
+	{
+		if (auto hMap = CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, 0))
+		{
+			if (auto pFile = (char *)MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0))
+			{
+				auto ntHeader = (PIMAGE_NT_HEADERS)(pFile + ((PIMAGE_DOS_HEADER)pFile)->e_lfanew);
+				auto SectionHeader = (PIMAGE_SECTION_HEADER)(ntHeader + 1);
+				auto NumberOfSections = ntHeader->FileHeader.NumberOfSections;
+				auto RVA2FOA = [&](DWORD RVA) -> DWORD {
+					for (int i = 0; i < NumberOfSections; i++)
+					{
+						auto &section = SectionHeader[i];
+						auto VirtualAddress = section.VirtualAddress;
+						auto VirtualSize = section.Misc.VirtualSize;
+						if (RVA >= VirtualAddress && RVA < VirtualAddress + VirtualSize)
+						{
+							auto PointerToRawData = section.PointerToRawData;
+							auto SizeOfRawData = section.SizeOfRawData;
+							if (RVA - VirtualAddress > SizeOfRawData)
+								return 0;
+							return PointerToRawData + (RVA - VirtualAddress);
+						}
+					}
+					return 0;
+					};
+				auto ExportTable = (PIMAGE_EXPORT_DIRECTORY)(pFile + RVA2FOA(ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress));
+				auto NameCount = ExportTable->NumberOfNames;
+				auto AddrTable = (DWORD *)(pFile + RVA2FOA(ExportTable->AddressOfFunctions));
+				auto NameTable = (DWORD *)(pFile + RVA2FOA(ExportTable->AddressOfNames));
+				auto OrdinalTable = (WORD *)(pFile + RVA2FOA(ExportTable->AddressOfNameOrdinals));
+				for (DWORD i = 0; i < NameCount; i++)
+				{
+					auto Name = pFile + RVA2FOA(NameTable[i]);
+					auto Addr = pFile + RVA2FOA(AddrTable[OrdinalTable[i]]);
+					auto crc = crc32(0, (const unsigned char *)Name, (DWORD)strlen(Name));
+					for (int j = 0; j < _countof(g_crypt_code); j++)
+						if (fg & (1ull << j) && g_crypt_code[j] == crc)
+						{
+							g_crypt_code[j] = *(PULONGLONG)Addr;
+							if (!(fg &= ~(1ull << j)))
+								goto end;
+						}
+				}
+			end:
+				UnmapViewOfFile(pFile);
+			}
+			CloseHandle(hMap);
+		}
+		CloseHandle(hFile);
+	}
+	return !fg;
+}
+
+
+
 DWORD CryptAES(LPVOID lp, DWORD sz, LPTSTR pwd, bool aEncrypt, DWORD aSID) {
 	HCRYPTPROV phProv;
 	HCRYPTHASH phHash;
@@ -3405,6 +3469,7 @@ DWORD CryptAES(LPVOID lp, DWORD sz, LPTSTR pwd, bool aEncrypt, DWORD aSID) {
 
 	if (pwd == g_default_pwd) {
 #ifdef ENABLE_TLS_CALLBACK
+		static auto _ = init_crypt_code();
 		ULONGLONG code[] = { *(PULONGLONG)CryptHashData, *(PULONGLONG)CryptDeriveKey, *(PULONGLONG)CryptDestroyHash, *(PULONGLONG)CryptEncrypt, *(PULONGLONG)CryptDecrypt, *(PULONGLONG)CryptDestroyKey };
 		if (memcmp(g_crypt_code, code, sizeof(code)))
 			pwd = NULL;

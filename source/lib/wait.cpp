@@ -68,7 +68,7 @@ static bool Wait(int aTimeout, void *aParam, WaitCompletedPredicate aWaitComplet
 		// Must cast to int or any negative result will be lost due to DWORD type:
 		if (aTimeout < 0 || (aTimeout - (int)(GetTickCount() - start_time)) > SLEEP_INTERVAL_HALF)
 		{
-			if ((char)g->IsPaused == -1)	// ahk_h: Used to terminate a thread
+			if (g->Exited())
 				return false;
 			MsgSleepWithListLines(INTERVAL_UNSPECIFIED, waiting_line, start_time);
 		}
@@ -354,8 +354,8 @@ ResultType RunWait(StrArg aTarget, optl<StrArg> aWorkingDir, optl<StrArg> aOptio
 		// STILL_ACTIVE is also valid exit code.
 		if (MsgWaitForMultipleObjects(1, &running_process, FALSE, INFINITE, QS_ALLINPUT) == WAIT_OBJECT_0)
 			break;
-		if ((char)g->IsPaused == -1)	// ahk_h: Used to terminate a thread
-			return EARLY_RETURN;
+		if (g->Exited())
+			return EARLY_EXIT;
 		MsgSleepWithListLines(-1, waiting_line, start_time);
 	}
 

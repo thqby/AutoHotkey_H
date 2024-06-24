@@ -68,6 +68,9 @@ GNU General Public License for more details.
 	//#include "SimpleHeap.h"
 #endif
 
+#include <algorithm>
+using std::swap;
+
 // Lexikos: Defining _WIN32_WINNT 0x0600 seems to break TrayTip in non-English Windows,
 //			and possibly other things.  Instead, define any Vista constants we need here.
 #if (_WIN32_WINNT < 0x0600)

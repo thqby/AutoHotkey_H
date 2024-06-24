@@ -7,49 +7,6 @@
 #include "LiteZip.h"  // crc32"
 #include "MdFunc.h"
 
-// Following macros are used in addScript and ahkExec
-// HotExpr code from LoadFromFile, Hotkeys need to be toggled to get activated
-#define FINALIZE_HOTKEYS \
-	if (Hotkey::sHotkeyCount > HotkeyCount)\
-	{\
-		Hotstring::SuspendAll(!g_IsSuspended);\
-		Hotkey::ManifestAllHotkeysHotstringsHooks();\
-		Hotstring::SuspendAll(g_IsSuspended);\
-		Hotkey::ManifestAllHotkeysHotstringsHooks();\
-	}
-#define RESTORE_IF_EXPR \
-	if (g_FirstHotExpr)\
-	{\
-		if (aLastHotExpr)\
-			aLastHotExpr->NextExpr = g_FirstHotExpr;\
-		if (aFirstHotExpr)\
-			g_FirstHotExpr = aFirstHotExpr;\
-	}\
-	else\
-	{\
-		g_FirstHotExpr = aFirstHotExpr;\
-		g_LastHotExpr = aLastHotExpr;\
-	}
-// AutoHotkey needs to be running at this point
-#define BACKUP_G_SCRIPT \
-	int aCurrFileIndex = g_script->mCurrFileIndex, aCombinedLineNumber = g_script->mCombinedLineNumber;\
-	Line *aFirstLine = g_script->mFirstLine,*aLastLine = g_script->mLastLine,*aCurrLine = g_script->mCurrLine;\
-	UserFunc *aCurrFunc  = g->CurrentFunc;\
-	int aClassObjectCount = g_script->mClassObjectCount;\
-	auto aHotkeyCount = Hotkey::sHotkeyCount;\
-	auto aHotstringCount = Hotstring::sHotstringCount;\
-	g_script->mClassObjectCount = 0;g_script->mFirstLine = g_script->mLastLine = NULL;g->CurrentFunc = NULL;
-
-#define RESTORE_G_SCRIPT \
-	g_script->mFirstLine = aFirstLine;\
-	g_script->mLastLine = aLastLine;\
-	g_script->mLastLine->mNextLine = NULL;\
-	g_script->mCurrLine = aCurrLine;\
-	g_script->mClassObjectCount = aClassObjectCount + g_script->mClassObjectCount;\
-	g_script->mCurrFileIndex = aCurrFileIndex;\
-	g_script->mCombinedLineNumber = aCombinedLineNumber;
-
-
 void callFuncDll(FuncAndToken &aToken, bool throwerr)
 {
 	if (g_nThreads >= g_MaxThreadsTotal) {
@@ -176,11 +133,11 @@ EXPORT(int) ahkAssign(LPTSTR name, LPTSTR value, DWORD aThreadID)
 EXPORT(UINT_PTR) ahkExecuteLine(UINT_PTR line, int aMode, int wait, DWORD aThreadID)
 {
 #pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
+	if (line == NULL)
+		return 0;
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
 		HWND hwnd = g_hWnd;
-		if (line == NULL)
-			return (UINT_PTR)g_script->mFirstLine;
 		atls.~AutoTLS();
 		Line* templine = (Line*)line;
 		if (aMode)
@@ -251,6 +208,103 @@ struct VarListBackup {
 	}
 };
 
+
+struct ScriptSnapshot
+{
+	SimpleHeap::HeapBackUp mHeap;
+	Line *mCurrLine = g_script->mCurrLine;
+	UserFunc *mCurrentFunc = g->CurrentFunc;
+	HotkeyCriterion *mLastHotExpr = g_LastHotExpr;
+	HotkeyCriterion *mLastHotCriterion = g_LastHotCriterion;
+	ScriptModule *mCurrentModule = g_script->mCurrentModule;
+	ScriptModule *mLastModule = g_script->mLastModule;
+	ScriptModule *mModule = new ScriptModule;
+	ScriptImport *mImport = new ScriptImport(g_script->CurrentModule());
+	ScriptImport **mCurrentModuleImportEndPtr = &mImport->mod->mImports;
+	VarListBackup mVars = g_script->mBuiltinModule.mVars;
+	int mCurrFileIndex = g_script->mCurrFileIndex;
+	int mCombinedLineNumber = g_script->mCombinedLineNumber;
+	int mFuncCount = g_script->mFuncs.mCount;
+	int mSourceFileCount = Line::sSourceFileCount;
+	UINT mHotstringCount = Hotstring::sHotstringCount;
+	USHORT mHotkeyCount = Hotkey::sHotkeyCount;
+	ScriptSnapshot(bool aDetach): mHeap(aDetach)
+	{
+		g->CurrentFunc = nullptr;
+		g_script->mLastModule = nullptr;
+		g_script->mCurrentModule = mModule;
+		mModule->mImports = mImport;
+		mImport->next = *mCurrentModuleImportEndPtr;
+		while (auto imp = *mCurrentModuleImportEndPtr)
+			mCurrentModuleImportEndPtr = &imp->next;
+	}
+
+	void Ready()
+	{
+		auto mod = mImport->mod;
+		auto imp = *mCurrentModuleImportEndPtr = new ScriptImport(mModule);
+		mImport->next = mod->mImports;
+		mModule->mPrev = mLastModule;
+		for (auto next = mModule->mImports; next != mImport; next = next->next)
+			if (next->mod != mod && *next->names == '*')
+				imp = imp->next = new ScriptImport(next->mod);
+		if (mHotkeyCount > Hotkey::sHotkeyCount || mHotstringCount > Hotstring::sHotstringCount)
+			Hotkey::ManifestAllHotkeysHotstringsHooks();
+	}
+
+	void Restore()
+	{
+		if (mHotkeyCount > Hotkey::sHotkeyCount || mHotstringCount > Hotstring::sHotstringCount)
+		{
+			for (auto &i = Hotkey::sHotkeyCount; i > mHotkeyCount;)
+				delete Hotkey::shk[--i];
+			for (auto &i = Hotstring::sHotstringCount; i > mHotstringCount;)
+				delete Hotstring::shs[--i];
+			Hotkey::ManifestAllHotkeysHotstringsHooks();
+		}
+		mModule->mPrev = nullptr;
+		*mCurrentModuleImportEndPtr = nullptr;
+		for (auto mod = g_script->mLastModule; mod; mod = mod->mPrev)
+			mod->Free();
+		for (auto mod = g_script->mLastModule; mod; mod = mod->mPrev)
+			mod->Free(true);
+		auto &fns = g_script->mFuncs;
+		for (auto &i = fns.mCount; i > mFuncCount;) {
+			auto &fn = *fns.mItem[--i];
+			if (fn.mClass)
+				fn.mClass->Release();
+			fn.Release();
+		}
+		HotkeyCriterion *hotexpr;
+		if (g_LastHotCriterion = mLastHotCriterion)
+			mLastHotCriterion->NextCriterion = nullptr;
+		else g_FirstHotCriterion = nullptr;
+		if (g_LastHotExpr = mLastHotExpr)
+			hotexpr = mLastHotExpr->NextExpr, mLastHotExpr->NextExpr = nullptr;
+		else hotexpr = g_FirstHotExpr, g_FirstHotExpr = nullptr;
+		for (; hotexpr; hotexpr = hotexpr->NextExpr)
+			hotexpr->Callback->Release();
+		for (auto mod = g_script->mLastModule; mod; mod = mod->mPrev)
+		{
+			if (mod->mName)
+				g_script->mModules.Remove(mod->mName);
+			mod->Clear();
+		}
+		mVars.~VarListBackup();
+		mHeap.DeleteAfter(mHeap.mFirst2);
+		g_script->mCurrentModule = mCurrentModule;
+		g_script->mLastModule = mLastModule;
+		g_script->mCurrLine = mCurrLine;
+		g_script->mCurrFileIndex = mCurrFileIndex;
+		g_script->mCombinedLineNumber = mCombinedLineNumber;
+		g->CurrentFunc = mCurrentFunc;
+		Line::sSourceFileCount = mSourceFileCount;
+#ifdef CONFIG_DEBUGGER
+		g_Debugger->DeleteBreakpoints(false);
+#endif // CONFIG_DEBUGGER
+	}
+};
+
 // HotKeyIt: addScript()
 UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 {
@@ -258,98 +312,62 @@ UINT_PTR _addScript(LPTSTR script, int waitexecute, DWORD aThreadID, int _catch)
 	int ret = atls.Enter(aThreadID);
 	if (!ret)
 		return 0;
-	else if (ret == 2) {
+	if (ret == 2) {
 		ExprTokenType params[4] = { (__int64)_addScript, _T("i=siuii") };
 		ExprTokenType* param[] = { params, params + 1, params + 2, params + 3 };
 		ResultToken result;
 		IObject* func = DynaToken::Create(param, 2);
 		FuncAndToken token = { func,&result,param,4 };
 		auto hwnd = g_hWnd;
-		DWORD_PTR res;
 		params[0].SetValue(script), params[1].SetValue(waitexecute), params[2].SetValue((UINT)aThreadID), params[3].SetValue(-_catch);
 		result.InitResult(_T(""));
 		atls.~AutoTLS();
-		SendMessageTimeout(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0, SMTO_ABORTIFHUNG, 5000, &res);
+		SendMessage(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0);
 		func->Release();
 		return (UINT_PTR)TokenToInt64(result);
 	}
 	EnterCriticalSection(&g_CriticalTLS);
-	int aVarCount = g_script->mVars.mCount;
-	int aFuncCount = g_script->mFuncs.mCount;
-	VarListBackup aVarBkp(g_script->mVars);
-	if (aVarBkp.mCount == -1) {
+	ScriptSnapshot shot(false);
+	if (shot.mVars.mCount == -1) {
 		LeaveCriticalSection(&g_CriticalTLS);
 		return 0;
 	}
-	int HotkeyCount = Hotkey::sHotkeyCount;
-	HotkeyCriterion* aFirstHotExpr = g_FirstHotExpr, * aLastHotExpr = g_LastHotExpr;
-	g_FirstHotExpr = NULL; g_LastHotExpr = NULL;
-	int aSourceFileIdx = Line::sSourceFileCount;
-	
-	// Backup SimpleHeap to restore later
-	auto heapbkp = SimpleHeap::HeapBackUp();
 	int excp = g->ExcptMode;
-	TCHAR tmp[MAX_PATH];
-	void* p = nullptr;
 	if (_catch < 0)
 		g->ExcptMode |= EXCPTMODE_CATCH, g->ExcptMode &= ~EXCPTMODE_CAUGHT;
+	void *p = nullptr;
 	if (!g_script->mEncrypt)
 		p = SimpleHeap::Alloc(script);
+	TCHAR tmp[MAX_PATH];
 	_stprintf(tmp, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, p, _tcslen(script) * sizeof(TCHAR));
-	BACKUP_G_SCRIPT
-	if (g_script->LoadFromFile(tmp, script) != TRUE)
+	auto result = g_script->LoadFromFile(tmp, script);
+	if (result == LOADING_FAILED)
 	{
-		RESTORE_IF_EXPR
 		g->ExcptMode = excp;
-		g->CurrentFunc = (UserFunc*)aCurrFunc;
-		Line* aTempLine = g_script->mLastLine;
-		Line* aExecLine = g_script->mFirstLine;
-		RESTORE_G_SCRIPT;
 		if (g->ThrownToken && _catch < 0)
 			Script::FreeExceptionToken(g->ThrownToken);
-		Line::sSourceFileCount = aSourceFileIdx;
-		aVarBkp.~VarListBackup();
-		for (auto &i = Hotkey::sHotkeyCount; i > aHotkeyCount;)
-			delete Hotkey::shk[--i];
-		for (auto &i = Hotstring::sHotstringCount; i > aHotstringCount;)
-			delete Hotstring::shs[--i];
-		auto &fns = g_script->mFuncs;
-		for (auto &i = fns.mCount; i > aFuncCount;) {
-			auto &fn = *fns.mItem[--i];
-			fn.mClass && fn.mClass->Release();
-			fn.Release();
-		}
-		for (Line *line = aTempLine; line; line = line->mPrevLine)
-			line->Free();
-		Line::FreeDerefBufIfLarge();
-		// restore SimpleHeap
-		heapbkp.Restore();
+		shot.mHeap.Restore();
+		shot.Restore();
 		g_script->mIsReadyToExecute = true;
 		LeaveCriticalSection(&g_CriticalTLS);
 		return 0;
 	}
-	FINALIZE_HOTKEYS
-	RESTORE_IF_EXPR
-	aVarBkp.mCount = aVarBkp.list.mCount;
-	g->CurrentFunc = (UserFunc*)aCurrFunc;
-	Line *aTempLine = g_script->mFirstLine;
-	aLastLine->mNextLine = aTempLine;
-	aTempLine->mPrevLine = aLastLine;
-	aLastLine = g_script->mLastLine;
-	RESTORE_G_SCRIPT;
+	shot.mVars.mCount = shot.mVars.list.mCount;
+	shot.Ready();
 	g_script->mIsReadyToExecute = true;
-	if (waitexecute) {
-		if (waitexecute == 1) {
-			aTempLine->ExecUntil(UNTIL_RETURN);
-			if (g->ThrownToken && _catch < 0)
-				Script::FreeExceptionToken(g->ThrownToken);
-		}
-		else
-			PostMessage(g_hWnd, AHK_EXECUTE, (WPARAM)aTempLine, 1);
+	if (waitexecute == 1) {
+		g->CurrentFunc = nullptr;
+		g_script->ExecuteModule(shot.mModule);
+		if (g->ThrownToken && _catch < 0)
+			Script::FreeExceptionToken(g->ThrownToken);
 	}
+	else if (waitexecute)
+		PostMessage(g_hWnd, AHK_EXECUTE, (WPARAM)shot.mModule, 0);
 	g->ExcptMode = excp;
+	g->CurrentFunc = shot.mCurrentFunc;
+	g_script->mCurrentModule = shot.mCurrentModule;
 	LeaveCriticalSection(&g_CriticalTLS);
-	return (UINT_PTR)aTempLine;
+	return (UINT_PTR)shot.mModule;
 }
 
 EXPORT(UINT_PTR) addScript(LPTSTR script, int waitexecute, DWORD aThreadID) {
@@ -363,30 +381,27 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 	int ret = atls.Enter(aThreadID);
 	if (!ret)
 		return 0;
-	else if (ret == 2) {
+	if (ret == 2) {
 		ExprTokenType params[3] = { (__int64)_ahkExec, _T("i=suii") };
 		ExprTokenType *param[] = { params,params + 1,params + 2 };
 		ResultToken result;
 		IObject* func = DynaToken::Create(param, 2);
 		FuncAndToken token = { func,&result,param,3 };
 		auto hwnd = g_hWnd;
-		DWORD_PTR res;
 		params[0].SetValue(script), params[1].SetValue((__int64)aThreadID), params[2].SetValue(-_catch);
 		result.InitResult(_T(""));
 		atls.~AutoTLS();
-		SendMessageTimeout(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0, SMTO_ABORTIFHUNG, 5000, &res);
+		SendMessage(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0);
 		func->Release();
 		return (int)TokenToInt64(result);
 	}
 	EnterCriticalSection(&g_CriticalTLS);
-	int aVarCount = g_script->mVars.mCount;
-	int aFuncCount = g_script->mFuncs.mCount;
-	VarListBackup aVarBkp(g_script->mVars);
-	VarListBackup* fvbkp = nullptr, * fsvbkp = nullptr;
-	if (aVarBkp.mCount == -1) {
+	ScriptSnapshot shot(true);
+	if (shot.mVars.mCount == -1) {
 		LeaveCriticalSection(&g_CriticalTLS);
 		return 0;
 	}
+	VarListBackup *fvbkp = nullptr, *fsvbkp = nullptr;
 	if (!aThreadID) {
 		if (auto cur = g->CurrentFunc) {
 			fvbkp = new VarListBackup(cur->mVars);
@@ -399,63 +414,34 @@ int _ahkExec(LPTSTR script, DWORD aThreadID, int _catch)
 			}
 		}
 	}
-	int HotkeyCount = Hotkey::sHotkeyCount;
-	HotkeyCriterion *aFirstHotExpr = g_FirstHotExpr,*aLastHotExpr = g_LastHotExpr;
-	g_FirstHotExpr = NULL;g_LastHotExpr = NULL;
-	int aSourceFileIdx = Line::sSourceFileCount;
-	BACKUP_G_SCRIPT
 
-	// Backup SimpleHeap to restore later
-	auto heapbkp = SimpleHeap::HeapBackUp(true);
 	int excp = g->ExcptMode;
 	if (_catch < 0)
 		g->ExcptMode |= EXCPTMODE_CATCH, g->ExcptMode &= ~EXCPTMODE_CAUGHT;
 
 	if (!aThreadID)
-		g->CurrentFunc = aCurrFunc;
+		g->CurrentFunc = shot.mCurrentFunc;
 
 	TCHAR tmp[MAX_PATH];
 	_stprintf(tmp, _T("*THREAD%u?%p#%zu.AHK"), g_MainThreadID, g_script->mEncrypt ? nullptr : script, _tcslen(script) * sizeof(TCHAR));
 	auto result = g_script->LoadFromFile(tmp, script);
-	FINALIZE_HOTKEYS
-	RESTORE_IF_EXPR
-	g->CurrentFunc = (UserFunc*)aCurrFunc;
-	Line *aTempLine = g_script->mLastLine;
-	Line *aExecLine = g_script->mFirstLine;
-	RESTORE_G_SCRIPT;
-	// restore SimpleHeap
-	heapbkp.Restore();
 	g_script->mIsReadyToExecute = true;
-	
-	if (result == TRUE) {
-		g_script->mLastLine->mNextLine = aExecLine;
-		aExecLine->ExecUntil(UNTIL_RETURN);
-		g_script->mLastLine->mNextLine = NULL;
-		g_script->mCurrLine = aCurrLine;
+	if (result != LOADING_FAILED)
+	{
+		shot.Ready();
+		shot.mHeap.Restore();
+		g->CurrentFunc = !aThreadID ? shot.mCurrentFunc : nullptr;
+		g_script->ExecuteModule(shot.mModule);
 	}
+	else shot.mHeap.Restore();
 	if (g->ThrownToken && _catch < 0)
 		Script::FreeExceptionToken(g->ThrownToken);
 	g->ExcptMode = excp;
-	Line::sSourceFileCount = aSourceFileIdx;
+	shot.Restore();
 	if (fvbkp) {
 		delete fvbkp;
 		delete fsvbkp;
 	}
-	aVarBkp.~VarListBackup();
-	for (auto &i = Hotkey::sHotkeyCount; i > aHotkeyCount;)
-		delete Hotkey::shk[--i];
-	for (auto &i = Hotstring::sHotstringCount; i > aHotstringCount;)
-		delete Hotstring::shs[--i];
-	auto &fns = g_script->mFuncs;
-	for (auto &i = fns.mCount; i > aFuncCount;) {
-		auto &fn = *fns.mItem[--i];
-		fn.mClass && fn.mClass->Release();
-		fn.Release();
-	}
-	for (Line *line = aTempLine; line; line = line->mPrevLine)
-		line->Free();
-	Line::FreeDerefBufIfLarge();
-	heapbkp.DeleteAfter(heapbkp.mFirst2);
 	LeaveCriticalSection(&g_CriticalTLS);
 	return result == TRUE;
 }
@@ -500,13 +486,12 @@ LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPT
 	if (sendOrPost) {
 		FuncResult result;
 		FuncAndToken token = { aFunc, &result, param, aParamsCount };
-		DWORD_PTR res;
 		if (!hwnd || !atls.teb) {
 			callFuncDll(token, true);
 			if (result.symbol == SYM_OBJECT)
 				result.object->Release();
 		}
-		else if (!SendMessageTimeout(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0, SMTO_ABORTIFHUNG, 5000, &res))
+		else if (!SendMessage(hwnd, AHK_EXECUTE_FUNCTION, (WPARAM)&token, 0))
 			return NULL;
 		if (result.Exited()) {
 			free(result.mem_to_free);
@@ -627,10 +612,10 @@ IAhkApi* IAhkApi::Initialize() {
 		GETAHKOBJECT(ComObjArray);
 		GETAHKOBJECT(ComObject);
 		GETAHKOBJECT(Worker);
-		instance.sObject[(int)ObjectType::File] = g_script->FindGlobalFunc(_T("FileOpen"));
-		instance.sObject[(int)ObjectType::UObject] = g_script->FindGlobalFunc(_T("UObject"));
-		instance.sObject[(int)ObjectType::UArray] = g_script->FindGlobalFunc(_T("UArray"));
-		instance.sObject[(int)ObjectType::UMap] = g_script->FindGlobalFunc(_T("UMap"));
+		instance.sObject[(int)ObjectType::File] = g_script->GetBuiltInFunc(_T("FileOpen"));
+		instance.sObject[(int)ObjectType::UObject] = g_script->GetBuiltInFunc(_T("UObject"));
+		instance.sObject[(int)ObjectType::UArray] = g_script->GetBuiltInFunc(_T("UArray"));
+		instance.sObject[(int)ObjectType::UMap] = g_script->GetBuiltInFunc(_T("UMap"));
 		instance.sInit = 1 | fg;
 #undef GETAHKOBJECT
 	}
@@ -660,30 +645,7 @@ bool STDMETHODCALLTYPE IAhkApi::TokenToNumber(ExprTokenType& aInput, ExprTokenTy
 
 bool STDMETHODCALLTYPE IAhkApi::VarAssign(Var* aVar, ExprTokenType& aToken) { return aVar->Assign(aToken) == OK; }
 
-void STDMETHODCALLTYPE IAhkApi::VarToToken(Var* aVar, ExprTokenType& aToken) {
-	if (aVar->mType == VAR_VIRTUAL) {
-		FuncResult result_token;
-		result_token.symbol = SYM_INTEGER; // For _f_return_i() and consistency with BIFs.
-		aVar->Get(result_token);
-		if (result_token.Exited())
-			result_token.symbol = SYM_INVALID;
-		else if (result_token.symbol == SYM_STRING) {
-			if (result_token.mem_to_free)
-				aVar->_AcceptNewMem(result_token.mem_to_free, result_token.marker_length);
-			else {
-				size_t length;
-				LPTSTR value = TokenToString(result_token, result_token.buf, &length);
-				if (aVar->AssignString(nullptr, length))
-					tmemcpy(result_token.marker = aVar->mCharContents, value, (result_token.marker_length = length) + 1);
-				else result_token.symbol = SYM_INVALID;
-			}
-			aVar->mAttrib &= ~VAR_ATTRIB_VIRTUAL_OPEN;
-		}
-		aToken.CopyValueFrom(result_token);
-	}
-	else
-		aVar->ToTokenSkipAddRef(aToken);
-}
+void STDMETHODCALLTYPE IAhkApi::VarToToken(Var *aVar, ResultToken &aToken) { aVar->Get(aToken); }
 
 void STDMETHODCALLTYPE IAhkApi::VarFree(Var* aVar, int aWhenToFree) { aVar->Free(aWhenToFree); }
 
@@ -730,9 +692,9 @@ ResultType STDMETHODCALLTYPE IAhkApi::TypeError(LPTSTR aExpectedType, ExprTokenT
 void* STDMETHODCALLTYPE IAhkApi::GetProcAddress(LPTSTR aDllFileFunc, HMODULE* hmodule_to_free) { return ::GetDllProcAddress(aDllFileFunc, hmodule_to_free); }
 
 void* STDMETHODCALLTYPE IAhkApi::GetProcAddressCrc32(HMODULE aModule, UINT aCRC32, UINT aInitial) {
-	static auto RtlComputeCrc32 = (DWORD(WINAPI*)(DWORD dwInitial, BYTE * pData, INT iLen))::GetProcAddress(GetModuleHandleA("ntdll"), "RtlComputeCrc32");
+	//static auto RtlComputeCrc32 = (DWORD(WINAPI*)(DWORD dwInitial, BYTE * pData, INT iLen))::GetProcAddress(GetModuleHandleA("ntdll"), "RtlComputeCrc32");
 	if (!aModule)
-		aModule = GetModuleHandleA("kernel32");
+		aModule = GetModuleHandle(_T("kernel32"));
 	PIMAGE_DOS_HEADER lpDosHeader = (PIMAGE_DOS_HEADER)aModule;
 	PIMAGE_NT_HEADERS lpNtHeader = (PIMAGE_NT_HEADERS)((UINT_PTR)aModule + lpDosHeader->e_lfanew);
 	auto& entry = lpNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
@@ -751,17 +713,36 @@ void* STDMETHODCALLTYPE IAhkApi::GetProcAddressCrc32(HMODULE aModule, UINT aCRC3
 	return NULL;
 }
 
-bool STDMETHODCALLTYPE IAhkApi::Script_GetVar(LPTSTR aVarName, ExprTokenType& aValue) {
-	auto var = g_script ? g_script->FindGlobalVar(aVarName) : nullptr;
+bool STDMETHODCALLTYPE IAhkApi::Script_GetVar(LPTSTR aVarName, ResultToken& aValue, LPTSTR aModuleName) {
+	if (!g_script)
+		return false;
+	Var *var;
+	if (!aModuleName)
+		var = g_script->FindGlobalVar(aVarName);
+	else if (auto mod = g_script->mModules.Find(aModuleName))
+		var = mod->mVars.Find(aVarName);
+	else var = nullptr;
 	if (var) {
-		VarToToken(var, aValue);
+		var->Get(aValue);
 		return true;
 	}
 	return false;
 }
 
-bool STDMETHODCALLTYPE IAhkApi::Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue) {
-	auto var = g_script ? g_script->FindOrAddVar(aVarName, 0, FINDVAR_GLOBAL) : nullptr;
+bool STDMETHODCALLTYPE IAhkApi::Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue, LPTSTR aModuleName) {
+	if (!g_script)
+		return false;
+	Var *var;
+	int at;
+	if (!aModuleName)
+		var = g_script->FindOrAddVar(aVarName, 0, FINDVAR_GLOBAL);
+	else if (auto mod = g_script->mModules.Find(aModuleName))
+	{
+		if (!(var = mod->mVars.Find(aVarName, &at)))
+			if (!mod->mVars.Insert(var = new Var(aVarName, VAR_GLOBAL), at))
+				return false;
+	}
+	else var = nullptr;
 	if (var)
 		return var->Assign(aValue) == OK;
 	return false;
@@ -892,8 +873,8 @@ Object* STDMETHODCALLTYPE IAhkApi::Class_New(LPTSTR aClassName, size_t aClassSiz
 
 	auto class_obj = Object::CreateClass(aPrototype);
 	class_obj->SetBase(Object::sClass);
-	if (proto)
-		proto->Release();
+	if (!proto)
+		aPrototype->AddRef();
 	_stprintf(full_name, _T("%s.Call"), aClassName);
 	auto ctor = (BuiltInFunc*)Func_New(FuncEntry{ full_name,obj_ctor,1,MAX_FUNCTION_PARAMS,0,{0} });
 	ctor->mData = aPrototype;

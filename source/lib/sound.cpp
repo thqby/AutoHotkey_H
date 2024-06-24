@@ -576,7 +576,7 @@ bif_impl FResult SoundPlay(StrArg aFilespec, optl<StrArg> aWait)
 		mciSendString(_T("status ") SOUNDPLAY_ALIAS _T(" mode"), buf, _countof(buf), NULL);
 		if (!*buf) // Probably can't happen given the state we're in.
 			break;
-		if (!_tcscmp(buf, _T("stopped")) || (char)g->IsPaused == -1) // The sound is done playing.
+		if (!_tcscmp(buf, _T("stopped")) || g->Exited())
 		{
 			mciSendString(_T("close ") SOUNDPLAY_ALIAS, NULL, 0, NULL);
 			break;

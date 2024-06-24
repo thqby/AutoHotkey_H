@@ -118,6 +118,7 @@ enum ExcptModeType {EXCPTMODE_NONE = 0
 	, EXCPTMODE_CATCH = 2 // Exception will be suppressed or caught.
 	, EXCPTMODE_DELETE = 4 // Unhandled exceptions will display ERR_ABORT_DELETE vs. ERR_ABORT.
 	, EXCPTMODE_CAUGHT = 0x10 // An exception is already being handled within a CATCH, and is not shadowed by TRY.
+	, EXCPTMODE_DEBUGGER = 0x20 // Debugger is evaluating a property and wants uncaught errors suppressed.
 };
 
 #define SEND_MODES { _T("Event"), _T("Input"), _T("Play"), _T("InputThenPlay") } // Must match the enum below.
@@ -136,11 +137,11 @@ enum ExitReasons {EXIT_CRITICAL = -2, EXIT_DESTROY = -1, EXIT_NONE = 0, EXIT_ERR
 	, EXIT_CLOSE, EXIT_MENU, EXIT_EXIT, EXIT_RELOAD, EXIT_SINGLEINSTANCE};
 #define EXITREASON_MUST_EXIT(er) (static_cast<ExitReasons>(er) <= EXIT_DESTROY)
 
-enum WarnType {WARN_LOCAL_SAME_AS_GLOBAL, WARN_UNREACHABLE, WARN_VAR_UNSET, WARN_ALL};
+enum WarnType {WARN_LOCAL_SAME_AS_GLOBAL, WARN_UNREACHABLE, WARN_VAR_UNSET, WARN_ALL, INVALID_WARN_TYPE};
 #define WARN_TYPE_STRINGS _T("LocalSameAsGlobal"), _T("Unreachable"), _T("VarUnset"), _T("All")
 
-enum WarnMode {WARNMODE_OFF, WARNMODE_OUTPUTDEBUG, WARNMODE_MSGBOX, WARNMODE_STDOUT};	// WARNMODE_OFF must be zero.
-#define WARN_MODE_STRINGS _T("Off"), _T("OutputDebug"), _T("MsgBox"), _T("StdOut")
+enum WarnMode {WARNMODE_OFF, WARNMODE_ON, WARNMODE_OUTPUTDEBUG, WARNMODE_MSGBOX, WARNMODE_STDOUT};	// WARNMODE_OFF must be zero.
+#define WARN_MODE_STRINGS _T("Off"), _T("On"), _T("OutputDebug"), _T("MsgBox"), _T("StdOut")
 
 enum SingleInstanceType {SINGLE_INSTANCE_OFF, SINGLE_INSTANCE_PROMPT, SINGLE_INSTANCE_REPLACE
 	, SINGLE_INSTANCE_IGNORE }; // SINGLE_INSTANCE_OFF must be zero.
@@ -270,14 +271,6 @@ struct DECLSPEC_NOVTABLE IObject // L31: Abstract interface for "objects".
 		LPTSTR Type() { return _T(name); }
 	virtual Object *Base() = 0;
 	virtual bool IsOfType(Object *aPrototype) = 0;
-	
-#ifdef CONFIG_DEBUGGER
-	#define IObject_DebugWriteProperty_Def \
-		void DebugWriteProperty(IDebugProperties *, int aPage, int aPageSize, int aMaxDepth)
-	virtual IObject_DebugWriteProperty_Def;
-#else
-	#define IObject_DebugWriteProperty_Def
-#endif
 };
 
 
@@ -639,7 +632,7 @@ enum enum_act {
 , ACT_EXIT // Used with AddLine(), but excluded from the "named" range below so that the function is preferred.
 // ================================================================================
 // Named actions recognized by ConvertActionType:
-, ACT_STATIC, ACT_GLOBAL, ACT_LOCAL
+, ACT_STATIC, ACT_EXPORT, ACT_GLOBAL, ACT_LOCAL
 , ACT_IF
 , ACT_ELSE
 , ACT_LOOP, ACT_LOOP_FILE, ACT_LOOP_REG, ACT_LOOP_READ, ACT_LOOP_PARSE
@@ -649,13 +642,12 @@ enum enum_act {
 , ACT_RETURN
 , ACT_TRY, ACT_CATCH, ACT_FINALLY // Keep TRY, CATCH and FINALLY together and in this order for range checks.
 , ACT_SWITCH, ACT_CASE // Keep ACT_TRY..ACT_CASE together for ACT_EXPANDS_ITS_OWN_ARGS.
-, ACT_INITEXEC	// #InitExec expr
 // ================================================================================
 // All others are not included in g_act, and are only used for misc. purposes:
 , ACT_MOUSEMOVE, ACT_MOUSECLICK, ACT_MOUSECLICKDRAG // Used by PerformMouse().
 // ================================================================================
 // Aliases used for range checks:
-, ACT_FIRST_NAMED_ACTION = ACT_STATIC, ACT_LAST_NAMED_ACTION = ACT_INITEXEC
+, ACT_FIRST_NAMED_ACTION = ACT_STATIC, ACT_LAST_NAMED_ACTION = ACT_CASE
 , ACT_FIRST_JUMP = ACT_BREAK, ACT_LAST_JUMP = ACT_GOTO // Actions which accept a label name.
 };
 
@@ -925,6 +917,12 @@ struct ScriptThreadState
 	bool IsPaused;
 	bool MsgBoxTimedOut; // Meaningful only while a MsgBox call is in progress.
 	bool AllowThreadToBeInterrupted; // Whether this thread can be interrupted by custom menu items, hotkeys, or timers.  Separate from g_AllowInterruption because that's for use by ongoing operations, such as SendKeys, and should override the thread's setting.
+
+	// ahk_h: Used to terminate a thread
+	bool Exited()
+	{
+		return (char)IsPaused == -1;
+	}
 };
 
 struct ScriptThreadSettings

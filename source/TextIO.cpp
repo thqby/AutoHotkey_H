@@ -44,7 +44,6 @@ bool TextStream::Open(LPCTSTR aFileSpec, DWORD aFlags, UINT aCodePage)
 
 	SetCodePage(aCodePage);
 	mFlags = aFlags;
-	mLastWriteChar = 0;
 
 	int mode = aFlags & ACCESS_MODE_MASK;
 	if (mode == USEHANDLE)
@@ -143,6 +142,7 @@ DWORD TextStream::Read(LPTSTR aBuf, DWORD aBufLen, BOOL aReadLine)
 			{
 				mPos = NULL;
 				mLength = 0;
+				mDecodingErrors = true;
 				aBuf[target_used++] = INVALID_CHAR;
 				break;
 			}
@@ -199,6 +199,7 @@ DWORD TextStream::Read(LPTSTR aBuf, DWORD aBufLen, BOOL aReadLine)
 						else if ((*src & 0xF8) == 0xF0)
 							src_size = 4;
 						else { // Invalid in current UTF-8 standard.
+							mDecodingErrors = true;
 							aBuf[target_used++] = INVALID_CHAR;
 							continue;
 						}
@@ -214,6 +215,7 @@ DWORD TextStream::Read(LPTSTR aBuf, DWORD aBufLen, BOOL aReadLine)
 						{
 							mLength = 0; // Discard all remaining data, since it appears to be invalid.
 							src = NULL;  // mPos is set to this outside the inner loop.
+							mDecodingErrors = true;
 							aBuf[target_used++] = INVALID_CHAR;
 						}
 						else
@@ -335,6 +337,7 @@ DWORD TextStream::Read(LPTSTR aBuf, DWORD aBufLen, BOOL aReadLine)
 			}
 			else
 			{
+				mDecodingErrors = true;
 				aBuf[target_used++] = INVALID_CHAR;
 			}
 		} // end for-loop which processes buffered data.

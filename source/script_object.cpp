@@ -6,6 +6,7 @@
 
 #include "script_object.h"
 #include "script_func_impl.h"
+#include "script_gui.h"
 #include "input_object.h"
 
 #include <errno.h> // For ERANGE.
@@ -440,7 +441,7 @@ ResultType CallEnumerator(IObject *aEnumerator, ExprTokenType *aParam[], int aPa
 		if (aParam[i]->symbol == SYM_OBJECT)
 		{
 			ASSERT(dynamic_cast<VarRef *>(aParam[i]->object));
-			((VarRef *)aParam[i]->object)->Uninitialize(VAR_NEVER_FREE);
+			((VarRef *)aParam[i]->object)->UninitializeNonVirtual(VAR_NEVER_FREE);
 		}
 	auto result = aEnumerator->Invoke(result_token, IT_CALL, nullptr, t_this, aParam, aParamCount);
 	if (result == FAIL || result == EARLY_EXIT || result == INVOKE_NOT_HANDLED)
@@ -863,6 +864,14 @@ ResultType Object::SetProperty(ResultToken &aResultToken, int aFlags, name_t aNa
 			field = candidate;
 	}
 
+	if (!field && !(aFlags & IF_BYPASS_METAFUNC))
+	{
+		// Call __Set before creating a field.
+		auto result = CallMetaVarg(aFlags, aName, aResultToken, aThisToken, aParam, aParamCount);
+		if (result != INVOKE_NOT_HANDLED)
+			return result;
+ 	}
+
 	if (aParamCount > 1)
 	{
 		if (!field)
@@ -904,12 +913,6 @@ ResultType Object::SetProperty(ResultToken &aResultToken, int aFlags, name_t aNa
 	{
 		if (aFlags & IF_NO_NEW_PROPS)
 			return INVOKE_NOT_HANDLED;
-		if (!(aFlags & IF_BYPASS_METAFUNC))
-		{
-			auto result = CallMetaVarg(aFlags, aName, aResultToken, aThisToken, aParam, aParamCount);
-			if (result != INVOKE_NOT_HANDLED)
-				return result;
-		}
 		if (aParam[0]->symbol == SYM_MISSING)
 			return OK; // No action needed for x.y := unset.
 		if (  !(field = Insert(aName, insert_pos))  )
@@ -1340,6 +1343,8 @@ Object *Object::CreateClass(Object *aPrototype, Object *aBase)
 	auto cls = new Object();
 	cls->SetBase(aBase);
 	cls->SetOwnProp(_T("Prototype"), aPrototype);
+	// ahk_h: The class should be the only reference to the prototype so that it can be released on exit.
+	aPrototype->Release();
 	return cls;
 }
 
@@ -1443,7 +1448,6 @@ Object *Object::DefineMembers(Object *obj, LPTSTR aClassName, ObjectMember aMemb
 Object *Object::CreateClass(LPTSTR aClassName, Object *aBase, Object *aPrototype, ClassFactoryDef aFactory)
 {
 	auto class_obj = CreateClass(aPrototype, aBase);
-	aPrototype->Release(); // HotKeyIt: the scripts var should be the only reference to the prototype so it can be released on clearance.
 
 	if (aFactory.call)
 	{
@@ -1459,7 +1463,7 @@ Object *Object::CreateClass(LPTSTR aClassName, Object *aBase, Object *aPrototype
 		ctor->Release();
 	}
 
-	auto var = g_script->FindOrAddVar(aClassName, 0, VAR_DECLARE_GLOBAL);
+	auto var = g_script->FindOrAddVar(aClassName, 0, VAR_DECLARE_GLOBAL | VAR_EXPORTED);
 	var->AssignSkipAddRef(class_obj);
 	var->MakeReadOnly();
 
@@ -2961,31 +2965,31 @@ ResultType Array::GetEnumItem(UINT &aIndex, Var *aVal, Var *aReserved, int aVarC
 {
 	if (aIndex < mLength)
 	{
+		ResultType result = OK;
 		if (aVarCount > 1)
 		{
 			// Put the index first, only when there are two parameters.
 			if (aVal)
-				aVal->Assign((__int64)aIndex + 1);
+				result = aVal->Assign((__int64)aIndex + 1);
 			aVal = aReserved;
 		}
-		if (aVal)
+		if (aVal && result)
 		{
 			auto &item = mItem[aIndex];
 			switch (item.symbol)
 			{
 			default:
 				if (item.symbol == SYM_MISSING)
-					aVal->Uninitialize();
+					result = aVal->AssignUnset();
 				else
-					aVal->AssignString(item.string, item.string.Length());
-				
+					result = aVal->AssignString(item.string, item.string.Length());
 				break;
-			case SYM_INTEGER:	aVal->Assign(item.n_int64);			break;
-			case SYM_FLOAT:		aVal->Assign(item.n_double);		break;
-			case SYM_OBJECT:	aVal->Assign(item.object);			break;
+			case SYM_INTEGER:	result = aVal->Assign(item.n_int64);	break;
+			case SYM_FLOAT:		result = aVal->Assign(item.n_double);	break;
+			case SYM_OBJECT:	result = aVal->Assign(item.object);		break;
 			}
 		}
-		return CONDITION_TRUE;
+		return result ? CONDITION_TRUE : FAIL;
 	}
 	return CONDITION_FALSE;
 }
@@ -3036,6 +3040,9 @@ ResultType Object::GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCoun
 	for  ( ; aIndex < mFields.Length(); ++aIndex)
 	{
 		FieldType &field = mFields[aIndex];
+		// Assign name first to ensure stability in case the field is deleted by the property getter.
+		if (aName)
+			aName->Assign(field.name);
 		if (aVal)
 		{
 			if (field.symbol == SYM_DYNAMIC)
@@ -3077,10 +3084,6 @@ ResultType Object::GetEnumProp(UINT &aIndex, Var *aName, Var *aVal, int aVarCoun
 				aVal->Assign(value);
 			}
 		}
-		if (aName)
-		{
-			aName->Assign(field.name);
-		}
 		return CONDITION_TRUE;
 	}
 	return CONDITION_FALSE;
@@ -3103,7 +3106,6 @@ Object::PropEnum::PropEnum(Object *aObject, ExprTokenType &aThisToken)
 	: PropEnum(aObject)
 {
 	mThisToken.CopyValueFrom(aThisToken);
-	mDebuggerMode = true;
 }
 
 
@@ -3118,13 +3120,19 @@ ResultType Object::PropEnum::Next(Var *aName, Var *aVal)
 {
 	int nextidx, testidx = 0;
 	Object *nextobj = nullptr;
-	bool is_proto = mObject->IsClassPrototype() && !mDebuggerMode;
+
+	// Property getters should not be called for Prototype objects, since they are not instances.
+	// Checking via mThisToken rather than mObject supports the substitution performed by the debugger.
+	bool is_proto = mThisToken.symbol == SYM_OBJECT
+		&& mThisToken.object->IsOfType(Object::sPrototype)
+		&& static_cast<Object*>(mThisToken.object)->IsClassPrototype();
+
 	for (Object *testobj = mObject;; )
 	{
 		if (mIndex[testidx] < testobj->mFields.Length())
 		{
 			auto &testfld = testobj->mFields[mIndex[testidx]];
-			if (!testfld.enumerable && (testidx || !mDebuggerMode)
+			if (!testfld.enumerable
 				|| testfld.symbol == SYM_DYNAMIC && (testfld.prop->NoEnumGet || !testfld.prop->Getter() || is_proto))
 			{
 				++mIndex[testidx]; // Skip this property.
@@ -3184,31 +3192,32 @@ ResultType Map::GetEnumItem(UINT &aIndex, Var *aKey, Var *aVal, int aVarCount)
 	if (aIndex < mCount)
 	{
 		auto &item = mItem[aIndex];
+		ResultType result = OK;
 		if (aKey)
 		{
 			if (IsUnsorted())
 			{
 				if (mKeyTypes[aIndex] == SYM_STRING)
-					aKey->Assign(item.key.s);
+					result = aKey->Assign(item.key.s);
 				else if (mKeyTypes[aIndex] == SYM_OBJECT)
-					aKey->Assign(item.key.p);
+					result = aKey->Assign(item.key.p);
 				else
-					aKey->Assign(item.key.i);
+					result = aKey->Assign(item.key.i);
 			}
 			else if (aIndex < mKeyOffsetObject) // mKeyOffsetInt < mKeyOffsetObject
-				aKey->Assign(item.key.i);
+				result = aKey->Assign(item.key.i);
 			else if (aIndex < mKeyOffsetString) // mKeyOffsetObject < mKeyOffsetString
-				aKey->Assign(item.key.p);
+				result = aKey->Assign(item.key.p);
 			else // mKeyOffsetString < mCount
-				aKey->Assign(item.key.s);
+				result = aKey->Assign(item.key.s);
 		}
-		if (aVal)
+		if (aVal && result)
 		{
 			ExprTokenType value;
 			item.ToToken(value);
-			aVal->Assign(value);
+			result = aVal->Assign(value);
 		}
-		return CONDITION_TRUE;
+		return result ? CONDITION_TRUE : FAIL;
 	}
 	return CONDITION_FALSE;
 }
@@ -3225,18 +3234,19 @@ ResultType RegExMatchObject::GetEnumItem(UINT &aIndex, Var *aKey, Var *aVal, int
 		aVal = aKey;
 		aKey = nullptr;
 	}
+	ResultType result = OK;
 	if (aKey)
 	{
 		if (mPatternName && mPatternName[aIndex])
-			aKey->Assign(mPatternName[aIndex]);
+			result = aKey->Assign(mPatternName[aIndex]);
 		else
-			aKey->Assign((__int64)aIndex);
+			result = aKey->Assign((__int64)aIndex);
 	}
-	if (aVal)
+	if (aVal && result)
 	{
-		aVal->Assign(mHaystack - mHaystackStart + mOffset[aIndex*2], mOffset[aIndex*2+1]);
+		result = aVal->Assign(mHaystack - mHaystackStart + mOffset[aIndex*2], mOffset[aIndex*2+1]);
 	}
-	return CONDITION_TRUE;
+	return result ? CONDITION_TRUE : FAIL;
 }
 
 
@@ -4139,11 +4149,11 @@ void Object::CreateRootPrototypes()
 	// only handles Objects, and these must handle primitive values.
 	static const LPTSTR sFuncs[] = { _T("GetMethod"), _T("HasBase"), _T("HasMethod"), _T("HasProp") };
 	for (int i = 0; i < _countof(sFuncs); ++i)
-		sAnyPrototype->DefineMethod(sFuncs[i], g_script->FindGlobalFunc(sFuncs[i]));
+		sAnyPrototype->DefineMethod(sFuncs[i], g_script->GetBuiltinObject(sFuncs[i]));
 	auto prop = sAnyPrototype->DefineProperty(_T("Base"), false);
 	prop->NoParamGet = prop->NoParamSet = true;
-	prop->SetGetter(g_script->FindGlobalFunc(_T("ObjGetBase")));
-	prop->SetSetter(g_script->FindGlobalFunc(_T("ObjSetBase")));
+	prop->SetGetter(g_script->GetBuiltinObject(_T("ObjGetBase")));
+	prop->SetSetter(g_script->GetBuiltinObject(_T("ObjSetBase")));
 	
 	// Define __Init so that Script::DefineClassInit can add an unconditional super.__Init().
 	auto __Init = new BuiltInFunc { _T(""), Any___Init, 1, 1 };
@@ -4256,6 +4266,7 @@ void Object::CreateRootPrototypes()
 			}},
 			{_T("String"), &Object::sStringPrototype, {BIF_String, 2, 2}}
 		}},
+		{_T("Module"), &ScriptModule::sPrototype},
 		{_T("PropRef"), &PropRef::sPrototype, {PropRef_Call, 3, 3}, PropRef::sMembers, _countof(PropRef::sMembers)},
 		{_T("VarRef"), &sVarRefPrototype, no_ctor, VarRef::sMembers, _countof(VarRef::sMembers)}
 	});
@@ -4357,7 +4368,8 @@ void Object::DefineClass(name_t aName, Object *aClass)
 	auto info = SimpleHeap::Alloc<NestedClassInfo>();
 	info->class_object = aClass;
 	info->constructed = false;
-	aClass->AddRef();
+	// ahk_h: It isn't necessary
+	// aClass->AddRef();
 
 	auto get = new BuiltInFunc { _T(""), Class_GetNestedClass, 1, 1, false, info };
 	prop->NoParamGet = prop->NoParamSet = true;
@@ -4430,27 +4442,9 @@ BIF_DECL(Class_New)
 
 	auto proto = Object::CreatePrototype(name, base_proto);
 	auto class_obj = Object::CreateClass(proto, base_class);
-	proto->Release();
+	// ahk_h: Has been released in CreateClass
+	// proto->Release();
 	// Don't call any inherited __Init, since that would reinitialize static variables and duplicate
 	// any typed properties defined by that one class.  This either releases or returns class_obj:
 	class_obj->ConstructNoInit(aResultToken, aParam, aParamCount, ExprTokenType(class_obj));
 }
-
-
-
-#ifdef CONFIG_DEBUGGER
-
-void IObject::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPageSize, int aMaxDepth)
-{
-	DebugCookie cookie;
-	aDebugger->BeginProperty(NULL, "object", 0, cookie);
-	//if (aPage == 0)
-	//{
-	//	// This is mostly a workaround for debugger clients which make it difficult to
-	//	// tell when a property contains an object with no child properties of its own:
-	//	aDebugger->WriteProperty("Note", _T("This object doesn't support debugging."));
-	//}
-	aDebugger->EndProperty(cookie);
-}
-
-#endif

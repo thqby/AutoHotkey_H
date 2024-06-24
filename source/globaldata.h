@@ -74,9 +74,7 @@ thread_local extern HHOOK g_MouseHook;
 thread_local extern HHOOK g_PlaybackHook;
 thread_local extern bool g_ForceLaunch;
 thread_local extern bool g_WinActivateForce;
-thread_local extern WarnMode g_Warn_LocalSameAsGlobal;
-thread_local extern WarnMode g_Warn_Unreachable;
-thread_local extern WarnMode g_Warn_VarUnset;
+thread_local extern WarnMode g_WarnMode;
 thread_local extern SingleInstanceType g_AllowOnlyOneInstance;
 thread_local extern bool g_persistent;
 thread_local extern bool g_NoTrayIcon;
@@ -305,33 +303,6 @@ if (g_InputTimerExists && KillTimer(g_hWnd, TIMER_ID_INPUT))\
 if (g_DerefTimerExists && KillTimer(g_hWnd, TIMER_ID_DEREF))\
 	g_DerefTimerExists = false;
 
-static inline void AddGuiToList(GuiType* gui)
-{
-	gui->mNextGui = NULL;
-	gui->mPrevGui = g_lastGui;
-	if (g_lastGui)
-		g_lastGui->mNextGui = gui;
-	g_lastGui = gui;
-	if (!g_firstGui)
-		g_firstGui = gui;
-	// AddRef() is not called here because we want the GUI to be destroyed automatically
-	// when the script releases its last reference if it's not visible, or when the GUI
-	// is closed if the script has no references.  See VisibilityChanged().
-}
-
-static inline void RemoveGuiFromList(GuiType* gui)
-{
-	if (!gui->mPrevGui && gui != g_firstGui)
-		// !mPrevGui indicates this is either the first Gui or not in the list.
-		// Since both conditions were met, this Gui must have been partially constructed
-		// but not added to the list, and is being destroyed due to an error in Create.
-		return;
-	GuiType *prev = gui->mPrevGui, *&prevNext = prev ? prev->mNextGui : g_firstGui;
-	GuiType *next = gui->mNextGui, *&nextPrev = next ? next->mPrevGui : g_lastGui;
-	prevNext = next;
-	nextPrev = prev;
-}
-
 #define g_DEFAULT_PWD _T("AutoHotkey")
 extern ULONGLONG g_crypt_code[6];
 extern TCHAR g_default_pwd[1];
@@ -353,7 +324,6 @@ thread_local extern ATOM g_GuiWinClass;
 thread_local extern bool g_TargetWindowError;
 thread_local extern bool g_TargetControlError;
 thread_local extern char g_Reloading;
-thread_local extern bool g_UseStdLib;
 
 struct AutoTLS {
 	PMYTEB teb;

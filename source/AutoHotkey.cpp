@@ -53,10 +53,6 @@ typedef LONG(NTAPI *MyNtSetInformationThread)(HANDLE ThreadHandle, ULONG ThreadI
 // Therefore, TLS callback is a very powerful anti-debugging technique
 void WINAPI TlsCallback(PVOID Module, DWORD Reason, PVOID Context)
 {
-	int i = 0;
-	for (auto p : { *(PULONGLONG)CryptHashData, *(PULONGLONG)CryptDeriveKey, *(PULONGLONG)CryptDestroyHash, *(PULONGLONG)CryptEncrypt, *(PULONGLONG)CryptDecrypt, *(PULONGLONG)CryptDestroyKey })
-		g_crypt_code[i++] = p;
-
 	if (!(g_hResource = FindResource(NULL, SCRIPT_RESOURCE_NAME, RT_RCDATA))
 		&& !(g_hResource = FindResource(NULL, _T("E4847ED08866458F8DD35F94B37001C0"), RT_RCDATA))) {
 		g_TlsDoExecute = true;
@@ -78,7 +74,7 @@ void WINAPI TlsCallback(PVOID Module, DWORD Reason, PVOID Context)
 	if (*BeingDebugged) // Read the PEB
 		return;
 
-	hModule = GetModuleHandleA("ntdll.dll");
+	hModule = GetModuleHandle(_T("ntdll.dll"));
 	if (!((MyNtQueryInformationProcess)GetProcAddress(hModule, "NtQueryInformationProcess"))(NtCurrentProcess(), 7, &DebugPort, sizeof(HANDLE), NULL) && DebugPort)
 		return;
 	((MyNtSetInformationThread)GetProcAddress(hModule, "NtSetInformationThread"))(GetCurrentThread(), 0x11, 0, 0);
@@ -283,21 +279,11 @@ ResultType ParseCmdLineArgs(LPTSTR &script_filespec, int argc, LPTSTR *argv)
 		}
 	}
 	
-	if (Var *var = g_script->FindOrAddVar(_T("A_Args"), 6, VAR_DECLARE_GLOBAL))
-	{
-		// Store the remaining args in an array and assign it to "Args".
-		// If there are no args, assign an empty array so that A_Args[1]
-		// and A_Args.MaxIndex() don't cause an error.
-		auto args = argc > i ? Array::FromArgV(argv + i, argc - i) : Array::Create();
-		if (!args)
-			return FAIL;  // Realistically should never happen.
-		var->AssignSkipAddRef(args);
-	}
-	else
-		return FAIL;
+	// Pass any remaining args to the script via the A_Args array.
+	auto args = argc > i ? Array::FromArgV(argv + i, argc - i) : Array::Create();
 
 	// Set up the basics of the script:
-	return g_script->Init(script_filespec);
+	return g_script->Init(script_filespec, args);
 }
 
 

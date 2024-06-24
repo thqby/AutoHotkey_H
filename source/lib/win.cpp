@@ -1065,6 +1065,8 @@ bif_impl FResult ListViewGetContent(optl<StrArg> aOpt, CONTROL_PARAMETERS_DECL, 
 		LVITEM64 i64;
 	} local_lvi;
 
+	const int LV_REMOTE_BUF_SIZE = 1024;
+
 	// ALLOCATE INTERPROCESS MEMORY FOR TEXT RETRIEVAL
 	HANDLE handle;
 	LPVOID p_remote_lvi; // Not of type LPLVITEM to help catch bugs where p_remote_lvi->member is wrongly accessed here in our process.

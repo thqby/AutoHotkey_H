@@ -20,6 +20,7 @@ GNU General Public License for more details.
 #include "window.h" // for several MsgBox and window functions
 #include "util.h" // for strlcpy()
 #include "resources/resource.h"  // For ID_TRAY_OPEN.
+#include "script_gui.h"
 
 
 bool MsgSleep(int aSleepDuration, MessageMode aMode)
@@ -417,7 +418,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// The below is checked here rather than in IsCycleComplete() because
 				// that function is sometimes called more than once prior to returning
 				// (e.g. empty_the_queue_via_peek) and we only want this to be decremented once:
-				if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || (char)::g->IsPaused == -1) // v1.0.44.11: IsCycleComplete() must be called for all modes, but now its return value is checked due to the new g_DeferMessagesForUnderlyingPump mode.
+				if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || ::g->Exited()) // v1.0.44.11: IsCycleComplete() must be called for all modes, but now its return value is checked due to the new g_DeferMessagesForUnderlyingPump mode.
 					RETURN_FROM_MSGSLEEP
 				// Otherwise (since above didn't return) combined logic has ensured that all of the following are true:
 				// 1) aSleepDuration > 0
@@ -1312,7 +1313,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				continue; // The above condition is possible only when the AutoExec section had ended prior to the thread we just launched.
 
 			// Otherwise a script thread other than the idle thread has just been resumed.
-			if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || (char)::g->IsPaused == -1)
+			if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || ::g->Exited())
 			{
 				// Check for messages once more in case the subroutine that just completed
 				// above didn't check them that recently.  This is done to minimize the time
@@ -1371,7 +1372,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// in preparation for ending this instance/layer, only to be possibly,
 			// but extremely rarely, interrupted/recursed yet again if that final
 			// peek were to detect a recursable message):
-			if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || (char)::g->IsPaused == -1)
+			if (IsCycleComplete(aSleepDuration, start_time, allow_early_return) || ::g->Exited())
 				RETURN_FROM_MSGSLEEP
 			// Otherwise, stay in the blessed GetMessage() state until the time has expired:
 			continue;
@@ -2013,7 +2014,7 @@ bool MsgWaitUnpause()
 	while (g.IsPaused)
 	{
 		MsgWaitForMultipleObjects(0, nullptr, FALSE, INFINITE, QS_ALLINPUT);
-		if ((char)g.IsPaused == -1)	// ahk_h: Used to terminate a thread
+		if (g.Exited())
 			return true;
 		MsgSleep(-1);
 	}

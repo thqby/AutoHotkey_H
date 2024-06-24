@@ -18,6 +18,7 @@ GNU General Public License for more details.
 #include <Shlwapi.h>
 #include <uxtheme.h>
 #include "script.h"
+#include "script_gui.h"
 #include "globaldata.h" // for a lot of things
 #include "application.h" // for MsgSleep()
 #include "window.h" // for SetForegroundWindowEx()
@@ -108,6 +109,34 @@ void UpdateScrollbars(GuiType *agui, int client_right, int client_bottom,bool do
 	if (!aSkipOver && (xScroll || yScroll))
 		ScrollWindow(agui->mHwnd, xScroll, yScroll, NULL, NULL);
 }
+
+static inline void AddGuiToList(GuiType* gui)
+{
+	gui->mNextGui = NULL;
+	gui->mPrevGui = g_lastGui;
+	if (g_lastGui)
+		g_lastGui->mNextGui = gui;
+	g_lastGui = gui;
+	if (!g_firstGui)
+		g_firstGui = gui;
+	// AddRef() is not called here because we want the GUI to be destroyed automatically
+	// when the script releases its last reference if it's not visible, or when the GUI
+	// is closed if the script has no references.  See VisibilityChanged().
+}
+
+static inline void RemoveGuiFromList(GuiType* gui)
+{
+	if (!gui->mPrevGui && gui != g_firstGui)
+		// !mPrevGui indicates this is either the first Gui or not in the list.
+		// Since both conditions were met, this Gui must have been partially constructed
+		// but not added to the list, and is being destroyed due to an error in Create.
+		return;
+	GuiType *prev = gui->mPrevGui, *&prevNext = prev ? prev->mNextGui : g_firstGui;
+	GuiType *next = gui->mNextGui, *&nextPrev = next ? next->mPrevGui : g_lastGui;
+	prevNext = next;
+	nextPrev = prev;
+}
+
 
 // Gui methods use this macro either if they require the Gui to have a window,
 // or if they aren't safe to use after Dispose() is called.
@@ -262,11 +291,12 @@ ResultType GuiType::GetEnumItem(UINT &aIndex, Var *aOutputVar1, Var *aOutputVar2
 		aOutputVar2 = aOutputVar1; // Return the more useful value in single-var mode: the control object.
 		aOutputVar1 = nullptr;
 	}
+	ResultType result = OK;
 	if (aOutputVar1)
-		aOutputVar1->AssignHWND(ctrl->hwnd);
-	if (aOutputVar2)
-		aOutputVar2->Assign(ctrl);
-	return CONDITION_TRUE;
+		result = aOutputVar1->AssignHWND(ctrl->hwnd);
+	if (aOutputVar2 && result)
+		result = aOutputVar2->Assign(ctrl);
+	return result ? CONDITION_TRUE : FAIL;
 }
 
 
@@ -738,8 +768,6 @@ void GuiControlType::DefineControlClasses()
 	auto list_class = CreateClass(sPrototypeList, ctrl_class);
 	gui_class->DefineClass(_T("Control"), ctrl_class);
 	gui_class->DefineClass(_T("List"), list_class);
-	list_class->Release(), ctrl_class->Release();
-	sPrototype->Release(), sPrototypeList->Release();
 
 	for (int i = GUI_CONTROL_INVALID + 1; i < GUI_CONTROL_TYPE_COUNT; ++i)
 	{
@@ -773,8 +801,6 @@ void GuiControlType::DefineControlClasses()
 		auto cls = CreateClass(sPrototypes[i]);
 		cls->SetBase(base_class);
 		gui_class->DefineClass(sTypeNames[i], cls);
-		sPrototypes[i]->Release();
-		cls->Release();
 		sClasses[i] = cls;
 	}
 	sClasses[GUI_CONTROL_TAB2] = list_class;

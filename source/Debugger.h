@@ -80,21 +80,23 @@ extern LPCTSTR g_AutoExecuteThreadDesc;
 
 
 enum BreakpointTypeType {BT_Line, BT_Call, BT_Return, BT_Exception, BT_Conditional, BT_Watch};
-enum BreakpointStateType {BS_Disabled=0, BS_Enabled};
+enum BreakpointStateType {BS_Disabled=0, BS_Enabled, BS_Deleted};
 
 class Breakpoint
 {
 public:
 	int id;
 	char type;
-	char state;
-	bool temporary;
+	char state = BS_Disabled;
+	bool temporary = false;
 
-	// Not yet supported: function, hit_count, hit_value, hit_condition, exception
+	Line *line = nullptr;
+	Breakpoint *next = nullptr;
+	
+	// Not yet supported: function, hit_count, hit_value, hit_condition
 
-	Breakpoint() : id(AllocateID()), type(BT_Line), state(BS_Enabled), temporary(false)
-	{
-	}
+	Breakpoint(BreakpointTypeType aType = BT_Line, int aID = AllocateID())
+		: id(aID), type((char)aType) {}
 
 	static int AllocateID() { return ++sMaxId; }
 
@@ -191,36 +193,15 @@ public:
 	void Exit(ExitReasons aExitReason, char *aCommandName=NULL); // Called when exiting AutoHotkey.
 	inline bool IsConnected() { return mSocket != INVALID_SOCKET; }
 	inline bool IsStepping() { return mInternalState >= DIS_StepInto; }
-	inline bool IsAtBreak() { return mProcessingCommands; }
 	inline bool HasStdErrHook() { return mStdErrMode != SR_Disabled; }
 	inline bool HasStdOutHook() { return mStdOutMode != SR_Disabled; }
-	inline bool BreakOnExceptionIsEnabled() { return mBreakOnException; }
+	inline bool BreakOnExceptionIsEnabled() { return mBreakOnException.state == BS_Enabled; }
 
 	LPCTSTR WhatThrew();
 
-	__declspec(noinline) // Avoiding inlining should reduce the code size of ExpandExpression(), which might help performance since this is only called when the debugger is connected.
-	void PostExecFunctionCall(Line *aExpressionLine)
-	{
-		// If the debugger is stepping into/over/out from a function call, we want to
-		// break at the line which called that function, since the next line to execute
-		// might be a line in some other function (i.e. because the line which called
-		// the function is "return func()" or calls another function after this one).
-		if ((mInternalState == DIS_StepInto
-			|| ((mInternalState == DIS_StepOut || mInternalState == DIS_StepOver)
-				// Always '<' since '<=' (for StepOver) shouldn't be possible,
-				// since we just returned from a function call:
-				&& mStack.Depth() < mContinuationDepth))
-			// The final check ensures we don't repeatedly break at a line containing
-			// multiple built-in function calls; i.e. don't break unless some script
-			// has been executed since we began evaluating aExpressionLine.  Something
-			// like "return recursivefunc()" should work if this is StepInto or StepOver
-			// since mCurrLine would probably be the '}' of that function:
-			&& mCurrLine != aExpressionLine)
-			PreExecLine(aExpressionLine);
-	}
-
 	// Code flow notification functions:
 	int PreExecLine(Line *aLine); // Called before executing each line.
+	void LeaveFunction();
 	bool PreThrow(ExprTokenType *aException);
 	
 	// Receive and process commands. Returns when a continuation command is received.
@@ -275,6 +256,7 @@ public:
 
 
 	Debugger() {}
+	void DeleteBreakpoints(bool aAll = true);
 
 
 	// Stack - keeps track of threads and function calls.
@@ -285,8 +267,10 @@ private:
 	SOCKET mSocket = INVALID_SOCKET;
 	Line *mCurrLine = nullptr; // Similar to g_script->mCurrLine, but may be different when breaking post-function-call, before continuing expression evaluation.
 	ExprTokenType *mThrownToken = nullptr; // The exception that triggered the current exception breakpoint.
-	bool mBreakOnExceptionWasSet = false, mBreakOnExceptionIsTemporary = false, mBreakOnException = false; // Supports a single coverall breakpoint exception.
-	int mBreakOnExceptionID = 0;
+	// Linked list of breakpoints.  Using the exception breakpoint as the const head of the list simplifies
+	// some operations and reduces code size.  The first line breakpoint is always mFirstBreakpoint->next.
+	Breakpoint *const mFirstBreakpoint = &mBreakOnException, *mLastBreakpoint = &mBreakOnException;
+	Breakpoint mBreakOnException { BT_Exception, 0 }; // Supports a single catchall breakpoint exception.
 
 	class Buffer
 	{
@@ -426,9 +410,10 @@ private:
 	int EnterBreakState(LPCSTR aReason = "ok");
 	void ExitBreakState();
 
-	int WriteBreakpointXml(Breakpoint *aBreakpoint, Line *aLine);
-	int WriteExceptionBreakpointXml();
+	int WriteBreakpointXml(Breakpoint *aBreakpoint);
 	Line *FindFirstLineForBreakpoint(int file_index, UINT line_no);
+	Breakpoint *CreateBreakpoint();
+	void DeleteBreakpoint(Breakpoint *aBp);
 
 	void AppendPropertyName(CStringA &aNameBuf, size_t aParentNameLength, const char *aName);
 	void AppendStringKey(CStringA &aNameBuf, size_t aParentNameLength, const char *aKey);

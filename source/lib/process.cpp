@@ -132,7 +132,7 @@ static FResult ProcessWait(StrArg aProcess, optl<double> aTimeout, UINT &aRetVal
 					// This process has closed, but we may need another iteration to verify that no other
 					// matching processes are running.
 				case WAIT_OBJECT_0 + 1:
-					if ((char)g->IsPaused == -1)
+					if (g->Exited())
 						return FR_ABORTED;
 					MsgSleepWithListLines(-1, waiting_line, start_time);
 					continue;
@@ -143,7 +143,7 @@ static FResult ProcessWait(StrArg aProcess, optl<double> aTimeout, UINT &aRetVal
 				}
 				// In case of failure, fall through:
 			}
-			if ((char)g->IsPaused == -1)
+			if (g->Exited())
 				return FR_ABORTED;
 			MsgSleepWithListLines(100, waiting_line, start_time);  // For performance reasons, don't check as often as the WinWait family does.
 		}

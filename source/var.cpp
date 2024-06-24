@@ -35,15 +35,18 @@ ResultType Var::AssignHWND(HWND aWnd)
 
 ResultType Var::Assign(Var &aVar)
 // Assign some other variable to the "this" variable.
-// source_var->Type() must be VAR_NORMAL, but this->Type() can be VAR_VIRTUAL.
+// aVar.Type() and this->Type() must be VAR_NORMAL.
 // Returns OK or FAIL.
 {
 	Var &target_var = *ResolveAlias();
 	Var &source_var = *aVar.ResolveAlias();
 
+	// Caller already handled virtual target_var.
+	ASSERT(!target_var.IsVirtual());
+
 	if (source_var.mAttrib & VAR_ATTRIB_UNINITIALIZED)
 	{
-		target_var.Uninitialize();
+		target_var.UninitializeNonVirtual();
 		return OK;
 	}
 
@@ -83,7 +86,7 @@ ResultType Var::Assign(ExprTokenType &aToken)
 	default:
 		ASSERT(!"Unhandled symbol");
 	case SYM_MISSING:
-		Uninitialize();
+		UninitializeNonVirtual();
 		return OK;
 	}
 	// Since above didn't return, it can only be SYM_STRING.
@@ -873,7 +876,8 @@ void Var::Get(ResultToken &aResultToken)
 		aResultToken.symbol = SYM_INTEGER; // For _f_return_i() and consistency with BIFs.
 		return mVV->Get(aResultToken, mName);
 	}
-	ASSERT(mType == VAR_VIRTUAL_OBJ && IsObject());
+	if (mType != VAR_VIRTUAL_OBJ)
+		return ToToken(aResultToken);
 	if (mObject->Invoke(aResultToken, IT_GET | IF_BYPASS_METAFUNC, _T("__Value"), ExprTokenType(mObject), nullptr, 0) == INVOKE_NOT_HANDLED)
 		aResultToken.UnknownMemberError(ExprTokenType(mObject), IT_GET, _T("__Value"));
 }
@@ -1069,7 +1073,7 @@ ResultType Var::Append(LPTSTR aStr, VarSizeType aLength)
 
 
 
-void Var::AcceptNewMem(LPTSTR aNewMem, VarSizeType aLength)
+ResultType Var::AcceptNewMem(LPTSTR aNewMem, VarSizeType aLength)
 // Caller provides a new malloc'd memory block (currently must be non-NULL).  That block and its
 // contents are directly hung onto this variable in place of its old block, which is freed (except
 // in the case of VAR_VIRTUAL, in which case the memory is passed to mVV->Set() then freed).
@@ -1079,11 +1083,15 @@ void Var::AcceptNewMem(LPTSTR aNewMem, VarSizeType aLength)
 		return mAliasFor->AcceptNewMem(aNewMem, aLength);
 	if (mType != VAR_NORMAL)
 	{
-		Assign(aNewMem, aLength);
+		auto result = Assign(aNewMem, aLength);
 		free(aNewMem); // Caller gave it to us to take charge of, but we have no further use for it.
+		return result;
 	}
 	else // VAR_NORMAL
+	{
 		_AcceptNewMem(aNewMem, aLength);
+		return OK;
+	}
 }
 
 
@@ -1237,8 +1245,6 @@ void Var::Restore(VarBkp &aVarBkp)
 
 void Var::FreeAndRestoreFunctionVars(UserFunc &aFunc, VarBkp *&aVarBackup, int &aVarBackupCount)
 {
-	if ((char)g->IsPaused == -1)
-		g->IsPaused = false;
 	int i;
 	for (i = 0; i < aFunc.mVars.mCount; ++i)
 		aFunc.mVars.mItem[i]->Free(VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES | VAR_REQUIRE_INIT); // Clear aliases, since their targets should not be freed (they don't belong to this function).
@@ -1431,7 +1437,7 @@ void VarRef::__Value(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTy
 		if (aParamCount)
 			Assign(*aParam[0]) || aResultToken.SetExitResult(FAIL);
 		else
-			Uninitialize();
+			UninitializeNonVirtual();
 	}
 	else
 		ToToken(aResultToken);

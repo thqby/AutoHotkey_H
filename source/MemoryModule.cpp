@@ -71,13 +71,6 @@
 #define IMAGE_SIZEOF_BASE_RELOCATION (sizeof(IMAGE_BASE_RELOCATION))
 #endif
 
-typedef HANDLE (WINAPI * MyCreateActCtx)(PCACTCTXA);
-typedef HANDLE (WINAPI * MyDeactivateActCtx)(DWORD,ULONG_PTR);
-typedef BOOL (WINAPI * MyActivateActCtx)(HANDLE,ULONG_PTR*);
-HMODULE libkernel32 = LoadLibrary(_T("kernel32.dll"));
-MyCreateActCtx _CreateActCtxA = (MyCreateActCtx)GetProcAddress(libkernel32,"CreateActCtxA");
-MyDeactivateActCtx _DeactivateActCtx = (MyDeactivateActCtx)GetProcAddress(libkernel32,"DeactivateActCtx");
-MyActivateActCtx _ActivateActCtx = (MyActivateActCtx)GetProcAddress(libkernel32,"ActivateActCtx");
 #ifdef _WIN64
 #define HOST_MACHINE IMAGE_FILE_MACHINE_AMD64
 #else
@@ -608,7 +601,6 @@ BuildImportTable(PMEMORYMODULE module)
 
         // Enumerate Resources
         int i = 0;
-        if (_CreateActCtxA != NULL)
         for (;i < resDir->NumberOfIdEntries + resDir->NumberOfNamedEntries;i++)
         {
             // Resolve current entry
@@ -645,7 +637,7 @@ BuildImportTable(PMEMORYMODULE module)
                     break; //failed to write data, continue and try loading
                 }
                 
-                hActCtx = _CreateActCtxA(&actctx);
+                hActCtx = CreateActCtxA(&actctx);
 
                 // Open file and automatically delete on CloseHandle (FILE_FLAG_DELETE_ON_CLOSE)
                 hFile = CreateFileA(buf,GENERIC_WRITE,FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_TEMPORARY|FILE_FLAG_DELETE_ON_CLOSE,NULL);
@@ -654,7 +646,7 @@ BuildImportTable(PMEMORYMODULE module)
                 if (hActCtx == INVALID_HANDLE_VALUE)
                     break; //failed to create context, continue and try loading
 
-                _ActivateActCtx(hActCtx,&lpCookie); // Don't care if this fails since we would countinue anyway
+                ActivateActCtx(hActCtx,&lpCookie); // Don't care if this fails since we would countinue anyway
                 break; // Break since a dll can have only 1 manifest
             }
         }
@@ -738,8 +730,8 @@ BuildImportTable(PMEMORYMODULE module)
             break;
         }
     }
-    if (_DeactivateActCtx && lpCookie)
-        _DeactivateActCtx(NULL,lpCookie);
+    if (lpCookie)
+        DeactivateActCtx(NULL,lpCookie);
     return result;
 }
 
@@ -1002,7 +994,7 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
 				currentModuleStart = result->codeBase;
 				currentModuleEnd = result->codeBase + result->headers->OptionalHeader.SizeOfImage;
 				EnterCriticalSection(aLoaderLock);
-				pHook = MinHookEnable(GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlPcToFileHeader"), &HookRtlPcToFileHeader);
+				pHook = MinHookEnable(GetProcAddress(GetModuleHandle(_T("ntdll.dll")), "RtlPcToFileHeader"), &HookRtlPcToFileHeader);
 				// notify library about attaching to process
 				BOOL successfull = (*DllEntry)((HINSTANCE)code, DLL_PROCESS_ATTACH, result);
 				// Disable hook if it was enabled before

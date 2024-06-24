@@ -466,11 +466,22 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 
 	case AHK_EXECUTE_LABEL: 
 		if (wParam)
-			wParam = (WPARAM)((Label*)wParam)->mJumpToLine, lParam = UNTIL_RETURN;
+			wParam = (WPARAM)((Label *)wParam)->mJumpToLine, lParam = UNTIL_RETURN;
 	case AHK_EXECUTE:   // sent from dll host # Naveen N9
-		if (wParam)
-			((Line*)wParam)->ExecUntil(lParam == ONLY_ONE_LINE ? ONLY_ONE_LINE : lParam == UNTIL_BLOCK_END ? UNTIL_BLOCK_END : UNTIL_RETURN);
-		return 0;
+		if (!wParam)
+			return 0;
+		if (lParam)
+			((Line *)wParam)->ExecUntil(lParam == ONLY_ONE_LINE ? ONLY_ONE_LINE : lParam == UNTIL_BLOCK_END ? UNTIL_BLOCK_END : UNTIL_RETURN);
+		else
+		{
+			auto fn = g->CurrentFunc;
+			auto mod = g_script->mCurrentModule;
+			g->CurrentFunc = nullptr;
+			g_script->ExecuteModule((ScriptModule *)wParam);
+			g_script->mCurrentModule = mod;
+			g->CurrentFunc = fn;
+		}
+		return 1;
 
 	case AHK_EXECUTE_FUNCTION:
 	{
@@ -993,27 +1004,28 @@ bif_impl FResult KeyHistory(optl<int> aMaxEvents)
 
 
 DWORD GetAHKInstallDir(LPTSTR aBuf)
-// Caller must ensure that aBuf is large enough (either by having called this function a previous time
-// to get the length, or by making it MAX_PATH in capacity).
+// Caller must pass a buffer of MAX_PATH characters.
 // Returns the length of the string (0 if empty).
 {
-	TCHAR buf[MAX_PATH];
-	DWORD length;
-#ifdef _WIN64
-	// First try 64-bit registry, then 32-bit registry.
-	for (DWORD flag = 0; ; flag = KEY_WOW64_32KEY)
-#else
-	// First try 32-bit registry, then 64-bit registry.
-	for (DWORD flag = 0; ; flag = KEY_WOW64_64KEY)
-#endif
+	for (HKEY key = HKEY_CURRENT_USER; ; key = HKEY_LOCAL_MACHINE)
 	{
-		length = ReadRegString(HKEY_LOCAL_MACHINE, _T("SOFTWARE\\AutoHotkey"), _T("InstallDir"), buf, MAX_PATH, flag);
-		if (length || flag)
-			break;
+#ifdef _WIN64
+		// First try 64-bit registry, then 32-bit registry.
+		for (DWORD flag = 0; ; flag = KEY_WOW64_32KEY)
+#else
+		// First try 32-bit registry, then 64-bit registry.
+		for (DWORD flag = 0; ; flag = KEY_WOW64_64KEY)
+#endif
+		{
+			DWORD length = ReadRegString(key, _T("SOFTWARE\\AutoHotkey"), _T("InstallDir"), aBuf, MAX_PATH, flag);
+			if (length)
+				return length;
+			if (flag)
+				break;
+		}
+		if (key == HKEY_LOCAL_MACHINE)
+			return 0;
 	}
-	if (aBuf)
-		_tcscpy(aBuf, buf); // v1.0.47: Must be done as a separate copy because passing a size of MAX_PATH for aBuf can crash when aBuf is actually smaller than that (even though it's large enough to hold the string).
-	return length;
 }
 
 
@@ -2714,11 +2726,11 @@ bif_impl FResult Thread(StrArg aCommand, optl<int> aValue1, optl<int> aValue2)
 		g->AllowTimers = (aValue1.has_value() && *aValue1 == 0); // Double-negative NoTimers=false -> allow timers.
 		return OK;
 	case THREAD_CMD_TERMINATE: {
-		auto i = g_nThreads - 1;
-		if (i > 0 && (!aValue1.has_value() || *aValue1 == 0))
-			i = 1;
-		for (; i > 0; i--)
-			*(char*)&g_array[g_nThreads - 1 - i].IsPaused = -1;
+		auto j = g_nThreads, i = 0;
+		if (!aValue1.has_value() || !*aValue1)
+			i = j > 1 ? --j - 1 : j;
+		for (; i < j; i++)
+			*(char *)&g_array[i].IsPaused = -1;
 		return OK;
 	}
 	default:

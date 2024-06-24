@@ -670,9 +670,7 @@ BIV_DECL_R(BIV_ScreenDPI)
 
 BIV_DECL_R(BIV_TrayMenu)
 {
-	// Currently ExpandExpression() does not automatically release objects returned
-	// by BIVs since this is the only one, and we're retaining a reference to it.
-	//g_script->mTrayMenu->AddRef();
+	g_script->mTrayMenu->AddRef();
 	_f_return(g_script->mTrayMenu);
 }
 

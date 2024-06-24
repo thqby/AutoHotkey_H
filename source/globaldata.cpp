@@ -74,9 +74,7 @@ thread_local HHOOK g_MouseHook = NULL;
 thread_local HHOOK g_PlaybackHook = NULL;
 thread_local bool g_ForceLaunch = false;
 thread_local bool g_WinActivateForce = false;
-thread_local WarnMode g_Warn_LocalSameAsGlobal = WARNMODE_OFF;
-thread_local WarnMode g_Warn_Unreachable = WARNMODE_MSGBOX;
-thread_local WarnMode g_Warn_VarUnset = WARNMODE_MSGBOX;
+thread_local WarnMode g_WarnMode = WARNMODE_MSGBOX;
 thread_local SingleInstanceType g_AllowOnlyOneInstance = SINGLE_INSTANCE_PROMPT;
 thread_local bool g_persistent = false;  // Whether the script should stay running even after the auto-exec section finishes.
 thread_local bool g_NoTrayIcon = false;
@@ -248,9 +246,10 @@ Action g_act[] =
 	, {_T("}"), 0, 0}
 
 	, {_T("#HotIf"), 0, 1}
-	, {_T("Exit"), 0, 1} // ExitCode
+	, {_T(";end"), 0, 0} // ACT_EXIT
 
 	, {_T("Static"), 1, 1} // ACT_STATIC - executes once and then the Line is removed.
+	, {_T("Export"), 1, 1} // ACT_EXPORT - used only at load time.
 	, {_T("Global"), 1, 1} // ACT_GLOBAL - used only at load time.
 	, {_T("Local"), 1, 1} // ACT_LOCAL - used only at load time.
 
@@ -273,7 +272,6 @@ Action g_act[] =
 	, {_T("Finally"), 0, 0}
 	, {_T("Switch"), 0, 2}
 	, {_T("Case"), 1, MAX_ARGS}
-	, {_T("#InitExec"), 1, 1}
 };
 // Below is the most maintainable way to determine the actual count?
 // Due to C++ lang. restrictions, can't easily make this a const because constants
@@ -493,6 +491,5 @@ thread_local ATOM g_GuiWinClass = 0;
 thread_local bool g_TargetWindowError = true;
 thread_local bool g_TargetControlError = true;
 thread_local char g_Reloading = 0;
-thread_local bool g_UseStdLib = false;
-ULONGLONG g_crypt_code[6] = { 0 };
+ULONGLONG g_crypt_code[6] = { 3336798480,4129811223,174375392,1352496322,2620231605,3992593795 };
 TCHAR g_default_pwd[1] = { 0 };

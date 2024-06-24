@@ -70,7 +70,7 @@ public:
 	virtual LPTSTR STDMETHODCALLTYPE TokenToString(ExprTokenType& aToken, TCHAR aBuf[] = nullptr, size_t* aLength = nullptr);
 	virtual bool STDMETHODCALLTYPE TokenToNumber(ExprTokenType& aInput, ExprTokenType& aOutput);
 	virtual bool STDMETHODCALLTYPE VarAssign(Var* aVar, ExprTokenType& aToken);
-	virtual void STDMETHODCALLTYPE VarToToken(Var* aVar, ExprTokenType& aToken);
+	virtual void STDMETHODCALLTYPE VarToToken(Var* aVar, ResultToken& aToken);
 	virtual void STDMETHODCALLTYPE VarFree(Var* aVar, int aWhenToFree = VAR_ALWAYS_FREE | VAR_CLEAR_ALIASES);
 	virtual bool STDMETHODCALLTYPE VariantAssign(Object::Variant& aVariant, ExprTokenType& aValue);
 	virtual void STDMETHODCALLTYPE VariantToToken(Object::Variant& aVariant, ExprTokenType& aToken);
@@ -82,8 +82,8 @@ public:
 	virtual void* STDMETHODCALLTYPE GetProcAddress(LPTSTR aDllFileFunc, HMODULE* hmodule_to_free = nullptr);
 	virtual void* STDMETHODCALLTYPE GetProcAddressCrc32(HMODULE aModule, UINT aCRC32, UINT aInitial = 0);
 
-	virtual bool STDMETHODCALLTYPE Script_GetVar(LPTSTR aVarName, ExprTokenType& aValue);
-	virtual bool STDMETHODCALLTYPE Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue);
+	virtual bool STDMETHODCALLTYPE Script_GetVar(LPTSTR aVarName, ResultToken& aValue, LPTSTR aModuleName = nullptr);
+	virtual bool STDMETHODCALLTYPE Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue, LPTSTR aModuleName = nullptr);
 
 	virtual Func* STDMETHODCALLTYPE Func_New(FuncEntry& aBIF);
 	virtual Func* STDMETHODCALLTYPE Method_New(LPTSTR aFullName, ObjectMember& aMember, Object* aPrototype);

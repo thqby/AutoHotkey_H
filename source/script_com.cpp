@@ -4,6 +4,7 @@
 #include "script_object.h"
 #include "script_com.h"
 #include "script_func_impl.h"
+#include "script_gui.h"
 #include <DispEx.h>
 
 #include "MemoryModule.h"	// ComObjDll
@@ -1107,8 +1108,8 @@ STDMETHODIMP ComEvent::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD 
 		// Copy method name into our buffer, applying prefix and converting if necessary.
 		TCHAR funcName[256];
 		sntprintf(funcName, _countof(funcName), _T("%s%ws"), mPrefix, memberName);
-		// Find the script function:
-		func = g_script->FindGlobalFunc(funcName);
+		// Find the script function (or any callable object in a global var):
+		func = mModule->FindGlobalObject(funcName);
 		dispid = DISPID_VALUE;
 		hr = func ? S_OK : DISP_E_MEMBERNOTFOUND;
 	}
@@ -1163,7 +1164,10 @@ void ComEvent::SetPrefixOrSink(LPCTSTR pfx, IObject *ahkObject)
 		mAhkObject = ahkObject;
 	}
 	if (pfx)
+	{
+		mModule = g_script->CurrentModule();
 		tcslcpy(mPrefix, pfx, _countof(mPrefix));
+	}
 }
 
 ResultType ComObject::Invoke(IObject_Invoke_PARAMS_DECL)
@@ -2024,38 +2028,6 @@ STDMETHODIMP IObjectComCompatible::Invoke(DISPID dispIdMember, REFIID riid, LCID
 }
 
 
-#ifdef CONFIG_DEBUGGER
-
-void WriteComObjType(IDebugProperties *aDebugger, ComObject *aObject, LPCSTR aName, LPTSTR aWhichType)
-{
-	TCHAR buf[_f_retval_buf_size];
-	ResultToken resultToken;
-	resultToken.symbol = SYM_INTEGER;
-	resultToken.marker_length = -1;
-	resultToken.mem_to_free = NULL;
-	resultToken.buf = buf;
-	ExprTokenType paramToken[] = { aObject, aWhichType };
-	ExprTokenType *param[] = { &paramToken[0], &paramToken[1] };
-	BIF_ComObjType(resultToken, param, 2);
-	aDebugger->WriteProperty(aName, resultToken);
-	if (resultToken.mem_to_free)
-		free(resultToken.mem_to_free);
-}
-
-void ComObject::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPageSize, int aDepth)
-{
-	DebugCookie rootCookie;
-	aDebugger->BeginProperty(NULL, "object", 2, rootCookie);
-	if (aPage == 0 && aDepth > 0)
-	{
-		// For simplicity, assume aPageSize >= 2.
-		aDebugger->WriteProperty("Value", ExprTokenType(mVal64));
-		aDebugger->WriteProperty("VarType", ExprTokenType((__int64)mVarType));
-	}
-	aDebugger->EndProperty(rootCookie);
-}
-
-#endif
 
 BIF_DECL(BIF_ComObjDll)
 { // ComObjDll(moduleHandle,CLSID)
