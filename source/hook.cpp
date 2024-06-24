@@ -79,6 +79,20 @@ thread_local static key_type *ksc = NULL;
 #define KSCM_SIZE ((MODLR_MAX + 1)*(SC_ARRAY_COUNT))
 
 
+struct dead_key_record
+{
+	vk_type vk;
+	sc_type sc;
+	modLR_type modLR;
+	BYTE caps;
+};
+// Pending dead keys, used to reproduce a sequence when needed.
+// The size of the array determines the maximum number of chained dead keys we support.
+thread_local static dead_key_record sPendingDeadKeys[3];
+thread_local static int sPendingDeadKeyCount = 0;
+thread_local static bool sPendingDeadKeyInvisible = false;
+	
+
 // Notes about fake shift-key events (there used to be some related variables defined here,
 // but they were superseded by SC_FAKE_LSHIFT and SC_FAKE_RSHIFT):
 // Used to help make a workaround for the way the keyboard driver generates physical
@@ -311,6 +325,9 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 	WPARAM hotkey_id_to_post = HOTKEY_ID_INVALID; // Set default.
 	bool is_ignored = IsIgnored(aExtraInfo);
 
+	CollectInputState collect_input_state;
+	collect_input_state.early_collected = false;
+
 	// The following is done for more than just convenience.  It solves problems that would otherwise arise
 	// due to the value of a global var such as KeyHistoryNext changing due to the reentrancy of
 	// this procedure.  For example, a call to KeyEvent() in here would alter the value of
@@ -435,6 +452,14 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 
 	// The following is done even if key history is disabled because sAltTabMenuIsVisible relies on it:
 	pKeyHistoryCurr->event_type = is_ignored ? 'i' : (is_artificial ? 'a' : ' '); // v1.0.42.04: 'a' was added, but 'i' takes precedence over 'a'.
+
+	// v2.1: Process any InputHooks which have the H option.  This requires translating the event to text, which
+	// is done only once for each event.  If there are no InputHooks with the H option, the translation is done
+	// later to avoid any change in behaviour compared to v2.0 (such as dead keys affecting the translation prior
+	// to being suppressed by a hotkey), or not done at all if the event is suppressed by other means.
+	if (aHook == g_KeybdHook && g_inputBeforeHotkeysCount
+		&& !EarlyCollectInput(*(PKBDLLHOOKSTRUCT)lParam, aVK, aSC, aKeyUp, is_ignored, collect_input_state, pKeyHistoryCurr))
+		return SuppressThisKey;
 
 	// v1.0.43: Block the Win keys during journal playback to prevent keystrokes hitting the Start Menu
 	// if the user accidentally presses one of those keys during playback.  Note: Keys other than Win
@@ -1949,7 +1974,7 @@ LRESULT SuppressThisKeyFunc(const HHOOK aHook, LPARAM lParam, const vk_type aVK,
 
 
 LRESULT AllowIt(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lParam, const vk_type aVK, const sc_type aSC
-	, bool aKeyUp, ULONG_PTR aExtraInfo, KeyHistoryItem *pKeyHistoryCurr, WPARAM aHotkeyIDToPost)
+	, bool aKeyUp, ULONG_PTR aExtraInfo, CollectInputState &aCollectInput, KeyHistoryItem *pKeyHistoryCurr, WPARAM aHotkeyIDToPost)
 // Always use the parameter vk rather than event.vkCode because the caller or caller's caller
 // might have adjusted vk, namely to make it a left/right specific modifier key rather than a
 // neutral one.
@@ -2014,7 +2039,7 @@ LRESULT AllowIt(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lParam, cons
 		}
 
 		if ((Hotstring::sEnabledCount && !is_ignored) || g_input)
-			if (!CollectInput(event, aVK, aSC, aKeyUp, is_ignored, pKeyHistoryCurr, hs_wparam_to_post, hs_lparam_to_post)) // Key should be invisible (suppressed).
+			if (!CollectInput(event, aVK, aSC, aKeyUp, is_ignored, aCollectInput, pKeyHistoryCurr, hs_wparam_to_post, hs_lparam_to_post)) // Key should be invisible (suppressed).
 				return SuppressThisKeyFunc(aHook, lParam, aVK, aSC, aKeyUp, aExtraInfo, pKeyHistoryCurr, aHotkeyIDToPost, hs_wparam_to_post, hs_lparam_to_post);
 
 		// Do this here since the above "return SuppressThisKey" will have already done it in that case.
@@ -2201,42 +2226,48 @@ LRESULT AllowIt(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lParam, cons
 
 
 
-bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, bool aKeyUp, bool aIsIgnored
-	, KeyHistoryItem *pKeyHistoryCurr, WPARAM &aHotstringWparamToPost, LPARAM &aHotstringLparamToPost)
-// Caller is responsible for having initialized aHotstringWparamToPost to HOTSTRING_INDEX_INVALID.
-// Returns true if the caller should treat the key as visible (non-suppressed).
-// Always use the parameter vk rather than event.vkCode because the caller or caller's caller
-// might have adjusted vk, namely to make it a left/right specific modifier key rather than a
-// neutral one.
+bool CollectKeyUp(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, bool aEarly)
 {
-	// Transcription is done only once for all layers, so do this if any layer requests it:
-	bool transcribe_modified_keys = false;
-
 	for (auto *input = g_input; input; input = input->Prev)
 	{
-		if (input->InProgress() && input->IsInteresting(aEvent))
+		if (input->IsEarly() == aEarly && input->IsInteresting(aEvent) && input->InProgress())
 		{
-			if (   aKeyUp && input->ScriptObject && input->ScriptObject->onKeyUp
+			if (   input->ScriptObject && input->ScriptObject->onKeyUp
 				&& ( ((input->KeySC[aSC] | input->KeyVK[aVK]) & INPUT_KEY_NOTIFY)
 					|| input->NotifyNonText && !((input->KeyVK[aVK]) & INPUT_KEY_IS_TEXT) )   )
 			{
 				PostMessage(g_hWnd, AHK_INPUT_KEYUP, (WPARAM)input, (aSC << 16) | aVK);
 			}
-			if (aKeyUp && (input->KeySC[aSC] & INPUT_KEY_DOWN_SUPPRESSED))
+			if (input->KeySC[aSC] & INPUT_KEY_DOWN_SUPPRESSED)
 			{
 				input->KeySC[aSC] &= ~INPUT_KEY_DOWN_SUPPRESSED;
 				return false;
 			}
-			if (aKeyUp && (input->KeyVK[aVK] & INPUT_KEY_DOWN_SUPPRESSED))
+			if (input->KeyVK[aVK] & INPUT_KEY_DOWN_SUPPRESSED)
 			{
 				input->KeyVK[aVK] &= ~INPUT_KEY_DOWN_SUPPRESSED;
 				return false;
 			}
-
-			if (input->TranscribeModifiedKeys)
-				transcribe_modified_keys = true;
 		}
 	}
+	return true;
+}
+
+
+
+bool EarlyCollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, bool aKeyUp, bool aIsIgnored
+	, CollectInputState &aState, KeyHistoryItem *pKeyHistoryCurr)
+// Returns true if the caller should treat the key as visible (non-suppressed).
+// Always use the parameter aVK rather than event.vkCode because the caller or caller's caller
+// might have adjusted aVK, such as to make it a left/right specific modifier key rather than a
+// neutral one.  On the other hand, event.scanCode is the one we need for ToUnicodeEx() calls.
+{
+	aState.early_collected = true;
+	aState.used_dead_key_non_destructively = false;
+	aState.char_count = 0;
+
+	if (aKeyUp && !CollectKeyUp(aEvent, aVK, aSC, true))
+		return false;
 
 	// The checks above suppress key-up if key-down was suppressed and the Input is still active.
 	// Otherwise, avoid suppressing key-up since it may result in the key getting stuck down.
@@ -2245,11 +2276,6 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 	// up-event should not be suppressed otherwise the modifier key would get "stuck down".  
 	if (aKeyUp)
 		return true;
-
-	thread_local static vk_type sPendingDeadKeyVK = 0;
-	thread_local static sc_type sPendingDeadKeySC = 0; // Need to track this separately because sometimes default VK-to-SC mapping isn't correct.
-	thread_local static bool sPendingDeadKeyUsedShift = false;
-	thread_local static bool sPendingDeadKeyUsedAltGr = false;
 	
 	bool transcribe_key = true;
 	
@@ -2264,8 +2290,8 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 	// might still be holding down a modifier, such as :*:<t>::Test (if '>' requires shift key).
 	// It might also fix other issues.
 	if ((g_modifiersLR_logical & ~(MOD_LSHIFT | MOD_RSHIFT)) // At least one non-Shift modifier is down (Shift may also be down).
-		&& !transcribe_modified_keys
 		&& !((g_modifiersLR_logical & (MOD_LALT | MOD_RALT)) && (g_modifiersLR_logical & (MOD_LCONTROL | MOD_RCONTROL))))
+	{
 		// Since in some keybd layouts, AltGr (Ctrl+Alt) will produce valid characters (such as the @ symbol,
 		// which is Ctrl+Alt+Q in the German/IBM layout and Ctrl+Alt+2 in the Spanish layout), an attempt
 		// will now be made to transcribe all of the following modifier combinations:
@@ -2279,7 +2305,18 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 		// normally be excluded from the input (except those rare ones that have only SHIFT as a modifier).
 		// Note that ToAsciiEx() will translate ^i to a tab character, !i to plain i, and many other modified
 		// letters as just the plain letter key, which we don't want.
-		transcribe_key = false;
+		for (auto *input = g_input; ; input = input->Prev)
+		{
+			if (!input) // No inputs left, and none were found that meet the conditions below.
+			{
+				transcribe_key = false;
+				break;
+			}
+			// Transcription is done only once for all layers, so do this if any layer requests it:
+			if (input->TranscribeModifiedKeys && input->InProgress() && input->IsInteresting(aEvent))
+				break;
+		}
+	}
 
 	// v1.1.28.00: active_window is set to the focused control, if any, so that the hotstring buffer is reset
 	// when the focus changes between controls, not just between windows.
@@ -2288,14 +2325,29 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 	// See Get_active_window_keybd_layout macro definition for related comments.
 	HWND active_window = GetForegroundWindow(); // Set default in case there's no focused control.
 	HKL active_window_keybd_layout = GetKeyboardLayout(GetFocusedCtrlThread(NULL, active_window));
+	aState.active_window = active_window;
+	aState.keyboard_layout = active_window_keybd_layout;
+
+	// SUMMARY OF DEAD KEY ISSUE:
+	// Calling ToUnicodeEx() with conventional parameters disrupts the entry of dead keys in two different ways:
+	//  1) Passing a dead key buffers it within the keyboard layout's internal state.
+	//  2) Passing a live key removes any pending dead key from the keyboard layout's internal state.
+	// In either case, the state is then incorrect for the active window's own call to ToUnicodeEx(), so it ends
+	// up with something like "e" or "''e" instead of "é".  Originally this was solved by reinserting the pending
+	// dead key (first by re-sending the dead key, then later by calling ToUnicodeEx()), but now we use a special
+	// combination of parameters to avoid changing the state where possible.
 
 	// Univeral Windows Platform apps apparently have their own handling for dead keys:
-	//  - Dead key followed by Esc produces Chr(27), unlike non-UWP apps.
+	//  - On some OS versions, dead key followed by Esc produces Chr(27), unlike non-UWP apps.
 	//  - Pressing a dead key in a UWP app does not leave it in the keyboard layout's buffer,
 	//    so to get the correct result here we must translate the dead key again, first.
 	//  - Pressing a non-dead key disregards any dead key which was placed into the buffer by
 	//    calling ToUnicodeEx, and it is left in the buffer.  To get the correct result for the
-	//    next call, we must NOT reinsert it into the buffer (see dead_key_sequence_complete).
+	//    next call, the dead key must NOT be left in the buffer.
+	//  - Chained dead keys reportedly do not work even without AutoHotkey interfering, but in
+	//    case that's fixed (and for simplicity), our translation assumes that it will work.
+	// Note that this still applies to some apps on Windows 11 22H2 (such as Feedback Hub) but
+	// does not apply to newer apps based on WinUI, such as the Photos app.
 	thread_local static bool sUwpAppFocused = false;
 	thread_local static HWND sUwpHwndChecked = 0;
 	if (sUwpHwndChecked != active_window)
@@ -2307,26 +2359,6 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 	}
 	int char_count;
 	TCHAR ch[3] = { 0 };
-	BYTE key_state[256];
-	memcpy(key_state, g_PhysicalKeyState, 256);
-
-	if (sPendingDeadKeyVK && sUwpAppFocused && aVK != VK_PACKET)
-	{
-		AdjustKeyState(key_state
-			, (sPendingDeadKeyUsedAltGr ? MOD_LCONTROL|MOD_RALT : 0)
-			| (sPendingDeadKeyUsedShift ? MOD_RSHIFT : 0)); // Left vs Right Shift probably doesn't matter in this context.
-		// If it turns out there was already a dead key in the buffer, the second call puts it back.
-		if (ToUnicodeOrAsciiEx(sPendingDeadKeyVK, sPendingDeadKeySC, key_state, ch, 0, active_window_keybd_layout) > 0)
-			ToUnicodeOrAsciiEx(sPendingDeadKeyVK, sPendingDeadKeySC, key_state, ch, 0, active_window_keybd_layout);
-		sPendingDeadKeyVK = 0; // Don't reinsert it afterward (see above).
-	}
-
-	// Provide the correct logical modifier and CapsLock state for any translation below.
-	AdjustKeyState(key_state, g_modifiersLR_logical);
-	if (IsKeyToggledOn(VK_CAPITAL))
-		key_state[VK_CAPITAL] |= STATE_ON;
-	else
-		key_state[VK_CAPITAL] &= ~STATE_ON;
 
 	if (aVK == VK_PACKET)
 	{
@@ -2339,10 +2371,77 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 		char_count = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, (WCHAR *)&aEvent.scanCode, 1, (CHAR *)ch, _countof(ch), NULL, NULL);
 #endif
 	}
-	else if (transcribe_key)
+	else if (transcribe_key && aVK != VK_MENU)
 	{
-		char_count = ToUnicodeOrAsciiEx(aVK, aEvent.scanCode  // Uses the original scan code, not the adjusted "sc" one.
-			, key_state, ch, g_MenuIsVisible ? 1 : 0, active_window_keybd_layout);
+		BYTE key_state[256] { 0 };
+		
+		bool interfere = sPendingDeadKeyCount && (sPendingDeadKeyInvisible || sUwpAppFocused);
+		if (interfere)
+		{
+			// Either an invisible InputHook is in progress or there is a UWP app focused.  In either case, the dead key
+			// was only recorded by us and wasn't retained by the keyboard layout's internal state, so we need to "replay"
+			// the sequence to set things up for conversion of the new key.
+			for (int i = 0; i < sPendingDeadKeyCount; ++i)
+			{
+				auto &dead_key = sPendingDeadKeys[i];
+				AdjustKeyState(key_state, dead_key.modLR);
+				key_state[VK_CAPITAL] = dead_key.caps;
+				ToUnicodeOrAsciiEx(dead_key.vk, dead_key.sc, key_state, ch, 0, active_window_keybd_layout);
+			}
+		}
+
+		// The documentation for ToAsciiEx is incomplete, but recent documentation for ToUnicodeEx shows the meaning of
+		// the flags: 0x1 = Alt+Numpad key combinations are not handled (but the flag doesn't prevent Alt-up itself from
+		// being processed), 0x2 = handle key break events (key-up).  We fake key-up to avoid changing the dead key state
+		// (it stands to reason that key-down normally causes a change in state, so the corresponding key-up wouldn't).
+		// We must avoid passing VK_MENU with KBDBREAK (0x8000) because that disrupts any ongoing Alt+Numpad entry.
+		// Note that Windows 10 v1607 supports flag 0x4 to avoid changing the keyboard state, but there seems to be no
+		// benefit; in particular, the Alt+Numpad state is still affected.
+		// Credit to Ilya Zakharevich for pointing out this method @ https://stackoverflow.com/a/78173420/894589
+		UINT flags = interfere ? 1 : 3;
+		UINT scanCode = aEvent.scanCode | (interfere ? 0 : 0x8000);
+		
+		// Provide the correct logical modifier and CapsLock state for any translation below.
+		AdjustKeyState(key_state, g_modifiersLR_logical);
+		key_state[VK_CAPITAL] = IsKeyToggledOn(VK_CAPITAL);
+
+		char_count = ToUnicodeOrAsciiEx(aVK, scanCode, key_state, ch, flags, active_window_keybd_layout);
+
+		if (!char_count && (g_modifiersLR_logical & (MOD_LALT | MOD_RALT)) && !(g_modifiersLR_logical & (MOD_LCONTROL | MOD_RCONTROL)) && !interfere)
+		{
+			// Apparently, ToUnicodeEx ignores the Alt in Alt and Alt+Shift combinations only if the key-up bit is not set.
+			// For consistency with prior versions (and Win, but not Ctrl/Shift), let the Alt state be ignored under these
+			// conditions.  transcribe_key and modifier state checked above imply that the M option was used.
+			key_state[VK_MENU] = 0;
+			char_count = ToUnicodeOrAsciiEx(aVK, scanCode, key_state, ch, flags, active_window_keybd_layout);
+		}
+
+		if (char_count <= 0 && interfere) // A key with no text translation, or possibly a chained dead key (if < 0).
+		{
+			// Flush the dead key which was buffered either by the ToUnicodeEx call above or the dead key loop further up.
+			TCHAR ignored[2];
+			// Michael S. Kaplan blogged that he would explain in a later post why he used VK_SPACE to clear the buffer,
+			// but then changed to using VK_DECIMAL and apparently never explained either choice.  Still, VK_DECIMAL
+			// seems like a safe choice for clearing the state; probably any key which produces text will work, but
+			// the loop is needed in case of an unconventional layout which makes VK_DECIMAL itself a dead key.
+			while (ToUnicodeOrAsciiEx(VK_DECIMAL, 0, key_state, ignored, flags, active_window_keybd_layout) == -1);
+		}
+		
+		if (char_count > 0)
+		{
+			aState.used_dead_key_non_destructively = sPendingDeadKeyCount && !interfere;
+			sPendingDeadKeyCount = 0;
+			sPendingDeadKeyInvisible = false;
+		}
+		else if (char_count < 0 && sPendingDeadKeyCount < _countof(sPendingDeadKeys))
+		{
+			// Record this dead key so that we can reproduce the sequence when needed.
+			auto &dead_key = sPendingDeadKeys[sPendingDeadKeyCount++];
+			dead_key.vk = aVK;
+			dead_key.sc = (sc_type)aEvent.scanCode;
+			dead_key.modLR = g_modifiersLR_logical;
+			dead_key.caps = key_state[VK_CAPITAL];
+		}
 
 		if ((g_modifiersLR_logical & (MOD_LCONTROL | MOD_RCONTROL)) == 0) // i.e. must not replace '\r' with '\n' if it is the result of Ctrl+M.
 		{
@@ -2359,104 +2458,59 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 
 	// If Backspace is pressed after a dead key, ch[0] is the "dead" char and ch[1] is '\b'.
 	// Testing shows that this can be handled a number of ways (we only support 1 & 2):
-	// 1. Most Win32 apps perform backspacing and THEN insert ch[0].
+	// 1. Insert ch[0] and then apply backspacing.  This is subtly different from doing nothing
+	//    in that if there is a selection, it is deleted.  This appears to be how Edit controls
+	//    behave on Windows 11 22H2, 10 22H2 and 7 (in a VM).
 	// 2. UWP apps perform backspacing and discard the pending dead key.
+	//    (VS2022 does as well, but we don't do anything to support that.)
 	// 3. VS2015 performs backspacing and leaves the dead key in the buffer.
 	// 4. MarkdownPad 2 prints the dead char as if Space was pressed, and does no backspacing.
-	// 5. Unconfirmed: some apps might do nothing; i.e. print the dead char and then delete it.
-	if (aVK == VK_BACK && char_count /*&& !g_modifiersLR_logical*/) // Modifier state is checked mostly for backward-compatibility.
+	// 5. In 2019, Lexikos noted that Win32 apps performed backspacing and THEN inserted ch[0].
+	//    This might have only applied to Windows 10 builds around that time.
+	if (aVK == VK_BACK && char_count > 0)
 	{
 		if (sUwpAppFocused)
 		{
 			char_count = 0;
-			sPendingDeadKeyVK = 0;
+			sPendingDeadKeyCount = 0;
 		}
 		else // Assume standard Win32 behaviour as described above.
 			--char_count; // Remove '\b' to simplify the backspacing and collection stages.
 	}
+
+	aState.ch[0] = ch[0];
+	aState.ch[1] = ch[1];
+	aState.char_count = char_count;
 	
-	if (!CollectInputHook(aEvent, aVK, aSC, ch, char_count, aIsIgnored))
+	if (!CollectInputHook(aEvent, aVK, aSC, ch, char_count, aIsIgnored, true))
 		return false; // Suppress.
+	return true; // Visible.
+}
+
+
+
+bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, bool aKeyUp, bool aIsIgnored
+	, CollectInputState &aState, KeyHistoryItem *pKeyHistoryCurr, WPARAM &aHotstringWparamToPost, LPARAM &aHotstringLparamToPost)
+// Caller is responsible for having initialized aHotstringWparamToPost to HOTSTRING_INDEX_INVALID.
+// Returns true if the caller should treat the key as visible (non-suppressed).
+// Always use the parameter aVK rather than event.vkCode because the caller or caller's caller
+// might have adjusted aVK, such as to make it a left/right specific modifier key rather than a
+// neutral one.
+{
+	if (!aState.early_collected && !EarlyCollectInput(aEvent, aVK, aSC, aKeyUp, aIsIgnored, aState, pKeyHistoryCurr))
+		return false;
+
+	if (aKeyUp)
+		return CollectKeyUp(aEvent, aVK, aSC, false);
+
+	TCHAR ch[2] { aState.ch[0], aState.ch[1] };
+	int char_count = aState.char_count;
+	HWND active_window = aState.active_window;
+	HKL active_window_keybd_layout = aState.keyboard_layout;
 	
-	// More notes about dead keys: The dead key behavior of Enter/Space/Backspace is already properly
-	// maintained when an Input or hotstring monitoring is in effect.  In addition, keys such as the
-	// following already work okay (i.e. the user can press them in between the pressing of a dead
-	// key and it's finishing/base/trigger key without disrupting the production of diacritical letters)
-	// because ToAsciiEx() finds no translation-to-char for them:
-	// pgup/dn/home/end/ins/del/arrowkeys/f1-f24/etc.
-	// Note that if a pending dead key is followed by the press of another dead key (including itself),
-	// the sequence should be triggered and both keystrokes should appear in the active window.
-	// That case has been tested too, and works okay with the layouts tested so far.
+	if (!CollectInputHook(aEvent, aVK, aSC, ch, char_count, aIsIgnored, false))
+		return false; // Suppress.
 
-	// Dead keys in Danish layout as they appear on a US English keyboard: Equals and Plus /
-	// Right bracket & Brace / probably others.
-
-	// SUMMARY OF DEAD KEY ISSUE:
-	// Calling ToAsciiEx() on the dead key itself doesn't disrupt anything. The disruption occurs on the next key
-	// (for which the dead key is pending): ToAsciiEx() consumes previous/pending dead key, which causes the
-	// active window's call of ToAsciiEx() to fail to see a dead key. So unless the program reinserts the dead key
-	// after the call to ToAsciiEx() but before allowing the dead key's successor key to pass through to the
-	// active window, that window would see a non-diacritic like "u" instead of û.  In other words, the program
-	// "uses up" the dead key to populate its own hotstring buffer, depriving the active window of the dead key.
-	//
-	// JAVA ISSUE: Hotstrings are known to disrupt dead keys in Java apps on some systems (though not my XP one).
-	// I spent several hours on it but was unable to solve it using anything other than a Sleep(20) after the
-	// reinsertion of the dead key (and PhiLho reports that even that didn't fully solve it).  A Sleep here in the
-	// hook would probably do more harm than good, so is avoided for now.  Other approaches:
-	// 1) Send a simulated substitute for the successor key rather than allowing the hook to pass it through.
-	//    Maybe that would somehow put things in a better order for Java.  However, there might be side-effects to
-	//    that, such as in DirectX games.
-	// 2) Have main thread (rather than hook thread) reinsert the dead key and its successor key (hook would have
-	//    suppressed both), which allows the main thread to do a Sleep or MsgSleep.  Such a Sleep be more effective
-	//    because the main thread's priority is lower than that of the hook's, allowing better round-robin.
-	// 
-	// If this key is a dead key or there's a dead key pending and this incoming key is capable of
-	// completing/triggering it, do a workaround for the side-effects of ToAsciiEx().  This workaround
-	// allows dead keys to continue to operate properly in the user's foreground window, while still
-	// being capturable by the Input command and recognizable by any defined hotstrings whose
-	// abbreviations use diacritical letters:
-	bool dead_key_sequence_complete = sPendingDeadKeyVK && char_count > 0;
-	if (char_count < 0) // It's a dead key, and it doesn't complete a sequence since in that case char_count would be >= 1.
-	{
-		// Since above did not return, treat_as_visible must be true.
-		sPendingDeadKeyVK = aVK;
-		sPendingDeadKeySC = aSC;
-		sPendingDeadKeyUsedShift = g_modifiersLR_logical & (MOD_LSHIFT | MOD_RSHIFT);
-		// Detect AltGr as fully and completely as possible in case the current keyboard layout
-		// doesn't even have an AltGr key.  The section above which references sPendingDeadKeyUsedAltGr
-		// relies on this check having been done here.  UPDATE:
-		// v1.0.35.10: Allow Ctrl+Alt to be seen as AltGr too, which allows users to press Ctrl+Alt+Deadkey
-		// rather than AltGr+Deadkey.  It might also resolve other issues.  This change seems okay since
-		// the mere fact that this IS a dead key (as checked above) should mean that it's a deadkey made
-		// manifest through AltGr.
-		// Previous method:
-		//sPendingDeadKeyUsedAltGr = (g_modifiersLR_logical & (MOD_LCONTROL | MOD_RALT)) == (MOD_LCONTROL | MOD_RALT);
-		sPendingDeadKeyUsedAltGr = (g_modifiersLR_logical & (MOD_LCONTROL | MOD_RCONTROL))
-			&& (g_modifiersLR_logical & (MOD_LALT | MOD_RALT));
-
-		// Lexikos: Testing shows that calling ToUnicodeEx with the VK/SC of a dead key
-		// acts the same as actually pressing that key.  Calling it once when there is
-		// no pending dead key places the dead key in the keyboard layout's buffer and
-		// returns -1; calling it again consumes the dead key and returns either 1 or 2,
-		// depending on the keyboard layout.  For instance:
-		//	- Passing vkC0 twice with US-International gives the string "``".
-		//  - Passing vkBA twice with Neo2 gives just the combining version of "^".
-		// 
-		// Normally ToUnicodeEx would be called by the active window (after the hook
-		// returns), thus placing the dead key in the buffer.  Since our call above
-		// has already done that, we need to remove the dead key from the buffer
-		// before returning.  The benefits of this over the old method include:
-		//  - The hook is not called recursively since no extra keystrokes are generated.
-		//  - It's probably faster for the same reason.
-		//  - It works correctly even when there are multiple scripts with hotstrings,
-		//    all calling ToUnicodeEx in sequence.
-		//
-		// The other half of this workaround can be found by searching for "if (dead_key_sequence_complete)".
-		//
-		ToUnicodeOrAsciiEx(aVK, aEvent.scanCode, key_state, ch, g_MenuIsVisible ? 1 : 0, active_window_keybd_layout);
-		return true; // Visible.
-	}
-	
 	// Hotstrings monitor neither ignored input nor input that is invisible due to suppression by
 	// the Input command.  One reason for not monitoring ignored input is to avoid any chance of
 	// an infinite loop of keystrokes caused by one hotstring triggering itself directly or
@@ -2496,46 +2550,16 @@ bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC,
 		if (char_count > 0
 			&& !CollectHotstring(aEvent, ch, char_count, active_window, pKeyHistoryCurr, aHotstringWparamToPost, aHotstringLparamToPost))
 		{
-			sPendingDeadKeyVK = 0; // Avoid reinserting it later (see "dead_key_sequence_complete" below).
+			if (aState.used_dead_key_non_destructively)
+			{
+				// There's still a dead key in the keyboard layout's internal buffer, and it's supposed to apply to
+				// this keystroke which we're suppressing.  Flush it out, otherwise a hotstring like the following
+				// would insert an extra accent character:
+				//   :*:jsá::jsmith@somedomain.com
+				TCHAR ignored[2];
+				while (ToUnicodeOrAsciiEx(VK_DECIMAL, 0, g_PhysicalKeyState, ignored, 1, active_window_keybd_layout) == -1);
+			}
 			return false; // Suppress.
-		}
-	}
-
-	// Fix for v1.0.37.06: The following section was moved beneath the hotstring section so that
-	// the hotstring section has a chance to bypass reinsertion of the dead key below. This fixes
-	// wildcard hotstrings whose final character is diacritic, which would otherwise have the
-	// dead key reinserted below, which in turn would cause the hotstring's first backspace to fire
-	// the dead key (which kills the backspace, turning it into the dead key character itself).
-	// For example:
-	// :*:jsá::jsmith@somedomain.com
-	// On the Spanish (Mexico) keyboard layout, one would type accent (English left bracket) followed by
-	// the letter "a" to produce á.
-	if (dead_key_sequence_complete)
-	{
-		// Fix for v1.1.34.03: Avoid reinserting the dead char if it wasn't actually in the buffer
-		// (which can happen if there's another keyboard hook that removed it due to a suppressed
-		// hotstring end-char).
-		TCHAR new_ch[2];
-		int new_char_count = ToUnicodeOrAsciiEx(aVK, aEvent.scanCode, key_state, new_ch, g_MenuIsVisible ? 1 : 0, active_window_keybd_layout);
-		if (new_char_count < 0)
-			// aVK is also a dead key and wasn't in the buffer, so take it back out.  This also implies
-			// that sPendingDeadKeyVK needs to be reinserted, since the buffer state apparently differed
-			// between our two ToUnicode() calls, and sPendingDeadKeyVK is probably the reason.
-			ToUnicodeOrAsciiEx(aVK, aEvent.scanCode, key_state, new_ch, g_MenuIsVisible ? 1 : 0, active_window_keybd_layout);
-		if (new_char_count != char_count || ch[0] != (new_ch[0] == '\r' ? '\n' : new_ch[0])) // Translation differs, likely due to pending dead key having been removed.
-		{
-			// Since our earlier call to ToUnicodeOrAsciiEx has removed the pending dead key from the
-			// buffer, we need to put it back for the active window or the next hook in the chain.
-			// This is not needed when ch (the character or characters produced by combining the dead
-			// key with the last keystroke) is being suppressed, since in that case we don't want the
-			// dead key back in the buffer.
-			ZeroMemory(key_state, 256);
-			AdjustKeyState(key_state
-				, (sPendingDeadKeyUsedAltGr ? MOD_LCONTROL | MOD_RALT : 0)
-				| (sPendingDeadKeyUsedShift ? MOD_RSHIFT : 0)); // Left vs Right Shift probably doesn't matter in this context.
-			TCHAR temp_ch[2];
-			ToUnicodeOrAsciiEx(sPendingDeadKeyVK, sPendingDeadKeySC, key_state, temp_ch, 0, active_window_keybd_layout);
-			sPendingDeadKeyVK = 0;
 		}
 	}
 
@@ -2845,12 +2869,12 @@ bool CollectHotstring(KBDLLHOOKSTRUCT &aEvent, TCHAR ch[], int char_count, HWND 
 
 
 bool CollectInputHook(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, TCHAR aChar[], int aCharCount
-	, bool aIsIgnored)
+	, bool aIsIgnored, bool aEarly)
 {
 	auto *input = g_input;
 	for (; input; input = input->Prev)
 	{
-		if (!input->InProgress() || !input->IsInteresting(aEvent))
+		if (  !(input->IsEarly() == aEarly && input->IsInteresting(aEvent) && input->InProgress())  )
 			continue;
 		
 		UCHAR key_flags = input->KeyVK[aVK] | input->KeySC[aSC];
@@ -2884,6 +2908,11 @@ bool CollectInputHook(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type 
 			}
 		}
 		
+		// Collect before backspacing, so if VK_BACK was preceded by a dead key, we delete it instead of the
+		// previous char.  For example, {vkDE}{BS} on the US-Intl layout produces '\b (but we discarded \b).
+		if (collect_chars)
+			input->CollectChar(aChar, aCharCount);
+
 		// Fix for v2.0: Shift is allowed as it generally has no effect on the native function of Backspace.
 		// This is probably connected with the fact that Shift+BS is also transcribed to `b, which we don't want.
 		if (aVK == VK_BACK && input->BackspaceIsUndo
@@ -2895,9 +2924,6 @@ bool CollectInputHook(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type 
 				visible = input->VisibleText; // Override VisibleNonText.
 			// Fall through to the check below in case this {BS} completed a dead key sequence.
 		}
-
-		if (collect_chars)
-			input->CollectChar(aChar, aCharCount);
 
 		if (input->NotifyNonText)
 		{
@@ -2929,7 +2955,15 @@ bool CollectInputHook(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type 
 		}
 
 		if (!visible)
+		{
+			if (aCharCount < 0 && treat_as_text && input->InProgress())
+			{
+				// This dead key is being treated as text but will be suppressed, so to get the correct
+				// result, we will need to replay the dead key sequence when the next key is collected.
+				sPendingDeadKeyInvisible = true;
+			}
 			break;
+		}
 	}
 	if (input) // Early break (invisible input).
 	{
@@ -4389,6 +4423,9 @@ void ResetHook(bool aAllModifiersUp, HookType aWhichHook, bool aResetKVKandKSC)
 		// was removed (or Alt was released).  If the *classic* alt-tab menu isn't in use,
 		// this at least serves to reset sAltTabMenuIsVisible to false:
 		sAltTabMenuIsVisible = (FindWindow(_T("#32771"), NULL) != NULL);
+
+		sPendingDeadKeyCount = 0;
+		sPendingDeadKeyInvisible = false;
 
 		*g_HSBuf = '\0';
 		g_HSBufLength = 0;

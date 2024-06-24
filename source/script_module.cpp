@@ -39,7 +39,7 @@ ResultType Script::ParseModuleDirective(LPCTSTR aName)
 	mod->Warn_Unreachable = mCurrentModule->Warn_Unreachable;
 	mod->Warn_VarUnset = mCurrentModule->Warn_VarUnset;
 	if (!mModules.Insert(mod, at))
-		return FAIL;
+		return MemoryError();
 	if (!CloseCurrentModule())
 		return FAIL;
 	mCurrentModule = mod;
@@ -162,7 +162,7 @@ ResultType Script::ResolveImports(ScriptImport &imp)
 			mLastModule = nullptr; // Start a new chain.
 			imp.mod = mCurrentModule = new ScriptModule(mod_name);
 			if (!mModules.Insert(imp.mod, at))
-				return FAIL;
+				return MemoryError();
 			if (!LoadIncludedFile(path, false, false))
 				return FAIL;
 			if (!CloseCurrentModule())

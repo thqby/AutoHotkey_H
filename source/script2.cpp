@@ -2567,9 +2567,12 @@ bif_impl FResult BIF_Hotkey(StrArg aName, ExprTokenType *aAction, optl<StrArg> a
 
 
 
-bif_impl FResult HotIf(ExprTokenType *aCriterion)
+void SetHotIfReturnValue(ResultToken &aResultToken);
+
+bif_impl FResult HotIf(ExprTokenType *aCriterion, ResultToken &aResultToken)
 {
 	TCHAR buf[MAX_NUMBER_SIZE];
+	SetHotIfReturnValue(aResultToken);
 	if (!aCriterion)
 	{
 		g->HotCriterion = nullptr;
@@ -2583,24 +2586,24 @@ bif_impl FResult HotIf(ExprTokenType *aCriterion)
 
 
 
-bif_impl FResult HotIfWinActive(optl<StrArg> aWinTitle, optl<StrArg> aWinText)
+bif_impl FResult HotIfWinActive(optl<StrArg> aWinTitle, optl<StrArg> aWinText, ResultToken &aResultToken)
 {
-	return SetHotkeyCriterion(HOT_IF_ACTIVE, aWinTitle.value_or_empty(), aWinText.value_or_empty());
+	return SetHotkeyCriterion(HOT_IF_ACTIVE, aWinTitle.value_or_empty(), aWinText.value_or_empty(), aResultToken);
 }
 
-bif_impl FResult HotIfWinNotActive(optl<StrArg> aWinTitle, optl<StrArg> aWinText)
+bif_impl FResult HotIfWinNotActive(optl<StrArg> aWinTitle, optl<StrArg> aWinText, ResultToken &aResultToken)
 {
-	return SetHotkeyCriterion(HOT_IF_NOT_ACTIVE, aWinTitle.value_or_empty(), aWinText.value_or_empty());
+	return SetHotkeyCriterion(HOT_IF_NOT_ACTIVE, aWinTitle.value_or_empty(), aWinText.value_or_empty(), aResultToken);
 }
 
-bif_impl FResult HotIfWinExist(optl<StrArg> aWinTitle, optl<StrArg> aWinText)
+bif_impl FResult HotIfWinExist(optl<StrArg> aWinTitle, optl<StrArg> aWinText, ResultToken &aResultToken)
 {
-	return SetHotkeyCriterion(HOT_IF_EXIST, aWinTitle.value_or_empty(), aWinText.value_or_empty());
+	return SetHotkeyCriterion(HOT_IF_EXIST, aWinTitle.value_or_empty(), aWinText.value_or_empty(), aResultToken);
 }
 
-bif_impl FResult HotIfWinNotExist(optl<StrArg> aWinTitle, optl<StrArg> aWinText)
+bif_impl FResult HotIfWinNotExist(optl<StrArg> aWinTitle, optl<StrArg> aWinText, ResultToken &aResultToken)
 {
-	return SetHotkeyCriterion(HOT_IF_NOT_EXIST, aWinTitle.value_or_empty(), aWinText.value_or_empty());
+	return SetHotkeyCriterion(HOT_IF_NOT_EXIST, aWinTitle.value_or_empty(), aWinText.value_or_empty(), aResultToken);
 }
 
 

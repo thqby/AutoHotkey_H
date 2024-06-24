@@ -670,6 +670,8 @@ BIV_DECL_R(BIV_ScreenDPI)
 
 BIV_DECL_R(BIV_TrayMenu)
 {
+	if (!g_script->mTrayMenu)
+		_f_return_unset;
 	g_script->mTrayMenu->AddRef();
 	_f_return(g_script->mTrayMenu);
 }
@@ -1413,6 +1415,14 @@ BIV_DECL_R(BIV_EndChar)
 	_f_retval_buf[0] = g_script->mEndChar;
 	_f_retval_buf[1] = '\0';
 	_f_return_p(_f_retval_buf);
+}
+
+
+
+void SetHotIfReturnValue(ResultToken &aResultToken);
+BIV_DECL_R(BIV_HotIf)
+{
+	SetHotIfReturnValue(aResultToken);
 }
 
 

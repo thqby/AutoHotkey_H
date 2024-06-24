@@ -155,6 +155,7 @@ thread_local extern TCHAR g_EndChars[HS_MAX_END_CHARS + 1];
 
 // Global objects:
 thread_local extern input_type *g_input;
+thread_local extern int g_inputBeforeHotkeysCount;
 EXTERN_SCRIPT;
 EXTERN_CLIPBOARD;
 EXTERN_OSVER;

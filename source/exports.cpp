@@ -275,15 +275,16 @@ struct ScriptSnapshot
 				fn.mClass->Release();
 			fn.Release();
 		}
-		HotkeyCriterion *hotexpr;
+		HotkeyCriterion *hc;
 		if (g_LastHotCriterion = mLastHotCriterion)
-			mLastHotCriterion->NextCriterion = nullptr;
-		else g_FirstHotCriterion = nullptr;
+			hc = mLastHotCriterion->NextCriterion, mLastHotCriterion->NextCriterion = nullptr;
+		else hc = g_FirstHotCriterion, g_FirstHotCriterion = nullptr;
 		if (g_LastHotExpr = mLastHotExpr)
-			hotexpr = mLastHotExpr->NextExpr, mLastHotExpr->NextExpr = nullptr;
-		else hotexpr = g_FirstHotExpr, g_FirstHotExpr = nullptr;
-		for (; hotexpr; hotexpr = hotexpr->NextExpr)
-			hotexpr->Callback->Release();
+			mLastHotExpr->NextExpr = nullptr;
+		else g_FirstHotExpr = nullptr;
+		for (; hc; hc = hc->NextCriterion)
+			if (hc->Callback)
+				hc->Callback->Release();
 		for (auto mod = g_script->mLastModule; mod; mod = mod->mPrev)
 		{
 			if (mod->mName)

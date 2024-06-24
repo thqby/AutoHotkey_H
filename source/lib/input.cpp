@@ -66,6 +66,9 @@ void InputStart(input_type &input)
 	input.Start();
 	g_input = &input; // Signal the hook to start the input.
 
+	if (input.BeforeHotkeys)
+		++g_inputBeforeHotkeysCount;
+
 	Hotkey::InstallKeybdHook(); // Install the hook (if needed).
 }
 
@@ -84,6 +87,9 @@ void input_type::ParseOptions(LPCTSTR aOptions)
 			break;
 		case 'C':
 			CaseSensitive = true;
+			break;
+		case 'H':
+			BeforeHotkeys = true;
 			break;
 		case 'I':
 			MinSendLevel = (cp[1] <= '9' && cp[1] >= '0') ? (SendLevelType)_ttoi(cp + 1) : 1;
@@ -480,6 +486,9 @@ void input_type::EndByReason(InputStatusType aReason)
 	ASSERT(InProgress());
 	EndingMods = g_modifiersLR_logical; // Not relevant to all end reasons, but might be useful anyway.
 	Status = aReason;
+
+	if (BeforeHotkeys)
+		--g_inputBeforeHotkeysCount;
 
 	// It's done this way rather than calling InputRelease() directly...
 	// ...so that we can rely on MsgSleep() to create a new thread for the OnEnd event.

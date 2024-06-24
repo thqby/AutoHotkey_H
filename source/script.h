@@ -406,6 +406,7 @@ __int64 pow_ll(__int64 base, __int64 exp); // integer power function
 #define _f_return_p(...)		_f__ret(_f_set_retval_p(__VA_ARGS__)) // Return a string which is already in persistent memory.
 #define _f_return_retval		return  // Return the value set by _f_set_retval().
 #define _f_return_empty			_f_return_p(_T(""), 0)
+#define _f_return_unset			_f__ret(aResultToken.symbol = SYM_MISSING)
 #define _f_retval_buf			(aResultToken.buf)
 #define _f_retval_buf_size		MAX_NUMBER_SIZE
 #define _f_number_buf			_f_retval_buf  // An alias to show intended usage, and in case the buffer size is changed.
@@ -2592,6 +2593,7 @@ BIV_DECL_R (BIV_PriorHotkey);
 BIV_DECL_R (BIV_TimeSinceThisHotkey);
 BIV_DECL_R (BIV_TimeSincePriorHotkey);
 BIV_DECL_R (BIV_EndChar);
+BIV_DECL_R (BIV_HotIf);
 BIV_DECL_RW(BIV_EventInfo);
 BIV_DECL_R (BIV_TimeIdle);
 BIV_DECL_R (BIV_IPAddress);

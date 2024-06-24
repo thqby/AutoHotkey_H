@@ -66,7 +66,52 @@ HWND HotCriterionAllowsFiring(HotkeyCriterion *aCriterion, LPTSTR aHotkeyName)
 
 
 
-FResult SetHotkeyCriterion(HotCriterionType aType, LPCTSTR aWinTitle, LPCTSTR aWinText)
+BIF_DECL(HotIf_Win)
+{
+	HWND found_hwnd;
+	auto hc = (HotkeyCriterion*)aResultToken.func->mData;
+	if (hc->Type >= HOT_IF_EXIST)
+	{
+		found_hwnd = WinExist(*g, hc->WinTitle, hc->WinText, _T(""), _T(""), false, true);
+		if (hc->Type == HOT_IF_NOT_EXIST)
+			found_hwnd = (HWND)!found_hwnd;
+	}
+	else
+	{
+		found_hwnd = WinActive(*g, hc->WinTitle, hc->WinText, _T(""), _T(""), true);
+		if (hc->Type == HOT_IF_NOT_ACTIVE)
+			found_hwnd = (HWND)!found_hwnd;
+	}
+	_f_return_i((UINT)(UINT_PTR)found_hwnd);
+}
+
+
+
+void SetHotIfReturnValue(ResultToken &aResultToken)
+{
+	if (!g->HotCriterion)
+	{
+		// "" seems more in line with the intended use than unset (and consistent with
+		// the other hotkey-related variables); e.g. old := HotIf(new) ... HotIf(old).
+		// A minor drawback is that A_HotIf?.() won't work.
+		_f_return_empty;
+	}
+	if (!g->HotCriterion->Callback)
+	{
+		// Provide a value which can be passed back to HotIf to set this criterion.
+		// Making it an actual function which evaluates the criterion also means that
+		// the script can call A_HotIf() to evaluate the current criterion.  It won't
+		// actually be called unless the script calls it.  WinExist.Bind() or similar
+		// isn't used because it couldn't handle the HOT_IF_NOT variants.
+		g->HotCriterion->Callback = new BuiltInFunc { _T(""), HotIf_Win, 0, 0, false, g->HotCriterion };
+	}
+	g->HotCriterion->Callback->AddRef();
+	_f_return(g->HotCriterion->Callback);
+}
+
+
+
+FResult SetHotkeyCriterion(HotCriterionType aType, LPCTSTR aWinTitle, LPCTSTR aWinText, ResultToken &aResultToken)
 // Returns FR_FAIL if memory couldn't be allocated (and an error was raised), or OK otherwise.
 // This is a global function because it's used by both hotkeys and hotstrings.
 {
@@ -75,6 +120,7 @@ FResult SetHotkeyCriterion(HotCriterionType aType, LPCTSTR aWinTitle, LPCTSTR aW
 		&& !(cp = FindHotkeyCriterion(aType, aWinTitle, aWinText))
 		&& !(cp = AddHotkeyCriterion(aType, aWinTitle, aWinText))  )
 		return FR_FAIL;
+	SetHotIfReturnValue(aResultToken);
 	g->HotCriterion = cp;
 	return OK;
 }
@@ -100,6 +146,7 @@ HotkeyCriterion *AddHotkeyCriterion(HotCriterionType aType, LPCTSTR aWinTitle, L
 	cp = SimpleHeap::Alloc<HotkeyCriterion>();
 	cp->Type = aType;
 	cp->OriginalExpr = nullptr;
+	cp->Callback = nullptr;
 	if (*aWinTitle)
 	{
 		if (   !(cp->WinTitle = SimpleHeap::Malloc(aWinTitle))   )
@@ -143,7 +190,7 @@ HotkeyCriterion *AddHotkeyIfExpr()
 	else
 		g_FirstHotExpr = cp;
 	g_LastHotExpr = cp;
-	return cp;
+	return AddHotkeyCriterion(cp);
 }
 
 
@@ -951,7 +998,9 @@ FResult Hotkey::IfExpr(IObject *aExprObj)
 	if (aExprObj)
 	{
 		HotkeyCriterion *cp;
-		for (cp = g_FirstHotExpr; ; cp = cp->NextExpr)
+		// v2.1: Search all criterion.  Callback is non-null if cp->Type == HOT_IF_CALLBACK
+		// or if A_HotIf has been used while g->HotCriterion->Type != HOT_IF_CALLBACK.
+		for (cp = g_FirstHotCriterion; ; cp = cp->NextCriterion)
 		{
 			if (!cp) // End of the list and it wasn't found.
 			{
@@ -967,7 +1016,7 @@ FResult Hotkey::IfExpr(IObject *aExprObj)
 				cp->WinText = _T("");
 				break;
 			}
-			if (cp->Type == HOT_IF_CALLBACK && cp->Callback == aExprObj)
+			if (cp->Callback == aExprObj)
 				break;
 		}
 		g->HotCriterion = cp;

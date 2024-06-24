@@ -222,6 +222,7 @@ VarEntry g_BIV_A[] =
 	A_w(EventInfo),
 	A_w(FileEncoding),
 	A_(GlobalStruct),
+	A_(HotIf),
 	A_wx(HotkeyInterval, BIV_Hotkey, BIV_Hotkey_Set),
 	A_wx(HotkeyModifierTimeout, BIV_Hotkey, BIV_Hotkey_Set),
 	A_x(Hour, BIV_DateTime),
@@ -473,8 +474,9 @@ Script::~Script() // Destructor.
 
 	// L31: Release objects stored in variables, where possible.
 	g->ExcptMode |= EXCPTMODE_DEBUGGER;
-	for (auto cp = g_FirstHotExpr; cp; cp = cp->NextExpr)
-		cp->Callback->Release();
+	for (auto cp = g_FirstHotCriterion; cp; cp = cp->NextCriterion)
+		if (cp->Callback)
+			cp->Callback->Release();
 
 	// It is safer/easier to destroy the GUI windows prior to the menus (especially the menu bars).
 	// This is because one GUI window might get destroyed and take with it a menu bar that is still
@@ -665,6 +667,7 @@ Script::~Script() // Destructor.
 	g_InputTimerExists = false;
 	g_DerefTimerExists = false;
 	g_SoundWasPlayed = false;
+	g_inputBeforeHotkeysCount = 0;
 	g_IsSuspended = false;  // Make this separate from g_AllowInterruption since that is frequently turned off & on.
 	g_DeferMessagesForUnderlyingPump = false;
 	g_nLayersNeedingTimer = 0;
@@ -1239,6 +1242,9 @@ ResultType Script::SetTrayIcon(LPCTSTR aIconFile, int aIconNumber, ToggleValueTy
 	if ( !new_icon )
 		return g_script->RuntimeError(ERR_LOAD_ICON, aIconFile);
 
+	SendMessage(g_hWnd, WM_SETICON, ICON_SMALL, (LPARAM)new_icon_small);
+	SendMessage(g_hWnd, WM_SETICON, ICON_BIG, (LPARAM)new_icon);
+
 	GuiType::DestroyIconsIfUnused(mCustomIcon, mCustomIconSmall); // This destroys it if non-NULL and it's not used by an GUI windows.
 
 	mCustomIcon = new_icon;
@@ -1315,9 +1321,9 @@ ResultType Script::AutoExecSection()
 	ResultType result = OK;
 
 	// Execute all modules, in reverse order of creation.
-	for (mCurrentModule = mLastModule; mCurrentModule; mCurrentModule = mCurrentModule->mPrev)
+	for (auto mod = mLastModule; mod; mod = mod->mPrev)
 	{
-		result = ExecuteModule(mCurrentModule);
+		result = ExecuteModule(mod);
 		if (result != OK)
 			break;
 	}
