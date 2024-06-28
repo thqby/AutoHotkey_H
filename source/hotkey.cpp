@@ -190,7 +190,7 @@ HotkeyCriterion *AddHotkeyIfExpr()
 	else
 		g_FirstHotExpr = cp;
 	g_LastHotExpr = cp;
-	return cp;
+	return AddHotkeyCriterion(cp);
 }
 
 
