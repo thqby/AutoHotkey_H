@@ -4967,14 +4967,6 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 		*aArg = _T("unset");
 		aArgc = 1;
 	}
-	else if (aActionType == ACT_BLOCK_END && mLineParent && mLineParent->mActionType == ACT_BLOCK_BEGIN
-		&& mLineParent->mAttribute == g->CurrentFunc && g->CurrentFunc // This is the block-end of a function.
-		&& mDefaultReturn == SYM_MISSING // It should default to unset, and doesn't end with a return.
-		&& (mLastLine->mActionType != ACT_RETURN || mLastLine->mParentLine != mLineParent)) // It wouldn't be "unreachable".
-	{
-		if (!AddLine(ACT_RETURN, nullptr, 0, true)) // The recursive call will detect that this needs to be `return unset`.
-			return FAIL;
-	}
 
 	DerefList deref;  // Will be used to temporarily store the var-deref locations in each arg.
 	ArgStruct *new_arg;  // We will allocate some dynamic memory for this, then hang it onto the new line.
@@ -5271,6 +5263,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 
 		if (g->CurrentFunc && g->CurrentFunc == mLineParent->mAttribute)
 		{
+			g->CurrentFunc->mDefaultReturnUnset = mDefaultReturn == SYM_MISSING;
 			line.mAttribute = g->CurrentFunc;  // Flag this ACT_BLOCK_END as the ending brace of this function's body.
 			g->CurrentFunc = g->CurrentFunc->mOuterFunc;  // Step out of this function.
 			if (g->CurrentFunc && !g->CurrentFunc->mJumpToLine)
@@ -10757,6 +10750,10 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			continue;  // Resume looping starting at the above line.  "continue" is actually slightly faster than "break" in these cases.
 
 		case ACT_BLOCK_END:
+			// v2.1: This is handled at runtime rather than by inserting ACT_RETURN avoid complications
+			// with 1) auto-generated __Init methods, and 2) #Warn Unreachable.
+			if (line->mAttribute && ((UserFunc*)line->mAttribute)->mDefaultReturnUnset && aResultToken)
+				aResultToken->symbol = SYM_MISSING;
 			// v2: This check is disabled to reduce code size, as it doesn't seem to be needed
 			// now that GOSUB has been removed.  Validation in PreparseBlocks() should make it
 			// impossible to produce this condition:
