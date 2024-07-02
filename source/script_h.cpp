@@ -1758,7 +1758,7 @@ void Worker::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 	{
 		if (IS_INVOKE_SET)
 			val = aParam[0], aParam++, aParamCount--;
-		var = script->FindGlobalVar(name = TokenToString(*aParam[0]));
+		var = script->FindGlobalVar2(name = TokenToString(*aParam[0]));
 		DWORD_PTR res;
 		DWORD err = 0;
 
@@ -1792,15 +1792,35 @@ void Worker::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 		}
 
 		// __item.get
-		if (var->mType != VAR_VIRTUAL)
-			var->ToTokenSkipAddRef(aResultToken);
-		else {
-			aResultToken.symbol = SYM_INTEGER;
+		if (mThreadID == ThreadID)
 			var->Get(aResultToken);
-		}
-		if (mThreadID != ThreadID) {
-			if (aResultToken.symbol == SYM_OBJECT || aResultToken.symbol == SYM_STRING && aResultToken.marker != aResultToken.buf) {
+		else {
+			var = var->ResolveAlias();
+			if (var->mType == VAR_VIRTUAL)
+			{
+				AutoTLS tls;
+				tls.Enter(g_ahkThreads[mIndex].TLS);
+				var->Get(aResultToken);
+				if (aResultToken.symbol == SYM_OBJECT)
+					aResultToken.object->Release(), aResultToken.symbol = SYM_INVALID;
+			}
+			else
+			{
 				aResultToken.symbol = SYM_INVALID;
+				switch (var->mAttrib & VAR_ATTRIB_TYPES)
+				{
+				case VAR_ATTRIB_IS_INT64:
+					aResultToken.SetValue(var->mContentsInt64);
+					break;
+				case VAR_ATTRIB_IS_DOUBLE:
+					aResultToken.SetValue(var->mContentsDouble);
+					break;
+				default:
+					if (var->mAttrib & VAR_ATTRIB_UNINITIALIZED)
+						aResultToken.symbol = SYM_MISSING;
+				}
+			}
+			if (aResultToken.symbol == SYM_INVALID) {
 				if (!SendMessageTimeout(mHwnd, AHK_THREADVAR, (WPARAM)&aResultToken, (LPARAM)var, SMTO_ABORTIFHUNG, 5000, &res))
 					_o_throw_win32();
 				if (aResultToken.symbol == SYM_STREAM) {
@@ -1812,8 +1832,6 @@ void Worker::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 					_o_throw_oom;
 			}
 		}
-		else if (aResultToken.symbol == SYM_OBJECT)
-			aResultToken.object->AddRef();
 		_o_return_retval;
 	}
 
@@ -1824,8 +1842,7 @@ void Worker::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTyp
 	{
 		auto func = mThreadID == ThreadID ? TokenToObject(*aParam[0]) : nullptr;
 		if (!func) {
-			if (*(name = TokenToString(*aParam[0])))
-				var = script->FindGlobalVar(name);
+			var = script->FindGlobalVar2(name = TokenToString(*aParam[0]));
 			if (!var)
 				_o_throw(ERR_DYNAMIC_NOT_FOUND, name);
 			if (mThreadID == ThreadID && !(func = dynamic_cast<Object *>(var->ToObject())))

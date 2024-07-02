@@ -88,7 +88,7 @@ EXPORT(LPTSTR) ahkGetVar(LPTSTR name, int getVar, DWORD aThreadID)
 #pragma comment(linker,"/export:" __FUNCTION__"=" __FUNCDNAME__)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
-		if (auto ahkvar = g_script->FindGlobalVar(name)) {
+		if (auto ahkvar = g_script->FindGlobalVar2(name)) {
 			if (getVar) {
 				if (ahkvar->mType == VAR_VIRTUAL)
 					return NULL;
@@ -112,7 +112,7 @@ EXPORT(int) ahkAssign(LPTSTR name, LPTSTR value, DWORD aThreadID)
 	AutoTLS atls;
 	if (atls.Enter(aThreadID)) {
 		HWND hwnd = g_hWnd;
-		auto ahkvar = g_script->FindGlobalVar(name);
+		auto ahkvar = g_script->FindGlobalVar2(name);
 		if (!ahkvar || ahkvar->IsReadOnly())
 			return 0;
 		if (!value)
@@ -457,7 +457,7 @@ LPTSTR ahkFunction(LPTSTR func, LPTSTR param1, LPTSTR param2, LPTSTR param3, LPT
 	AutoTLS atls;
 	if (!atls.Enter(aThreadID))
 		return NULL;
-	Var* aVar = g_script->FindGlobalVar(func);
+	Var* aVar = g_script->FindGlobalVar2(func);
 	Func* aFunc = aVar ? dynamic_cast<Func*>(aVar->ToObject()) : nullptr;
 	if (!aFunc)
 		return NULL;
@@ -714,37 +714,16 @@ void* STDMETHODCALLTYPE IAhkApi::GetProcAddressCrc32(HMODULE aModule, UINT aCRC3
 	return NULL;
 }
 
-bool STDMETHODCALLTYPE IAhkApi::Script_GetVar(LPTSTR aVarName, ResultToken& aValue, LPTSTR aModuleName) {
-	if (!g_script)
-		return false;
-	Var *var;
-	if (!aModuleName)
-		var = g_script->FindGlobalVar(aVarName);
-	else if (auto mod = g_script->mModules.Find(aModuleName))
-		var = mod->mVars.Find(aVarName);
-	else var = nullptr;
-	if (var) {
+bool STDMETHODCALLTYPE IAhkApi::Script_GetVar(LPTSTR aVarName, ResultToken& aValue) {
+	if (auto var = g_script ? g_script->FindGlobalVar2(aVarName) : nullptr) {
 		var->Get(aValue);
 		return true;
 	}
 	return false;
 }
 
-bool STDMETHODCALLTYPE IAhkApi::Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue, LPTSTR aModuleName) {
-	if (!g_script)
-		return false;
-	Var *var;
-	int at;
-	if (!aModuleName)
-		var = g_script->FindOrAddVar(aVarName, 0, FINDVAR_GLOBAL);
-	else if (auto mod = g_script->mModules.Find(aModuleName))
-	{
-		if (!(var = mod->mVars.Find(aVarName, &at)))
-			if (!mod->mVars.Insert(var = new Var(aVarName, VAR_GLOBAL), at))
-				return false;
-	}
-	else var = nullptr;
-	if (var)
+bool STDMETHODCALLTYPE IAhkApi::Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue) {
+	if (auto var = g_script ? g_script->FindGlobalVar2(aVarName, true) : nullptr)
 		return var->Assign(aValue) == OK;
 	return false;
 }

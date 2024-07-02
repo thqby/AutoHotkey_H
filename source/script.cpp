@@ -8158,9 +8158,35 @@ VarEntry *Script::GetBuiltInVar(LPCTSTR aVarName)
 
 
 
+Var *Script::FindGlobalVar2(LPCTSTR aVarName, bool aAdded)
+{
+	auto mod = &mDefaultModule;
+	auto cp = _tcschr(aVarName, ':');
+	if (cp)
+		if (mod = mModules.Find(aVarName, cp - aVarName))
+			aVarName = ++cp;
+		else return nullptr;
+	int at;
+	auto var = mod->mVars.Find(aVarName, &at);
+	if (var)
+		return var;
+	if (var = mod->FindImportedVar(aVarName))
+		return var;
+	if (var = FindOrAddBuiltInVar(aVarName, !aAdded, nullptr))
+		return var;
+	if (aAdded)
+	if (auto name = SimpleHeap::Malloc(aVarName))
+		if (mod->mVars.Insert(var = new Var(name, VAR_DECLARE_GLOBAL), at))
+			return var;
+		else SimpleHeap::Delete(var);
+	return nullptr;
+}
+
+
+
 Func *Script::FindGlobalFunc(LPCTSTR aFuncName)
 {
-	if (auto var = FindGlobalVar(aFuncName))
+	if (auto var = FindGlobalVar2(aFuncName))
 		if (var->Type() == VAR_CONST)
 			return dynamic_cast<Func *>(var->ToObject());
 	return nullptr;

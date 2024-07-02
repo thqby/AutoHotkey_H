@@ -82,8 +82,8 @@ public:
 	virtual void* STDMETHODCALLTYPE GetProcAddress(LPTSTR aDllFileFunc, HMODULE* hmodule_to_free = nullptr);
 	virtual void* STDMETHODCALLTYPE GetProcAddressCrc32(HMODULE aModule, UINT aCRC32, UINT aInitial = 0);
 
-	virtual bool STDMETHODCALLTYPE Script_GetVar(LPTSTR aVarName, ResultToken& aValue, LPTSTR aModuleName = nullptr);
-	virtual bool STDMETHODCALLTYPE Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue, LPTSTR aModuleName = nullptr);
+	virtual bool STDMETHODCALLTYPE Script_GetVar(LPTSTR aVarName, ResultToken& aValue);
+	virtual bool STDMETHODCALLTYPE Script_SetVar(LPTSTR aVarName, ExprTokenType& aValue);
 
 	virtual Func* STDMETHODCALLTYPE Func_New(FuncEntry& aBIF);
 	virtual Func* STDMETHODCALLTYPE Method_New(LPTSTR aFullName, ObjectMember& aMember, Object* aPrototype);

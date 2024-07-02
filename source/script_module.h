@@ -54,6 +54,7 @@ public:
 
 	void Clear();
 	void Free(bool aIsConstant = false);
+	Var *FindImportedVar(LPCTSTR aVarName);
 	IObject_Type_Impl("Module");
 	ResultType Invoke(IObject_Invoke_PARAMS_DECL) override;
 	Object *Base() override { return sPrototype; }

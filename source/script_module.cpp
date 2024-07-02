@@ -61,9 +61,9 @@ ResultType Script::ParseImportStatement(LPTSTR aBuf)
 }
 
 
-Var *Script::FindImportedVar(LPCTSTR aVarName)
+Var *ScriptModule::FindImportedVar(LPCTSTR aVarName)
 {
-	for (auto imp = CurrentModule()->mImports; imp; imp = imp->next)
+	for (auto imp = mImports; imp; imp = imp->next)
 	{
 		if (*imp->names == '*')
 		{
@@ -73,6 +73,12 @@ Var *Script::FindImportedVar(LPCTSTR aVarName)
 		}
 	}
 	return nullptr;
+}
+
+
+Var *Script::FindImportedVar(LPCTSTR aVarName)
+{
+	return CurrentModule()->FindImportedVar(aVarName);
 }
 
 

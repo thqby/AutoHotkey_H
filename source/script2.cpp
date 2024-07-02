@@ -528,15 +528,16 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		auto token = (ResultToken *)wParam;
 		auto var = (Var *)lParam;
 		if (token->symbol == SYM_INVALID) {
-			if (var->Type() == VAR_VIRTUAL) {
-				token->symbol = SYM_INTEGER;
-				var->Get(*token);
-			} else
-				var->ToTokenSkipAddRef(*token);
+			var->Get(*token);
 			if (token->symbol == SYM_STRING)
 				token->marker != token->buf && !token->mem_to_free && token->Malloc(token->marker, token->marker_length);
-			else if (token->symbol == SYM_OBJECT && !MarshalObjectToToken(token->object, *token))
-				return 0;
+			else if (token->symbol == SYM_OBJECT)
+			{
+				auto obj = token->object;
+				auto ret = MarshalObjectToToken(obj, *token);
+				obj->Release();
+				return ret;
+			}
 			return 1;
 		}
 		if (token->symbol == SYM_STREAM) {

@@ -4220,7 +4220,7 @@ void Object::CreateRootPrototypes()
 		,{_T("Worker"), &Worker::sPrototype, NewObject<Worker>
 		, Worker::sMembers, _countof(Worker::sMembers) }
 	});
-	if (auto var = g_script->FindGlobalVar(_T("Worker")))
+	if (auto var = g_script->FindGlobalVar(_T("Worker"), 6))
 	{
 		auto fn = new BuiltInFunc(_T("Worker.__Enum"),
 			[](BIF_DECL_PARAMS) {

@@ -165,7 +165,7 @@ public:
 	{
 		if (index->vt != VT_BSTR)
 			return DISP_E_TYPEMISMATCH;
-		auto var = g_script->FindGlobalVar(index->bstrVal); // FIXME: Module support.
+		auto var = g_script->FindGlobalVar2(index->bstrVal);
 		if (!var)
 			return DISP_E_BADINDEX;
 		auto func = dynamic_cast<Func*>(var->ToObject());
@@ -536,40 +536,16 @@ public:
 	ResultType Invoke(IObject_Invoke_PARAMS_DECL)
 	{
 		Var *var;
-		if (!aName)
-		{
-			if (IS_INVOKE_CALL)
-				return INVOKE_NOT_HANDLED;
-			aName = TokenToString(*aParam[0]);
-			aParam++, aParamCount--;
-		}
-		if (!g_script || !(var = g_script->FindGlobalVar(aName)))
+		if (!g_script || !aName || !(var = g_script->FindGlobalVar2(aName, IS_INVOKE_SET && aParamCount == 1)))
 			return INVOKE_NOT_HANDLED;
-		if (IS_INVOKE_CALL || aParamCount > (IS_INVOKE_SET ? 1 : 0))
-		{
-			auto obj = var->HasObject() ? var->Object() : nullptr;
-			if (!obj)
-			{
-				ExprTokenType token;
-				token.SetVar(var);
-				obj = Object::ValueBase(token);
-				aFlags |= IF_SUBSTITUTE_THIS;
-			}
-			return obj->Invoke(aResultToken, aFlags, nullptr, ExprTokenType(obj), aParam, aParamCount);
-		}
-		if (IS_INVOKE_SET) // Script.Var := Value
+		if (IS_INVOKE_SET && aParamCount == 1)
 			return var->Assign(*aParam[0]);
-		// Script.Var
-		if (!var->IsVirtual())
-		{
-			var->ToToken(aResultToken);
-			return OK;
-		}
-		// Built-in/virtual variable
+
 		var->Get(aResultToken);
-		if (aResultToken.symbol == SYM_OBJECT)
-			aResultToken.object->AddRef();
-		return aResultToken.Result();
+		if (aResultToken.Exited() || aParamCount == 0 && IS_INVOKE_GET)
+			return aResultToken.Result();
+
+		return Object::ApplyParams(aResultToken, aFlags, aParam, aParamCount);
 	}
 
 	Object *Base() { return nullptr; }

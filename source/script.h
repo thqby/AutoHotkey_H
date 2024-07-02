@@ -2412,6 +2412,7 @@ public:
 
 	// Alias to improve clarity and reduce code size (if compiler chooses not to inline; due to how parameter defaults work):
 	Var *FindGlobalVar(LPCTSTR aVarName, size_t aVarNameLength = 0) { return FindVar(aVarName, aVarNameLength, FINDVAR_GLOBAL); }
+	Var *FindGlobalVar2(LPCTSTR aVarName, bool aAdded = false);
 	Func *FindGlobalFunc(LPCTSTR aFuncName);
 
 	VarList *GlobalVars() { return &CurrentModule()->mVars; }
