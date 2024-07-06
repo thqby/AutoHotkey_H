@@ -1291,16 +1291,6 @@ void Debugger::PropertyWriter::WriteEnumItems(IObject *aEnumerable, int aStart, 
 		//mError = DEBUGGER_E_EVAL_FAIL;
 		return;
 	}
-	if (enumerator == aEnumerable) // Only valid when result == OK.
-	{
-		// No __Enum method, so Object::DebugWriteProperty wouldn't have returned <enum>.
-		// CallEnumerator could succeed for `f.<enum>` if `f` is an enumerator function,
-		// but proceeding would generally put the enumerator in a state where subsequent
-		// calls by the debugger or script return nothing.  Prohibiting this also ensures
-		// we don't return a <property> for any arbitrary non-enumerable value.
-		enumerator->Release();
-		return;
-	}
 
 	DebugCookie cookie;
 	bool write_main_property = !mDepth;
