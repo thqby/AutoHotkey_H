@@ -1934,7 +1934,7 @@ LPWSTR Debugger::ParsePropertyKeyLiteral(LPWSTR src, ExprTokenType &t_key)
 		t_key.symbol = SYM_OBJECT;
 		return src + 1;
 	}
-	else
+	else if (!IS_LEADING_IDENTIFIER_CHAR(*src))
 	{
 		LPTSTR iend, fend;
 		auto ival = istrtoi64(src, &iend);

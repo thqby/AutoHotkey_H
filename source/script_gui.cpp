@@ -7871,6 +7871,15 @@ FResult GuiType::Show(optl<StrArg> aOptions)
 			MoveWindow(mHwnd, x == COORD_UNSPECIFIED ? old_rect.left : x, y == COORD_UNSPECIFIED ? old_rect.top : y
 				, width, height, is_visible);  // Do repaint if window is visible.
 		}
+
+		// ahk_h: Apply client size used to calculate autosize and autopos for controls
+		if (mGuiShowHasNeverBeenDone)
+		{
+			RECT rect;
+			GetClientRect(mHwnd, &rect);
+			mWidth = rect.right - rect.left;
+			mHeight = rect.bottom - rect.top;
+		}
 	} // if (allow_move_window)
 
 	// Note that for SW_MINIMIZE and SW_MAXIMIZE, the MoveWindow() above should be done prior to ShowWindow()
