@@ -65,31 +65,15 @@ size_t Clipboard::Get(LPTSTR aBuf)
 		}
 		if (   !(mClipMemNow = GetClipboardDataTimeout(clipboard_contains_text ? CF_NATIVETEXT : CF_HDROP))   )
 		{
-			// v1.0.47.04: Commented out the following that had been in effect when clipboard_contains_files==false:
-			//    Close("GetClipboardData"); // Short error message since so rare.
-			//    return CLIPBOARD_FAILURE;
-			// This was done because there are situations when GetClipboardData can fail indefinitely.
-			// For example, in Firefox, pulling down the Bookmarks menu then right-clicking "Bookmarks Toolbar
-			// Folder" then selecting "Copy" puts one or more formats on the clipboard that cause this problem.
-			// For details, search the forum for TYMED_NULL.
-			//
-			// v1.0.42.03: For the fix below, GetClipboardDataTimeout() knows not to try more than once
-			// for CF_HDROP.
-			// Fix for v1.0.31.02: When clipboard_contains_files==true, tolerate failure, which happens
-			// as a normal/expected outcome when there are files on the clipboard but either:
-			// 1) zero of them;
-			// 2) the CF_HDROP on the clipboard is somehow misformatted.
-			// If you select the parent ".." folder in WinRar then use the following hotkey, the script
-			// would previously yield a runtime error:
-			//#q::
-			//Send, ^c
-			//ClipWait, 0.5, 1
-			//msgbox %Clipboard%
-			//Return
+			// v2.0.18: Always tolerate NULL return from GetClipboardData.  Although it is difficult to see how
+			// CF_TEXT might fail to be retrieved, a NULL return can be the result of the source app doing the
+			// wrong thing; i.e. setting a NULL handle and failing to respond to WM_RENDERFORMAT correctly.
+			// Because most apps would likely not report any failure of GetClipboardData, this "violation of
+			// the contract" would go unnoticed in normal use.
 			Close();
 			if (aBuf)
 				*aBuf = '\0';
-			return CLIPBOARD_FAILURE; // Return this because otherwise, Contents() returns mClipMemNowLocked, which is NULL.
+			return 0;
 		}
 		// Although GlobalSize(mClipMemNow) can yield zero in some cases -- in which case GlobalLock() should
 		// not be attempted -- it probably can't yield zero for CF_HDROP and CF_TEXT because such a thing has
