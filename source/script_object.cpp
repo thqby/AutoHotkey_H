@@ -693,6 +693,9 @@ ResultType Object::GetProperty(ResultToken &aResultToken, int aFlags, name_t aNa
 		return OK;
 	}
 
+	if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
+		return aResultToken.ReturnPtr(g_DefaultObjectValue);
+
 	return INVOKE_NOT_HANDLED;
 }
 
@@ -749,8 +752,6 @@ ResultType Object::GetMethodValue(ResultToken &aResultToken, int aFlags, name_t 
 	}
 	if (getter)
 		return GetFieldValue(aResultToken, (aFlags & ~IT_BITMASK), *getter, aThisToken);
-	if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
-		return aResultToken.ReturnPtr(g_DefaultObjectValue);
 	return INVOKE_NOT_HANDLED;
 }
 
