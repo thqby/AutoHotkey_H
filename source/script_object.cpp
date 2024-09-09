@@ -761,6 +761,9 @@ ResultType Object::GetProperty(ResultToken &aResultToken, int aFlags, name_t aNa
 		return OK;
 	}
 
+	if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
+		return aResultToken.ReturnPtr(g_DefaultObjectValue);
+
 	return INVOKE_NOT_HANDLED;
 }
 
@@ -825,8 +828,6 @@ ResultType Object::GetMethodValue(ResultToken &aResultToken, int aFlags, name_t 
 	}
 	if (getter)
 		return GetFieldValue(aResultToken, (aFlags & ~IT_BITMASK) | IF_BYPASS___VALUE, *getter, aThisToken);
-	if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
-		return aResultToken.ReturnPtr(g_DefaultObjectValue);
 	return INVOKE_NOT_HANDLED;
 }
 
@@ -4085,7 +4086,7 @@ ObjectMember JSON::sMembers[] =
 
 ObjectMember Promise::sMembers[] =
 {
-	Object_Method(Then, 1, 1),
+	Object_Method(Then, 1, 2),
 	Object_Method(Catch, 1, 1)
 };
 

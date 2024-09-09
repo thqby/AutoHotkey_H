@@ -1532,6 +1532,8 @@ void Promise::Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenTy
 		mReply = (HWND)-1;
 		OnFinish();
 	}
+	else if (aID == M_Then && !ParamIndexIsOmitted(1))
+		return Invoke(aResultToken, M_Catch, aFlags, aParam + 1, 1);
 	AddRef();
 	_o_return(this);
 }
