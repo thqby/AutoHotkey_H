@@ -400,6 +400,7 @@ protected:
 	
 	ResultType CallMeta(LPTSTR aName, ResultToken &aResultToken, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
 	ResultType CallMetaVarg(int aFlags, LPTSTR aName, ResultToken &aResultToken, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
+	ResultType CallHiddenMethod(int aFlags, LPTSTR aName, ResultToken &aResultToken, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount);
 	void CallNestedDelete();
 	ResultType NestedNew(ResultToken &aResultToken, StructInfo *si);
 
@@ -558,7 +559,6 @@ public:
 	void RemoveMissingProperties();
 	
 	ResultType Invoke(IObject_Invoke_PARAMS_DECL);
-	void __Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 
 	static ObjectMember sMembers[];
 	static ObjectMember sClassMembers[];

@@ -40,8 +40,8 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - Added `Array.Prototype.Map(callback: (value [, index]) => Any) => Array`
 - Added `Array.Prototype.Sort(callback?: (a, b) => Integer) => $this`, sort in place and return and the default is random sort
 - Added `GuiControl.Prototype.OnMessage(Msg, Callback [, AddRemove])`, and `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, the parameter of the callback has changed, `Callback(GuiObj, wParam, lParam, Msg)`, `A_EventInfo` is the message posted time.
-- Added `Object.Prototype.__Item[Prop]`, it's same as `Obj.%Prop%`
-- Added `Object.Prototype.Get(Prop [, Default])`
+- Added `Obj[Prop]`, it's same as `Obj.%Prop%`
+- Added `Obj.Get(Prop [, Default])`
 - Support the use of `u8str`(utf8 string) in DllCall and `us` in DynaCall
 
 ## [Classes/Functions List](https://github.com/thqby/vscode-autohotkey2-lsp/blob/main/syntaxes/ahk2_h.d.ahk)
