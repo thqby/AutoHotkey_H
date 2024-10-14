@@ -217,7 +217,7 @@ ResultType ParseCmdLineArgs(LPTSTR &script_filespec, int argc, LPTSTR *argv)
 	// All args that appear after the filespec are considered to be parameters for the script
 	// and will be stored in A_Args.
 	int i;
-	for (i = 1; i < argc; ++i) // Start at 1 because 0 contains the program name.
+	for (i = __targv == argv; i < argc; ++i) // Start at 1 because 0 contains the program name.
 	{
 		LPTSTR param = argv[i]; // For performance and convenience.
 		// Insist that switches be an exact match for the allowed values to cut down on ambiguity.
