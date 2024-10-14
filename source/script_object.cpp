@@ -593,11 +593,9 @@ void Map::Clear()
 
 ObjectMember Object::sMembers[] =
 {
-	Object_Member(__Item, __Item, 0, IT_SET, 1, 1),
 	Object_Method1(Clone, 0, 0),
 	Object_Method1(DefineProp, 2, 2),
 	Object_Method1(DeleteProp, 1, 1),
-	Object_Member(Get, __Item, 0, IT_CALL, 1, 2),
 	Object_Method1(GetOwnPropDesc, 1, 1),
 	Object_Method1(HasOwnProp, 1, 1),
 	Object_Method1(OwnProps, 0, 0),
@@ -607,25 +605,6 @@ ObjectMember Object::sMembers[] =
 LPTSTR Object::sMetaFuncName[] = { _T("__Get"), _T("__Set"), _T("__Call") };
 
 
-void Object::__Item(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
-{
-	TCHAR buf[MAX_NUMBER_LENGTH];
-	ExprTokenType t_this(this);
-	int index = IS_INVOKE_SET ? 1 : 0;
-	LPTSTR name = TokenToString(*aParam[index], buf);
-	if (!*name && TokenToObject(*aParam[index]))
-		_o_throw_type(_T("String"), *aParam[index]);
-	auto result = Invoke(aResultToken, aFlags & ~IT_CALL | IF_IGNORE_DEFAULT, name, t_this, aParam, index);
-	if (!index && result == INVOKE_NOT_HANDLED)
-	{
-		if (!ParamIndexIsOmitted(1))
-			aResultToken.CopyValueFrom(*aParam[1]);
-		else if (g_DefaultObjectValue)
-			aResultToken.ReturnPtr(g_DefaultObjectValue);
-		else
-			aResultToken.UnknownMemberError(t_this, IT_GET, name);
-	}
-}
 
 
 ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
@@ -652,8 +631,18 @@ ResultType Object::Invoke(IObject_Invoke_PARAMS_DECL)
 	default: result = CallProperty(aResultToken, aFlags, name, aThisToken, aParam, aParamCount); break;
 	}
 
-	if (result == INVOKE_NOT_HANDLED && !(aFlags & IF_BYPASS_METAFUNC))
-		result = CallMetaVarg(aFlags, aName, aResultToken, aThisToken, aParam, aParamCount);
+	if (result == INVOKE_NOT_HANDLED)
+	{
+		if (!(aFlags & IF_BYPASS_METAFUNC))
+		{
+			result = CallMetaVarg(aFlags, aName, aResultToken, aThisToken, aParam, aParamCount);
+			if (result != INVOKE_NOT_HANDLED)
+				return result;
+		}
+		
+		if (!(aFlags & IF_SUBSTITUTE_THIS))
+			result = CallHiddenMethod(aFlags, aName, aResultToken, aThisToken, aParam, aParamCount);
+	}
 
 	return result;
 }
@@ -692,9 +681,6 @@ ResultType Object::GetProperty(ResultToken &aResultToken, int aFlags, name_t aNa
 		aResultToken.SetValue(method);
 		return OK;
 	}
-
-	if (g_DefaultObjectValue && !(aFlags & (IF_IGNORE_DEFAULT | IF_SUBSTITUTE_THIS)))
-		return aResultToken.ReturnPtr(g_DefaultObjectValue);
 
 	return INVOKE_NOT_HANDLED;
 }
@@ -795,7 +781,7 @@ ResultType Object::SetProperty(ResultToken &aResultToken, int aFlags, name_t aNa
 		auto result = CallMetaVarg(aFlags, aName, aResultToken, aThisToken, aParam, aParamCount);
 		if (result != INVOKE_NOT_HANDLED)
 			return result;
- 	}
+	}
 
 	if (aParamCount > 1)
 	{
@@ -1046,6 +1032,50 @@ ResultType Object::CallMetaVarg(int aFlags, LPTSTR aName, ResultToken &aResultTo
 	ResultType aResult = func->Invoke(aResultToken, IT_CALL, nullptr, ExprTokenType(func), param, param_count);
 	vargs->Release();
 	return aResult;
+}
+
+ResultType Object::CallHiddenMethod(int aFlags, LPTSTR aName, ResultToken &aResultToken, ExprTokenType &aThisToken, ExprTokenType *aParam[], int aParamCount)
+{
+	ResultType result = INVOKE_NOT_HANDLED;
+	if (INVOKE_TYPE == IT_CALL)
+	{
+		if (aFlags & IF_NEWENUM)
+		{
+			static auto sVTable = *(void **)Object::sPrototype;
+			if (*(void **)this == sVTable && this == TokenToObject(aThisToken))
+				result = aResultToken.Return(new IndexEnumerator(this, ParamIndexToOptionalInt(0, 0)
+					, static_cast<IndexEnumerator::Callback>(&Object::GetEnumProp)));
+		}
+		else if (aName && !ParamIndexIsOmitted(0) && !_tcsicmp(aName, _T("Get")))
+		{
+			if (!ParamIndexIsOmitted(1))
+				aFlags |= IF_IGNORE_DEFAULT;
+			result = CallHiddenMethod(aFlags & ~IT_CALL, nullptr, aResultToken, aThisToken, aParam, 1);
+			if (result == INVOKE_NOT_HANDLED)
+			{
+				result = OK;
+				aResultToken.CopyValueFrom(*aParam[1]);
+				if (aResultToken.symbol == SYM_OBJECT)
+					aResultToken.object->AddRef();
+			}
+		}
+	}
+	else if (!aName && aParamCount == (IS_INVOKE_SET ? 2 : 1))
+	{
+		LPTSTR name = TokenToString(*aParam[0], aResultToken.buf);
+		result = Invoke(aResultToken, aFlags | IF_IGNORE_DEFAULT, name, aThisToken, aParam + 1, aParamCount - 1);
+		if (result == INVOKE_NOT_HANDLED && ((aFlags & (IT_BITMASK | IF_IGNORE_DEFAULT)) == IT_GET))
+		{
+			if (g_DefaultObjectValue)
+				result = aResultToken.ReturnPtr(g_DefaultObjectValue);
+			else
+				result = aResultToken.UnknownMemberError(aThisToken, IT_GET, name);
+		}
+	}
+	else if (!aParamCount && ((aFlags & (IT_BITMASK | IF_IGNORE_DEFAULT)) == IT_GET) && g_DefaultObjectValue)
+		result = aResultToken.ReturnPtr(g_DefaultObjectValue);
+
+	return result;
 }
 
 

@@ -47,8 +47,8 @@ AutoHotkey_H v2 started as a fork of [AutoHotkey_L v2](https://github.com/Lexiko
 - After 2.0.2
   - Added `GuiControl.Prototype.OnMessage(Msg, Callback [, AddRemove])`, and `Gui.Prototype.OnMessage(Msg, Callback [, AddRemove])`, the parameter of the callback has changed, `Callback(GuiObj, wParam, lParam, Msg)`, `A_EventInfo` is the message posted time.
   - Added `JSON.parse(text, keep_type := true, as_map := true)` optional parameters, `null` can be used as `unset` in array literal.
-  - Added `Object.Prototype.__Item[Prop]`, it's same as `Obj.%Prop%`
-  - Added `Object.Prototype.Get(Prop [, Default])`
+  - Added `Obj[Prop]`, it's same as `Obj.%Prop%`
+  - Added `Obj.Get(Prop [, Default])`
   - `JSON.parse` supports [JSON5](https://spec.json5.org/) format.
   - The keys of object literals support quoted strings, `v := {'key':val}`
 
