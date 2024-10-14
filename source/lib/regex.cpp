@@ -942,8 +942,8 @@ FResult RegExSearch::Replace(ExprTokenType *aReplacement, int *aOutCount, optl<i
 			{
 				if (second_iteration)
 				{
-					tmemcpy(dest, replacement, result_token.marker_length);
-					result_length += result_token.marker_length;
+					tmemcpy(dest, replacement, replacement_length);
+					result_length += replacement_length;
 					free(result_token.mem_to_free);
 					result_token.mem_to_free = nullptr;
 				}
