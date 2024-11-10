@@ -248,13 +248,13 @@ struct ScriptSnapshot
 		for (auto next = mModule->mImports; next != mImport; next = next->next)
 			if (next->mod != mod && *next->names == '*')
 				imp = imp->next = new ScriptImport(next->mod);
-		if (mHotkeyCount > Hotkey::sHotkeyCount || mHotstringCount > Hotstring::sHotstringCount)
+		if (mHotkeyCount < Hotkey::sHotkeyCount || mHotstringCount < Hotstring::sHotstringCount)
 			Hotkey::ManifestAllHotkeysHotstringsHooks();
 	}
 
 	void Restore()
 	{
-		if (mHotkeyCount > Hotkey::sHotkeyCount || mHotstringCount > Hotstring::sHotstringCount)
+		if (mHotkeyCount < Hotkey::sHotkeyCount || mHotstringCount < Hotstring::sHotstringCount)
 		{
 			for (auto &i = Hotkey::sHotkeyCount; i > mHotkeyCount;)
 				delete Hotkey::shk[--i];
