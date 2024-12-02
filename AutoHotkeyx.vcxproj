@@ -272,6 +272,7 @@
     <ClCompile Include="source\script_expression.cpp" />
     <ClCompile Include="source\script_gui.cpp" />
     <ClCompile Include="source\script_menu.cpp" />
+    <ClCompile Include="source\script_module.cpp" />
     <ClCompile Include="source\script_object.cpp" />
     <ClCompile Include="source\script_object_bif.cpp" />
     <ClCompile Include="source\script_registry.cpp" />
@@ -310,6 +311,7 @@
     <ClInclude Include="source\script.h" />
     <ClInclude Include="source\script_com.h" />
     <ClInclude Include="source\script_func_impl.h" />
+    <ClInclude Include="source\script_module.h" />
     <ClInclude Include="source\script_object.h" />
     <ClInclude Include="source\SimpleHeap.h" />
     <ClInclude Include="source\stdafx.h" />

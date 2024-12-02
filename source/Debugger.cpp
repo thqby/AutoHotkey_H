@@ -107,7 +107,8 @@ inline bool BreakpointLineIsSlippery(Line *aLine)
 Line *Debugger::FindFirstLineForBreakpoint(int file_index, UINT line_no)
 {
 	Line *found_line = nullptr;
-	for (Line *line = g_script.mFirstLine; line; line = line->mNextLine)
+	for (auto mod = g_script.mLastModule; mod; mod = mod->mPrev)
+	for (Line *line = mod->mFirstLine; line; line = line->mNextLine)
 	{
 		if (line->mFileIndex == file_index && line->mLineNumber >= line_no)
 		{
@@ -129,6 +130,30 @@ Line *Debugger::FindFirstLineForBreakpoint(int file_index, UINT line_no)
 		}
 	}
 	return found_line;
+}
+
+Breakpoint *Debugger::CreateBreakpoint()
+{
+	auto bp = new Breakpoint();
+	mLastBreakpoint->next = bp;
+	mLastBreakpoint = bp;
+	return bp;
+}
+
+void Debugger::DeleteBreakpoint(Breakpoint *aBp)
+{
+	// aBp != mFirstBreakpoint, because that's currently always &mBreakOnException.
+	for (Breakpoint *p = mFirstBreakpoint;; p = p->next)
+	{
+		if (p->next == aBp)
+		{
+			p->next = aBp->next;
+			if (mLastBreakpoint == aBp)
+				mLastBreakpoint = p;
+			break;
+		}
+	}
+	delete aBp;
 }
 
 // Set Line::mBreakpoint for all executable lines that share the line's number,
@@ -153,6 +178,9 @@ int Debugger::PreExecLine(Line *aLine)
 	// small amount of complexity in stack_get (which is only called by request of the debugger client):
 	//	mStack.mTop->line = aLine;
 	mCurrLine = aLine;
+
+	if (mProcessingCommands) // Reentry into ProcessCommands() isn't possible, so Break() would be ignored.
+		return DEBUGGER_E_OK; // Skip the rest; in particular, don't delete any temporary breakpoints.
 	
 	// Check for a breakpoint on the current line:
 	Breakpoint *bp = aLine->mBreakpoint;
@@ -164,7 +192,7 @@ int Debugger::PreExecLine(Line *aLine)
 			while ((prev = line->mPrevLine) && prev->mLineNumber == line->mLineNumber && prev->mFileIndex == line->mFileIndex)
 				line = prev;
 			SetBreakpointForLineGroup(line, nullptr);
-			delete bp;
+			DeleteBreakpoint(bp);
 		}
 		return Break();
 	}
@@ -175,7 +203,7 @@ int Debugger::PreExecLine(Line *aLine)
 		// Although IF/ELSE/LOOP skips its block-begin, standalone/function-body block-begin still gets here; we want to skip it,
 		// unless it's the block-end of a function, to allow breaking there after a "return" to inspect variables while still in scope.
 		&& !PreExecLineIsSlippery(aLine)
-		&& aLine->mLineNumber) // Some scripts (i.e. LowLevel/code.ahk) use mLineNumber==0 to indicate the Line has been generated and injected by the script.
+		&& aLine->mLineNumber) // Lines with no number should be skipped (e.g. lines inserted by Script::DefineClassInit).
 	{
 		return Break();
 	}
@@ -194,12 +222,27 @@ int Debugger::PreExecLine(Line *aLine)
 }
 
 
+void Debugger::LeaveFunction()
+{
+	// If the debugger is stepping out from a user-defined function, break at the line
+	// which called the function.  Otherwise, a step might appear to jump from one
+	// function to another called by the same line, or to the next line, or to some line
+	// further up the stack.  Into/Over count as stepping out only if the function we're
+	// leaving is the one in which the step command was issued.
+	if (mInternalState == DIS_StepInto
+		|| ((mInternalState == DIS_StepOut || mInternalState == DIS_StepOver)
+			&& mStack.Depth() < mContinuationDepth) // Always '<' and not '<=' (for StepOver) because we just returned from a function call.
+		&& mStack.mTop > mStack.mBottom) // More than one entry, otherwise mCurrLine has no meaning.
+		PreExecLine(mCurrLine);
+}
+
+
 bool Debugger::PreThrow(ExprTokenType *aException)
 {
-	if (!mBreakOnException)
+	if (mBreakOnException.state != BS_Enabled)
 		return false;
-	if (mBreakOnExceptionIsTemporary)
-		mBreakOnException = mBreakOnExceptionWasSet = false;
+	if (mBreakOnException.temporary)
+		mBreakOnException.state = BS_Disabled;
 	mThrownToken = aException;
 	// The spec doesn't provide a way to differentiate between handled and unhandled exceptions,
 	// nor when to use the "exception" and "error" statuses, so we'll use them for that:
@@ -270,11 +313,24 @@ int Debugger::ProcessCommands(LPCSTR aBreakReason)
 	// Such commands include:
 	//  - property_get when evaluation of an object property is required.
 	//  - property_set when an object with __delete is released.
-	if (mInternalState == DIS_Break)
+	// Note that both the executing command and pending command could be asynchronous.
+	// Although re-entry could be supported by preserving data already in the buffers,
+	// more complexity would be needed to ensure each command is given the chance to
+	// complete before another one is pushed onto the stack (otherwise, rapid commands
+	// could cause stack exhaustion).
+	if (mProcessingCommands)
 		return DEBUGGER_E_OK;
 	if (aBreakReason)
 		if (err = EnterBreakState(aBreakReason))
 			return err;
+	mProcessingCommands = true;
+	// Set a non-zero ExcptMode so that UnhandledException will be called for runtime
+	// errors, and use EXCPTMODE_DEBUGGER so that UnhandledException will immediately
+	// free the exception and return FAIL without doing any reporting.
+	// Any ExcptMode flags of the interrupted thread don't apply to code executed by the
+	// debugger, since it isn't executing within or being called by the current block.
+	auto excptmode = g->ExcptMode;
+	g->ExcptMode = EXCPTMODE_DEBUGGER;
 
 	// Disable notification of READ readiness and reset socket to synchronous mode.
 	u_long zero = 0;
@@ -373,6 +429,8 @@ int Debugger::ProcessCommands(LPCSTR aBreakReason)
 		}
 	}
 	ASSERT(mInternalState != DIS_Break);
+	mProcessingCommands = false;
+	g->ExcptMode = excptmode;
 	// Register for message-based notification of data arrival.  If a command
 	// is received asynchronously, control will be passed back to the debugger
 	// to process it.  This allows the debugger engine to respond even if the
@@ -706,15 +764,12 @@ DEBUGGER_COMMAND(Debugger::breakpoint_set)
 	{
 		if (!strcmp(type, "exception") && lineno == 0 && !filename)
 		{
-			mBreakOnException = state;
-			mBreakOnExceptionIsTemporary = temporary;
-			mBreakOnExceptionWasSet = true;
-			if (!mBreakOnExceptionID)
-				mBreakOnExceptionID = Breakpoint::AllocateID();
+			mBreakOnException.state = state;
+			mBreakOnException.temporary = temporary;
 			
 			return mResponseBuf.WriteF(
 				"<response command=\"breakpoint_set\" transaction_id=\"%e\" state=\"%s\" id=\"%i\"/>"
-				, aTransactionId, state ? "enabled" : "disabled", mBreakOnExceptionID);
+				, aTransactionId, state ? "enabled" : "disabled", mBreakOnException.id);
 		}
 		return DEBUGGER_E_BREAKPOINT_TYPE;
 	}
@@ -743,7 +798,8 @@ DEBUGGER_COMMAND(Debugger::breakpoint_set)
 		Breakpoint *bp = line->mBreakpoint;
 		if (!bp)
 		{
-			bp = new Breakpoint();
+			bp = CreateBreakpoint();
+			bp->line = line;
 			SetBreakpointForLineGroup(line, bp);
 		}
 		bp->state = state;
@@ -757,17 +813,14 @@ DEBUGGER_COMMAND(Debugger::breakpoint_set)
 	return DEBUGGER_E_BREAKPOINT_INVALID;
 }
 
-int Debugger::WriteBreakpointXml(Breakpoint *aBreakpoint, Line *aLine)
+int Debugger::WriteBreakpointXml(Breakpoint *aBreakpoint)
 {
+	if (aBreakpoint->type == BT_Exception)
+		return mResponseBuf.WriteF("<breakpoint id=\"%i\" type=\"exception\" state=\"%s\" exception=\"Any\"/>"
+			, aBreakpoint->id, aBreakpoint->state == BS_Enabled ? "enabled" : "disabled");
 	return mResponseBuf.WriteF("<breakpoint id=\"%i\" type=\"line\" state=\"%s\" filename=\"%r\" lineno=\"%u\"/>"
 		, aBreakpoint->id, aBreakpoint->state ? "enabled" : "disabled"
-		, Line::sSourceFile[aLine->mFileIndex], aLine->mLineNumber);
-}
-
-int Debugger::WriteExceptionBreakpointXml()
-{
-	return mResponseBuf.WriteF("<breakpoint id=\"%i\" type=\"exception\" state=\"%s\" exception=\"Any\"/>"
-		, mBreakOnExceptionID, mBreakOnException ? "enabled" : "disabled");
+		, Line::sSourceFile[aBreakpoint->line->mFileIndex], aBreakpoint->line->mLineNumber);
 }
 
 DEBUGGER_COMMAND(Debugger::breakpoint_get)
@@ -778,24 +831,16 @@ DEBUGGER_COMMAND(Debugger::breakpoint_get)
 
 	int breakpoint_id = atoi(ArgValue(aArgV, 0));
 
-	Line *line;
-	for (line = g_script.mFirstLine; line; line = line->mNextLine)
+	for (auto bp = mFirstBreakpoint; bp; bp = bp->next)
 	{
-		if (line->mBreakpoint && line->mBreakpoint->id == breakpoint_id)
+		if (bp->id == breakpoint_id)
 		{
 			mResponseBuf.WriteF("<response command=\"breakpoint_get\" transaction_id=\"%e\">", aTransactionId);
-			WriteBreakpointXml(line->mBreakpoint, line);
+			WriteBreakpointXml(bp);
 			mResponseBuf.Write("</response>");
 
 			return DEBUGGER_E_OK;
 		}
-	}
-
-	if (breakpoint_id == mBreakOnExceptionID && mBreakOnExceptionWasSet)
-	{
-		mResponseBuf.WriteF("<response command=\"breakpoint_get\" transaction_id=\"%e\">", aTransactionId);
-		WriteExceptionBreakpointXml();
-		return mResponseBuf.Write("</response>");
 	}
 
 	return DEBUGGER_E_BREAKPOINT_NOT_FOUND;
@@ -805,7 +850,7 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 {
 	char arg, *value;
 	
-	int breakpoint_id = 0; // Breakpoint IDs begin at 1.
+	int breakpoint_id = -1;
 	LineNumberType lineno = 0;
 	char state = -1;
 
@@ -816,6 +861,8 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 		switch (arg)
 		{
 		case 'd':
+			if (!cisdigit(*value))
+				return DEBUGGER_E_INVALID_OPTIONS;
 			breakpoint_id = atoi(value);
 			break;
 
@@ -842,25 +889,22 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 		}
 	}
 
-	if (!breakpoint_id)
-		return DEBUGGER_E_INVALID_OPTIONS;
-
-	Line *line;
-	for (line = g_script.mFirstLine; line; line = line->mNextLine)
+	for (auto bp = mFirstBreakpoint; bp; bp = bp->next)
 	{
-		Breakpoint *bp = line->mBreakpoint;
-
-		if (bp && bp->id == breakpoint_id)
+		if (bp->id == breakpoint_id)
 		{
-			if (lineno && line->mLineNumber != lineno)
+			if (lineno && !bp->line)
+				return DEBUGGER_E_INVALID_OPTIONS;
+
+			if (lineno && bp->line->mLineNumber != lineno)
 			{
 				// Move the breakpoint within its current file.
-				Line *new_line = FindFirstLineForBreakpoint(line->mFileIndex, lineno);
-				if (new_line != line)
+				Line *new_line = FindFirstLineForBreakpoint(bp->line->mFileIndex, lineno);
+				if (new_line != bp->line)
 				{
 					if (!new_line)
 						return DEBUGGER_E_BREAKPOINT_INVALID;
-					SetBreakpointForLineGroup(line, nullptr);
+					SetBreakpointForLineGroup(bp->line, nullptr);
 					SetBreakpointForLineGroup(new_line, bp);
 				}
 			}
@@ -872,12 +916,6 @@ DEBUGGER_COMMAND(Debugger::breakpoint_update)
 		}
 	}
 
-	if (breakpoint_id == mBreakOnExceptionID)
-	{
-		mBreakOnException = state;
-		return DEBUGGER_E_OK;
-	}
-
 	return DEBUGGER_E_BREAKPOINT_NOT_FOUND;
 }
 
@@ -887,24 +925,26 @@ DEBUGGER_COMMAND(Debugger::breakpoint_remove)
 	if (aArgCount != 1 || ArgChar(aArgV, 0) != 'd')
 		return DEBUGGER_E_INVALID_OPTIONS;
 
-	int breakpoint_id = atoi(ArgValue(aArgV, 0));
-
-	Line *line;
-	for (line = g_script.mFirstLine; line; line = line->mNextLine)
+	auto arg = ArgValue(aArgV, 0);
+	if (!cisdigit(*arg)) // Don't interpret empty/non-numeric values as ID 0.
+		return DEBUGGER_E_INVALID_OPTIONS;
+	int breakpoint_id = atoi(arg);
+	
+	if (breakpoint_id == mBreakOnException.id)
 	{
-		if (line->mBreakpoint && line->mBreakpoint->id == breakpoint_id)
-		{
-			delete line->mBreakpoint;
-			SetBreakpointForLineGroup(line, nullptr);
-			return DEBUGGER_E_OK;
-		}
+		mBreakOnException.state = BS_Disabled;
+		return DEBUGGER_E_OK;
 	}
 
-	if (breakpoint_id == mBreakOnExceptionID && mBreakOnExceptionWasSet)
+	// mFirstBreakpoint itself is currently always &mBreakOnException.
+	for (auto bp = mFirstBreakpoint->next; bp; bp = bp->next)
 	{
-		mBreakOnException = false;
-		mBreakOnExceptionWasSet = false;
-		return DEBUGGER_E_OK;
+		if (bp->id == breakpoint_id)
+		{
+			SetBreakpointForLineGroup(bp->line, nullptr);
+			DeleteBreakpoint(bp);
+			return DEBUGGER_E_OK;
+		}
 	}
 
 	return DEBUGGER_E_BREAKPOINT_NOT_FOUND;
@@ -917,22 +957,8 @@ DEBUGGER_COMMAND(Debugger::breakpoint_list)
 	
 	mResponseBuf.WriteF("<response command=\"breakpoint_list\" transaction_id=\"%e\">", aTransactionId);
 	
-	int last_id = -1;
-	Line *line;
-	for (line = g_script.mFirstLine; line; line = line->mNextLine)
-	{
-		if (line->mBreakpoint && last_id != line->mBreakpoint->id)
-		{
-			WriteBreakpointXml(line->mBreakpoint, line);
-			// A breakpoint could be on a group of lines that have the same number, but might
-			// not be consecutive lines (i.e. some lines in-between might have no breakpoint).
-			// So just track the last ID to avoid writing the same breakpoint multiple times.
-			last_id = line->mBreakpoint->id;
-		}
-	}
-
-	if (mBreakOnExceptionWasSet)
-		WriteExceptionBreakpointXml();
+	for (auto bp = mFirstBreakpoint->state ? mFirstBreakpoint : mFirstBreakpoint->next; bp; bp = bp->next)
+		WriteBreakpointXml(bp);
 
 	return mResponseBuf.Write("</response>");
 }
@@ -1127,50 +1153,47 @@ int Debugger::GetPropertyInfo(Var &aVar, PropertyInfo &aProp)
 	aProp.is_alias = aVar.mType == VAR_ALIAS;
 	aProp.is_static = aVar.IsStatic();
 	aProp.is_builtin = aVar.mType == VAR_VIRTUAL;
-	return GetPropertyValue(aVar, aProp);
+	aProp.kind = PropValue;
+	aProp.invokee = nullptr;
+	return GetPropertyValue(aVar, aProp.value);
 }
 
 int Debugger::GetPropertyInfo(VarBkp &aBkp, PropertyInfo &aProp)
 {
-	aProp.is_static = false;
-	if (aProp.is_alias = aBkp.mType == VAR_ALIAS)
-	{
-		aProp.is_builtin = aBkp.mAliasFor->mType == VAR_VIRTUAL;
-		return GetPropertyValue(*aBkp.mAliasFor, aProp);
-	}
-	aProp.is_builtin = false;
-	aBkp.ToToken(aProp.value);
-	return DEBUGGER_E_OK;
+	Var temp; // Never freed, as that would invalidate aBkp.
+	temp.Restore(aBkp);
+	return GetPropertyInfo(temp, aProp);
 }
 
-int Debugger::GetPropertyValue(Var &aVar, PropertySource &aProp)
+int Debugger::GetPropertyValue(Var &aVar, ResultToken &aValue)
 {
-	if (aVar.Type() == VAR_VIRTUAL)
-	{
-		aProp.value.Free();
-		aProp.value.InitResult(aProp.value.buf);
-		aProp.value.symbol = SYM_INTEGER; // Virtual vars, like BIFs, expect this default.
-		aVar.Get(aProp.value);
-		if (aProp.value.symbol == SYM_OBJECT)
-			aProp.value.object->AddRef(); // See comments in ExpandExpression and BIV_TrayMenu.
-		if (aProp.value.Exited())
-			return DEBUGGER_E_EVAL_FAIL;
-	}
+	aValue.Free();
+	aValue.InitResult(aValue.buf);
+	aVar.Get(aValue);
+	return aValue.Exited() ? DEBUGGER_E_EVAL_FAIL : DEBUGGER_E_OK;
+}
+
+int Debugger::GetPropertyValue(VarBkp &aBkp, ResultToken &aValue)
+{
+	Var temp; // Never freed, as that would invalidate aBkp.
+	temp.Restore(aBkp);
+	return GetPropertyValue(temp, aValue);
+}
+
+
+int Debugger::WritePropertyObjectXml(PropertyInfo &aProp)
+{
+	ASSERT(aProp.value.symbol == SYM_OBJECT || aProp.invokee);
+	if (!aProp.invokee)
+		aProp.invokee = aProp.value.object;
+	PropertyWriter pw(*this, aProp);
+	// Write out the object's properties.
+	Object *defs;
+	if (aProp.invokee->IsOfType(Object::sPrototype))
+		defs = static_cast<Object*>(aProp.invokee);
 	else
-	{
-		aProp.value.Free();
-		aProp.value.mem_to_free = nullptr; // Any value would be overwritten but this must be cleared manually.
-		aVar.ToToken(aProp.value);
-	}
-	return DEBUGGER_E_OK;
-}
-
-
-int Debugger::WritePropertyXml(PropertyInfo &aProp, IObject *aObject)
-{
-	PropertyWriter pw(*this, aProp, aObject);
-	// Ask the object to write out its properties:
-	aObject->DebugWriteProperty(&pw, aProp.page, aProp.pagesize, aProp.max_depth);
+		defs = aProp.invokee->Base();
+	defs->DebugWriteProperty(&pw, aProp.page, aProp.pagesize, aProp.max_depth);
 	aProp.fullname.Truncate(pw.mNameLength);
 	// For simplicity/code size, instead of requiring error handling in aObject,
 	// any failure during the above sets pw.mError, which causes it to ignore
@@ -1178,6 +1201,7 @@ int Debugger::WritePropertyXml(PropertyInfo &aProp, IObject *aObject)
 	// code (even if it's "OK"):
 	return pw.mError;
 }
+
 
 void Object::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPageSize, int aDepth)
 {
@@ -1189,45 +1213,46 @@ void Object::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPag
 
 	if (aDepth > 0)
 	{
+		auto props = new PropEnum(this, aDebugger->ThisToken());
+		Var vname, vval;
+
 		int page_start = aPageSize * aPage, page_end = aPageSize * (aPage + 1);
+		int i = 0;
 
 		if (mBase)
 		{
 			// Since this object has a "base", let it count as the first field.
 			if (page_start == 0) // i.e. this is the first page.
-			{
 				aDebugger->WriteBaseProperty(mBase);
-				// Now fall through and retrieve field[0] (unless aPageSize == 1).
-			}
-			// So 20..39 becomes 19..38 when there's a base object:
-			else --page_start;
-			--page_end;
+			i++; // Count it even if it wasn't within the current page.
 		}
-		int field_count = (int)mFields.Length();
-		int i = page_start, page_end_field = min(page_end, field_count);
+
+		// For each field NOT in the requested page...
+		for (; i < page_start && props->Next(nullptr, nullptr) == CONDITION_TRUE; ++i);
+
 		// For each field in the requested page...
-		for ( ; i < page_end_field; ++i)
+		for (; i < page_end; ++i)
 		{
-			Object::FieldType &field = mFields[i];
+			auto result = props->Next(&vname, &vval);
+			if (result == CONDITION_FALSE)
+				break;
 			ExprTokenType value;
-			if (field.symbol == SYM_DYNAMIC || field.symbol == SYM_TYPED_FIELD)
-			{
-				if (field.prop->MinParams > 0)
-					continue;
-				aDebugger->WriteDynamicProperty(field.name);
-			}
-			else
-			{
-				field.ToToken(value);
-				aDebugger->WriteProperty(field.name, value);
-			}
+			if (result == CONDITION_TRUE)
+				vval.ToTokenSkipAddRef(value);
+			else // For PropEnum, this means a property was enumerated but its getter failed/exited.
+				value.SetValue(_T("<error>"), 7);
+			aDebugger->WriteProperty(vname.Contents(), value);
 		}
+
+		vname.Free();
+		vval.Free();
+
 		if (enum_method && i < page_end)
 		{
 			if (dynamic_cast<NativeFunc *>(enum_method))
 			{
 				// Built-in enumerators are always safe to call automatically.
-				aDebugger->WriteEnumItems(this, i - field_count, page_end - field_count);
+				aDebugger->WriteEnumItems(this, page_start - i, page_end - i);
 			}
 			else
 			{
@@ -1237,16 +1262,20 @@ void Object::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPag
 				aDebugger->EndProperty(cookie);
 			}
 		}
+
+		props->Release();
 	}
 
 	aDebugger->EndProperty(cookie);
 }
 
-int Debugger::WriteEnumItems(PropertyInfo &aProp, IObject *aEnumerable)
+
+int Debugger::WriteEnumItems(PropertyInfo &aProp)
 {
 	aProp.facet = "";
-	PropertyWriter pw(*this, aProp, nullptr);
-	pw.WriteEnumItems(aEnumerable, aProp.page, aProp.page + aProp.pagesize);
+	PropertyWriter pw(*this, aProp);
+	int start = aProp.page * aProp.pagesize;
+	pw.WriteEnumItems(aProp.invokee, start, start + aProp.pagesize);
 	return pw.mError;
 }
 
@@ -1256,7 +1285,20 @@ void Debugger::PropertyWriter::WriteEnumItems(IObject *aEnumerable, int aStart, 
 	auto result = GetEnumerator(enumerator, ExprTokenType(aEnumerable), 2, false);
 	if (result != OK)
 	{
-		mError = DEBUGGER_E_EVAL_FAIL;
+		// Just return no items, since setting an error would prevent any other properties
+		// from being returned.  For context_get in particular, one bad __Enum could break
+		// the client's ability to list variables.
+		//mError = DEBUGGER_E_EVAL_FAIL;
+		return;
+	}
+	if (enumerator == aEnumerable) // Only valid when result == OK.
+	{
+		// No __Enum method, so Object::DebugWriteProperty wouldn't have returned <enum>.
+		// CallEnumerator could succeed for `f.<enum>` if `f` is an enumerator function,
+		// but proceeding would generally put the enumerator in a state where subsequent
+		// calls by the debugger or script return nothing.  Prohibiting this also ensures
+		// we don't return a <property> for any arbitrary non-enumerable value.
+		enumerator->Release();
 		return;
 	}
 
@@ -1264,8 +1306,8 @@ void Debugger::PropertyWriter::WriteEnumItems(IObject *aEnumerable, int aStart, 
 	bool write_main_property = !mDepth;
 	if (write_main_property)
 	{
-		if (!mObject)
-			mObject = enumerator;
+		if (mProp.kind == PropEnum)
+			mProp.invokee = enumerator;
 		BeginProperty(nullptr, "object", 1, cookie);
 	}
 	
@@ -1308,16 +1350,16 @@ int Debugger::WritePropertyXml(PropertyInfo &aProp)
 		strcat(facetbuf, " Static");
 	aProp.facet = facetbuf + (*facetbuf != '\0'); // Skip the leading space, if non-empty.
 
+	ASSERT(aProp.kind != PropEnum);
+	if (aProp.value.symbol == SYM_OBJECT || aProp.invokee) // An object or `primitive.<base>`
+		return WritePropertyObjectXml(aProp);
+
 	char *type;
 	switch (aProp.value.symbol)
 	{
 	case SYM_STRING: type = "string"; break;
 	case SYM_INTEGER: type = "integer"; break;
 	case SYM_FLOAT: type = "float"; break;
-
-	case SYM_OBJECT:
-		// Recursively dump object.
-		return WritePropertyXml(aProp, aProp.value.object);
 
 	default:
 		// Catch SYM_VAR or any invalid symbol in debug mode.  In release mode, treat as undefined
@@ -1479,298 +1521,409 @@ int Debugger::ParsePropertyName(LPCSTR aFullName, int aDepth, int aVarScope, Exp
 	, PropertySource &aResult)
 {
 	CStringTCharFromUTF8 name_buf(aFullName);
-	LPTSTR name = name_buf.GetBuffer();
-	size_t name_length;
-	TCHAR c, *name_end, *src, *dst;
-	Var *var = NULL;
-	VarBkp *varbkp = NULL;
-	SymbolType key_type;
-	IObject *iobj = NULL;
+	return ParsePropertyName(name_buf.GetBuffer(), aDepth, aVarScope, aSetValue, aResult);
+}
 
+int Debugger::ParsePropertyName(LPWSTR aNamePtr, int aDepth, int aVarScope, ExprTokenType *aSetValue
+	, PropertySource &aResult)
+{
+	TCHAR c, *cp = aNamePtr, *cp_end;
+	
+	int err = DEBUGGER_E_OK;
+	ResultToken **temp = nullptr;
+	int temp_size = 0, temp_count = 0;
+	ExprTokenType **param_buf = nullptr;
+	int param_size = 0;
+	
 	aResult.kind = PropNone;
 
-	name_end = StrChrAny(name, _T(".["));
-	if (name_end)
+	struct Invocation
 	{
-		c = *name_end;
-		*name_end = '\0'; // Temporarily terminate.
-	}
-	name_length = _tcslen(name);
+		Invocation *outer = nullptr;
+		ResultToken *leftval = nullptr;
+		IObject *invokee = nullptr;
+		LPWSTR name = nullptr;
+		int flags = 0, param_offset = 0;
+		WCHAR end_char = '\0';
+	} root_inv, *inv = &root_inv;
 
-	// Validate name for more accurate error-reporting.
-	if (name_length > MAX_VAR_NAME_LENGTH || !Var::ValidateName(name, DISPLAY_NO_ERROR))
-	{
-		if (!_tcsicmp(name, _T("<exception>")))
-		{
-			if (!mThrownToken)
-				return DEBUGGER_E_UNKNOWN_PROPERTY;
-			if (!name_end)
-			{
-				// `property_get -n <exception>` is our non-standard way to retrieve the thrown value during an exception break.
-				// `property_set -n <exception> --` is our non-standard way to "clear the exception" (suppress the error dialog).
-				if (aSetValue && TokenIsEmptyString(*aSetValue))
-				{
-					mThrownToken = nullptr;
-					return DEBUGGER_E_OK;
-				}
-				aResult.kind = PropValue;
-				aResult.value.CopyValueFrom(*mThrownToken);
-				if (aResult.value.symbol == SYM_OBJECT)
-					aResult.value.object->AddRef();
-				return DEBUGGER_E_OK;
-			}
-			iobj = TokenToObject(*mThrownToken);
-		}
-		else
-			return DEBUGGER_E_INVALID_OPTIONS;
-	}
-	else
-	{
-		VarList *vars = nullptr;
-		bool search_local = (aVarScope & VAR_LOCAL) && g->CurrentFunc;
-		if (search_local && aDepth > 0)
-		{
-			VarList *static_vars = nullptr;
-			VarBkp *bkps = nullptr, *bkps_end = nullptr;
-			mStack.GetLocalVars(aDepth, vars, static_vars, bkps, bkps_end);
-			for ( ; bkps < bkps_end; ++bkps)
-				if (!_tcsicmp(bkps->mVar->mName, name))
-				{
-					varbkp = bkps;
-					break;
-				}
-			if (!varbkp && static_vars)
-				var = static_vars->Find(name);
-			// If a var wasn't found above, make sure not to return a local var of the wrong function or depth.
-			if (!var)
-				aVarScope = FINDVAR_GLOBAL;
-		}
+	// Property names that aren't valid identifiers can be set via .%% or DefineProp.
+	// Currently those aren't escaped in any way, so the following permits most characters,
+	// and even the empty string.  The <base> and <enum> sections rely on this permitting <>.
+	constexpr auto TERMINATORS = L".,[]()";
 
-		if (!var && !varbkp)
-		{
-			int insert_pos;
-			if (vars) // Use this first to support aDepth.
-				var = vars->Find(name, &insert_pos);
-			if (!var) // Use FindVar to support built-ins and globals.
-				var = g_script.FindVar(name, name_length, aVarScope, &vars, &insert_pos);
-			if (!var && aSetValue) // Avoid creating empty variables.
-				var = g_script.AddVar(name, name_length, vars, insert_pos
-					, search_local ? VAR_LOCAL : VAR_GLOBAL);
-		}
-
-		if (!var && !varbkp)
-			return DEBUGGER_E_UNKNOWN_PROPERTY;
-
-		if (!name_end)
-		{
-			// Just a variable name.
-			if (var)
-				aResult.var = var, aResult.kind = PropVar;
-			else
-				aResult.bkp = varbkp, aResult.kind = PropVarBkp;
-			return DEBUGGER_E_OK;
-		}
-		if (varbkp && varbkp->mType == VAR_ALIAS)
-			var = varbkp->mAliasFor;
-		if (var)
-		{
-			auto error = GetPropertyValue(*var, aResult); // Supports built-in vars.
-			if (error)
-				return error;
-			if (aResult.value.symbol == SYM_OBJECT)
-				iobj = aResult.value.object; // Take ownership of this reference, which is overwitten below.
-			else
-				aResult.value.Free(); // Free mem_to_free if non-null.
-			// aResult.value must be reinitialized because Invoke expects it to have a default of "".
-			// For x.<base> and x.<enum>, it's expected to have a value that doesn't need Free() called.
-			aResult.value.InitResult(aResult.value.buf);
-		}
-		else
-		{
-			if (varbkp->mAttrib & VAR_ATTRIB_IS_OBJECT) 
-			{
-				iobj = varbkp->mObject;
-				iobj->AddRef();
-			}
-		}
-	}
-	
-	if (!iobj)
-		return DEBUGGER_E_UNKNOWN_PROPERTY;
-
-	int return_value = DEBUGGER_E_UNKNOWN_PROPERTY;
-	Object *obj, *this_override = nullptr;
-
-	// aFullName contains a '.' or '['.  Although it looks like an expression, the IDE should
-	// only pass a property name which we gave it in response to a previous command, so we
-	// only need to support the subset of expression syntax used by WriteObjectPropertyXml().
 	for (;;)
 	{
-		*name_end = c; // Undo termination (if it was terminated at this position).
-		name = name_end + 1;
-		const bool brackets = c == '[';
-		if (brackets)
+		if (temp_count == temp_size)
 		{
-			if (*name == '"')
+			auto new_size = temp_size ? temp_size * 2 : 64;
+			auto new_temp = (ResultToken**)realloc(temp, new_size * sizeof(ResultToken*));
+			if (!new_temp)
 			{
-				// Quoted string which may contain any character.
-				// Replace "" with " in-place and find end of string:
-				for (dst = src = ++name; c = *src; ++src)
-				{
-					if (c == '"')
-					{
-						// Quote mark; but is it a literal quote mark?
-						if (*++src != '"') // This currently doesn't match up with expression syntax, but is left this way for simplicity.
-							// Nope.
-							break;
-						//else above skipped the second quote mark, so fall through:
-					}
-					*dst++ = c;
-				}
-				if (*src != ']')
-				{
-					return_value = DEBUGGER_E_INVALID_OPTIONS;
-					break;
-				}
-				*dst = '\0'; // Only after the check above, since src might be == dst.
-				name_end = src + 1; // Set it up for the next iteration.
-				key_type = SYM_STRING;
+				err = DEBUGGER_E_INTERNAL_ERROR;
+				break;
 			}
-			else if (!_tcsnicmp(name, _T("Object("), 7))
-			{
-				// Object(n) where n is the address of a key object, as a literal signed integer.
-				name += 7;
-				name_end = _tcschr(name, ')');
-				if (!name_end || name_end[1] != ']')
-				{
-					return_value = DEBUGGER_E_INVALID_OPTIONS;
-					break;
-				}
-				*name_end = '\0';
-				name_end += 2; // Set it up for the next iteration.
-				key_type = SYM_OBJECT;
-			}
-			else
-			{
-				// The only other valid form is a literal signed integer.
-				name_end = _tcschr(name, ']');
-				if (!name_end)
-				{
-					return_value = DEBUGGER_E_INVALID_OPTIONS;
-					break;
-				}
-				*name_end = '\0'; // Although not actually necessary for _ttoi(), seems best for maintainability.
-				++name_end; // Set it up for the next iteration.
-				key_type = SYM_INTEGER;
-			}
-			c = *name_end; // Set for the next iteration.
+			temp = new_temp;
+			temp_size = new_size;
 		}
-		else if (c == '.')
+		auto &lastval = *(temp[temp_count++] = new (_alloca(sizeof(ResultToken))) ResultToken());
+		lastval.InitResult(aResult.value.buf);
+		continue_with_same_lastval:
+
+		c = *cp;
+		if (!c) // Checked after continue_with_same_lastval to avoid returning "" in some cases, such as `1,`
 		{
-			// For simplicity, let this be any string terminated by '.' or '['.
-			// Actual expressions require it to contain only alphanumeric chars and/or '_'.
-			name_end = StrChrAny(name, _T(".[")); // This also sets it up for the next iteration.
-			if (name_end)
-			{
-				c = *name_end; // Save this for the next iteration.
-				*name_end = '\0';
-			}
-			else
-				c = 0; // Indicate there won't be a next iteration.
-		}
-		else
-		{
-			return_value = DEBUGGER_E_INVALID_OPTIONS;
+			err = DEBUGGER_E_INVALID_OPTIONS;
 			break;
 		}
+		if (!inv->leftval)
+		{
+			Var *var = nullptr;
+			VarBkp *varbkp = nullptr;
 
-		// IDE should request .<base> only if it was returned by property_get or context_get,
-		// so this always means the object's base.  By contrast, .base might invoke some other
-		// property (if overridden) and ["base"] should invoke __item.
-		if (!_tcsicmp(name - 1, _T(".<base>")) && (obj = dynamic_cast<Object *>(iobj)))
-		{
-			if (!obj->mBase)
-				break;
-			iobj = obj->mBase;
-			iobj->AddRef(); // Keep next object alive.
-			if (this_override) // Something like this_override.<base>.<base>.
-				obj->Release(); // Release previous base object.
+			if (!_tcsnicmp(cp, _T("<exception>"), 11))
+			{
+				if (!mThrownToken)
+				{
+					err = DEBUGGER_E_UNKNOWN_PROPERTY;
+					break;
+				}
+				cp += 11;
+				if (!*cp)
+				{
+					// `property_get -n <exception>` is our non-standard way to retrieve the thrown value during an exception break.
+					// `property_set -n <exception> --` is our non-standard way to "clear the exception" (suppress the error dialog).
+					if (aSetValue)
+					{
+						if (!TokenIsEmptyString(*aSetValue))
+						{
+							err = DEBUGGER_E_INVALID_OPTIONS;
+							break;
+						}
+						mThrownToken = nullptr;
+						break;
+					}
+				}
+				lastval.CopyValueFrom(*mThrownToken);
+			}
+			else if (cp_end = ParsePropertyKeyLiteral(cp, lastval))
+			{
+				cp = cp_end;
+			}
+			else if (IS_IDENTIFIER_CHAR(*cp))
+			{
+				auto name = cp;
+				cp = find_identifier_end(cp + 1);
+				auto name_length = cp - name;
+				c = *cp;
+				*cp = '\0'; // Temporarily terminate.
+
+				VarList *vars = nullptr;
+				bool search_local = (aVarScope & VAR_LOCAL) && g->CurrentFunc;
+				if (search_local && aDepth > 0)
+				{
+					VarList *static_vars = nullptr;
+					VarBkp *bkps = nullptr, *bkps_end = nullptr;
+					mStack.GetLocalVars(aDepth, vars, static_vars, bkps, bkps_end);
+					for (; bkps < bkps_end; ++bkps)
+						if (!_tcsicmp(bkps->mVar->mName, name))
+						{
+							varbkp = bkps;
+							break;
+						}
+					if (!varbkp && static_vars)
+						var = static_vars->Find(name);
+					// If a var wasn't found above, make sure not to return a local var of the wrong function or depth.
+					if (!var)
+						aVarScope = FINDVAR_GLOBAL;
+				}
+
+				if (!var && !varbkp)
+				{
+					int insert_pos;
+					if (vars) // Use this first to support aDepth.
+						var = vars->Find(name, &insert_pos);
+					if (!var) // Use FindVar to support built-ins and globals.
+						var = g_script.FindVar(name, name_length, aVarScope, &vars, &insert_pos);
+					if (!var && aSetValue) // Avoid creating empty variables.
+						var = g_script.AddVar(name, name_length, vars, insert_pos
+							, search_local ? VAR_LOCAL : VAR_GLOBAL);
+				}
+
+				*cp = c; // Undo temporary termination.
+
+				if (!var && !varbkp)
+				{
+					err = DEBUGGER_E_UNKNOWN_PROPERTY;
+					break;
+				}
+
+				if (!c)
+				{
+					// Just a variable name.
+					if (var)
+						aResult.var = var, aResult.kind = PropVar;
+					else
+						aResult.bkp = varbkp, aResult.kind = PropVarBkp;
+					break;
+				}
+				if (varbkp && varbkp->mType == VAR_ALIAS)
+					var = varbkp->mAliasFor;
+				if (var)
+					err = GetPropertyValue(*var, lastval);
+				else
+					err = GetPropertyValue(*varbkp, lastval);
+			}
+			else if (inv->outer && (c == ',' || c == inv->end_char))
+			{
+				// Missing parameter or empty parameter list.
+				lastval.symbol = SYM_MISSING;
+			}
 			else
-				this_override = obj;
-			if (c) continue; // Search the base object's fields.
-			// For property_set, this won't allow the base to be set (success="0").
-			// That seems okay since it could only ever be set to NULL anyway.
-			aResult.kind = PropValue;
-			aResult.value.SetValue(iobj);
-			aResult.this_object = this_override;
-			return DEBUGGER_E_OK;
+				break; // Syntax error; err will be set due to *cp != 0.
+
+			if (lastval.symbol == SYM_OBJECT && !var) // AddRef() was called only if var != nullptr.
+				lastval.object->AddRef();
+
+			c = *cp;
+			if (!c)
+				break; // lastval is the final result, in temp[temp_count-1].
+			if (lastval.symbol == SYM_MISSING && !(c == ',' || c == inv->end_char))
+			{
+				err = DEBUGGER_E_UNKNOWN_PROPERTY;
+				break;
+			}
+			inv->leftval = &lastval;
+			continue; // inv->leftval is a parameter or left-hand side of an invocation.
 		}
-		else if (!_tcsicmp(name - 1, _T(".<enum>")))
+		// Now inv->leftval has been set up with a value, and lastval is available to place a result into.
+
+		if (!inv->invokee) // Initialize for a potential invocation.
+			if (inv->leftval->symbol == SYM_OBJECT)
+			{
+				inv->invokee = inv->leftval->object;
+				inv->flags = 0;
+			}
+			else
+			{
+				inv->invokee = Object::ValueBase(*inv->leftval);
+				inv->flags = IF_SUBSTITUTE_THIS;
+			}
+		ASSERT(inv->invokee || inv->leftval->symbol == SYM_MISSING && (c == ',' || c == inv->end_char));
+
+		for (c = *cp; c == '.'; cp = cp_end)
 		{
-			if (c) continue;
-			if (this_override)
-				this_override->Release();
-			aResult.kind = PropEnum;
-			aResult.value.SetValue(iobj);
-			return DEBUGGER_E_OK;
+			for (cp_end = ++cp; !_tcschr(TERMINATORS, c = *cp_end); ++cp_end);
+			*cp_end = '\0';
+
+			if (!_tcsicmp(cp, _T("<base>"))) // Debugger pseudo-property.
+			{
+				// x.<base> returns the base of x, but x.<base>.y invokes the version of y defined
+				// by x.<base> but with `this` set to x (for property getters or methods).
+				if (inv->flags != IF_SUBSTITUTE_THIS) // i.e. it's not already *implicitly* the value's base.
+					inv->invokee = inv->invokee->Base();
+				if (!inv->invokee) // Any.Prototype.<base> (potentially with a suffix)
+				{
+					err = DEBUGGER_E_UNKNOWN_PROPERTY;
+					goto break_outer;
+				}
+				inv->flags = IF_SUPER;
+			}
+			else if (!_tcsicmp(cp, _T("<enum>"))) // Debugger pseudo-property.
+			{
+				// x.<enum>[1] invokes x[1], but caller knows to enumerate items when aResult.kind == PropEnum.
+				if (!c)
+					aResult.kind = PropEnum;
+			}
+			else
+			{
+				ASSERT(!inv->name);
+				inv->name = cp;
+				cp = cp_end;
+				break; // Break inner loop to invoke this property below.
+			}
+		} // for()
+		// Due to potential null-termination of a property name above, must now use c instead of *cp.
+		
+		if (c == '[' && (cp[1] != ']' || !inv->name) || c == '(')
+		{
+			if (c == '(')
+				inv->flags |= IT_CALL;
+			auto new_inv = new (_alloca(sizeof(Invocation))) Invocation();
+			new_inv->end_char = c == '(' ? ')' : ']';
+			new_inv->param_offset = inv->param_offset;
+			new_inv->outer = inv;
+			inv = new_inv;
+			cp++;
+			goto continue_with_same_lastval;
+		}
+
+		ExprTokenType **param = nullptr;
+		int param_count = 0;
+
+		if (!inv->name)
+		{
+			// name is null and '[' and '(' are not present, therefore inv->leftval is not being invoked.
+			if (!c)
+			{
+				--temp_count;
+				ASSERT(temp[temp_count-1] == inv->leftval);
+				break; // inv->leftval is the final result (lastval wasn't needed).
+			}
+			// leftval should be a parameter.
+			
+			if (inv->param_offset + 1 >= param_size) // +1 for aSetValue
+			{
+				auto new_size = param_size ? param_size * 2 : 64;
+				auto new_buf = (ExprTokenType**)realloc(param_buf, new_size * sizeof(ExprTokenType*));
+				if (!new_buf)
+				{
+					err = DEBUGGER_E_INTERNAL_ERROR;
+					break;
+				}
+				param_buf = new_buf;
+				param_size = new_size;
+			}
+			param_buf[inv->param_offset++] = inv->leftval;
+
+			if (c == ',')
+			{
+				cp++;
+				inv->leftval = nullptr;
+				inv->invokee = nullptr;
+				inv->flags = 0;
+				goto continue_with_same_lastval;
+			}
+
+			if (inv->end_char != c)
+				break; // Syntax error.
+			
+			param = param_buf + inv->outer->param_offset;
+			param_count = inv->param_offset - inv->outer->param_offset;
+			while (param_count && param[param_count-1]->symbol == SYM_MISSING)
+				--param_count;
+			inv = inv->outer;
+			cp_end = ++cp; // Set things up to continue parsing after the end char.
+			c = *cp;
+		}
+		
+		// Prepare parameters for invocation.
+		ExprTokenType *value_to_set = !c ? aSetValue : NULL;
+		if (value_to_set)
+		{
+			if ((inv->flags & IT_BITMASK) == IT_CALL)
+			{
+				err = DEBUGGER_E_INVALID_OPTIONS;
+				break;
+			}
+			if (param)
+				param[param_count] = aSetValue;
+			else
+				param = &aSetValue;
+			param_count++;
+			inv->flags |= IT_SET;
 		}
 
 		// Attempt to invoke property.
-		ExprTokenType *set_this = !c ? aSetValue : NULL;
-		ExprTokenType t_this(this_override ? this_override : iobj), t_key, *param[2];
-		int param_count = 0;
-		if (brackets)
-		{
-			t_key.symbol = key_type;
-			if (key_type == SYM_STRING)
-				t_key.marker = name, t_key.marker_length = -1;
-			else // SYM_INTEGER or SYM_OBJECT
-				t_key.value_int64 = istrtoi64(name, nullptr);
-			param[param_count++] = &t_key;
-			name = nullptr;
-		}
-		if (set_this)
-			param[param_count++] = set_this;
-		int flags = (set_this ? IT_SET : IT_GET);
-		auto result = iobj->Invoke(aResult.value, flags, name, t_this, param, param_count);
-		if (g->ThrownToken)
-			g_script.FreeExceptionToken(g->ThrownToken);
+		auto result = inv->invokee->Invoke(lastval, inv->flags, inv->name, *inv->leftval, param, param_count);
 
-		if (this_override)
+		if (lastval.symbol == SYM_STRING && !lastval.mem_to_free)
 		{
-			// This is a property other than .<base>, so this_override does not apply
-			// to the result of this property, but may "own" the value in result_token.
-			iobj->Release();
-			iobj = this_override;
-			this_override = nullptr;
+			// Make a copy of the string since it could otherwise be deleted as a side-effect
+			// of a subsequent Invoke or Release call, or be overwritten if in prop.buf.
+			if (!lastval.Malloc(lastval.marker, lastval.marker_length))
+				result = FAIL;
 		}
-		
-		if (result == INVOKE_NOT_HANDLED)
-			break;
-		if (!result)
+
+		if (result != OK) // FAIL, INVOKE_NOT_HANDLED or EARLY_EXIT
 		{
-			return_value = DEBUGGER_E_EVAL_FAIL;
+			err = result == INVOKE_NOT_HANDLED ? DEBUGGER_E_UNKNOWN_PROPERTY : DEBUGGER_E_EVAL_FAIL;
 			break;
 		}
+		inv->invokee = nullptr;
 		if (!c)
-		{
-			if (!set_this)
-				aResult.kind = PropValue;
-			return_value = DEBUGGER_E_OK;
 			break;
-		}
-		if (aResult.value.symbol != SYM_OBJECT)
-			// No usable target object for the next iteration, therefore the property mustn't exist.
-			break;
-		iobj->Release();
-		iobj = aResult.value.object;
-		//aResult.value.Free(); // Must not due to the line above.
-		aResult.value.InitResult(aResult.value.buf);
+		inv->leftval = &lastval;
+		inv->name = nullptr;
+		inv->flags = 0;
+		ASSERT(cp == cp_end && (*cp == c || !*cp));
+		*cp = c; // Potentially undo temporary termination.
 	}
-	if (this_override)
-		this_override->Release();
-	iobj->Release();
-	return return_value;
+	break_outer:
+	
+	if (!err && (*cp || inv->outer || !temp_count))
+		err = DEBUGGER_E_INVALID_OPTIONS;
+
+	if (!err && !aSetValue && (!aResult.kind || aResult.kind == PropEnum))
+	{
+		// temp[--temp_count] is used in preference to inv->leftval, which should have the same value,
+		// because we also want to "remove" it from the array so that it won't be deleted below.
+		auto &ret = *temp[--temp_count];
+		if (!aResult.kind)
+			aResult.kind = PropValue;
+		aResult.invokee = inv->invokee;
+		aResult.value.CopyValueFrom(ret);
+		aResult.value.mem_to_free = ret.mem_to_free;
+	}
+	
+	while (temp_count)
+		temp[--temp_count]->Free();
+	free(temp);
+	free(param_buf);
+	return err;
+}
+
+LPWSTR Debugger::ParsePropertyKeyLiteral(LPWSTR src, ExprTokenType &t_key)
+{
+	if (*src == '"')
+	{
+		// Quoted string which may contain any character.
+		t_key.symbol = SYM_STRING;
+		t_key.marker = ++src;
+		// Replace "" with " in-place and find end of string:
+		WCHAR *dst;
+		for (dst = src; WCHAR c = *src; ++src)
+		{
+			if (c == '"')
+			{
+				// Quote mark; but is it a literal quote mark?
+				if (*++src != '"') // This currently doesn't match up with expression syntax, but is left this way for simplicity.
+					// Nope.
+					break;
+				//else above skipped the second quote mark, so fall through:
+			}
+			*dst++ = c;
+		}
+		*dst = '\0';
+		t_key.marker_length = dst - t_key.marker;
+		return src;
+	}
+	else if (!_tcsnicmp(src, _T("Object("), 7) && cisdigit(src[7]))
+	{
+		// Object(n) where n is the address of a key object, as a literal signed integer.
+		t_key.value_int64 = istrtoi64(src + 7, &src);
+		if (*src != ')')
+			return nullptr;
+		t_key.symbol = SYM_OBJECT;
+		return src + 1;
+	}
+	else
+	{
+		LPTSTR iend, fend;
+		auto ival = istrtoi64(src, &iend);
+		auto fval = _tcstod(src, &fend);
+		if (fend > iend)
+		{
+			t_key.SetValue(fval);
+			return fend;
+		}
+		else if (iend > src)
+		{
+			t_key.SetValue(ival);
+			return iend;
+		}
+	}
+	return nullptr;
 }
 
 
@@ -1823,7 +1976,7 @@ int Debugger::property_get_or_value(char **aArgV, int aArgCount, char *aTransact
 	// It seems best to allow context id zero to retrieve either a local or global,
 	// rather than requiring the IDE to check each context when looking up a variable.
 	//case PC_Local:	always_use = FINDVAR_LOCAL; break;
-	case PC_Local:	always_use = FINDVAR_DEFAULT; break;
+	case PC_Local:	always_use = FINDVAR_FOR_READ; break;
 	case PC_Global:	always_use = FINDVAR_GLOBAL; break;
 	default:
 		return DEBUGGER_E_INVALID_CONTEXT;
@@ -1834,23 +1987,14 @@ int Debugger::property_get_or_value(char **aArgV, int aArgCount, char *aTransact
 		// Var not found/invalid name.
 		if (!aIsPropertyGet)
 			return err;
-
-		// NOTEPAD++ DBGP PLUGIN:
-		// The DBGp plugin for Notepad++ assumes property_get will always succeed.
-		// Property retrieval on mouse hover does not choose words intelligently,
-		// so it will attempt to retrieve properties like ";" or " r".
-		// If we respond with an <error/> instead of a <property/>, Notepad++ will
-		// show an error message and then become unstable. Even after the editor
-		// window is closed, notepad++.exe must be terminated forcefully.
-		//
-		// As a work-around (until this is resolved by the plugin's author),
-		// we return a property with an empty value and the 'undefined' type.
-		
-		return mResponseBuf.WriteF(
-			"<response command=\"property_get\" transaction_id=\"%e\">"
-				"<property name=\"%e\" fullname=\"%e\" type=\"undefined\" facet=\"\" size=\"0\" children=\"0\"/>"
-			"</response>"
-			, aTransactionId, name, name);
+		// Return a value of type "undefined".  This was originally done to work around
+		// an issue with the DBGp plugin for Notepad++, but that was last updated in 2012
+		// and doesn't support Notepad++ 64-bit.  Now it's done for compatibility with
+		// AutoHotkey-specific clients that may have come to rely on it:
+		prop.kind = PropValue;
+		if (prop.value.symbol == SYM_OBJECT)
+			prop.value.object->Release();
+		prop.value.symbol = SYM_MISSING;
 	}
 	//else var and field were set by the called function.
 
@@ -1875,7 +2019,7 @@ int Debugger::property_get_or_value(char **aArgV, int aArgCount, char *aTransact
 			// between UTF-8 and LPTSTR):
 			prop.name = name;
 			if (prop.kind == PropEnum)
-				err = WriteEnumItems(prop, prop.value.object);
+				err = WriteEnumItems(prop);
 			else
 				err = WritePropertyXml(prop);
 		}
@@ -2166,11 +2310,16 @@ DEBUGGER_COMMAND(Debugger::redirect_stderr)
 int Debugger::WriteStreamPacket(LPCTSTR aText, LPCSTR aType)
 {
 	ASSERT(!mResponseBuf.mFailed);
+	// Although it is contrary to the DBGP spec, allowing stream packets to be sent while the debugger
+	// is in a break state (but executing due to a property getter invoked by property_get or context_get)
+	// is useful for debugging and therefore allowed.  We just have to be sure to preserve any partial
+	// response already present in the buffer:
+	size_t offset = mResponseBuf.mDataUsed;
 	mResponseBuf.WriteF("<stream type=\"%s\">", aType);
 	CStringUTF8FromTChar packet(aText);
 	mResponseBuf.WriteEncodeBase64(packet, packet.GetLength() + 1); // Includes the null-terminator.
 	mResponseBuf.Write("</stream>");
-	return SendResponse();
+	return SendResponse(offset);
 }
 
 bool Debugger::OutputStdErr(LPCTSTR aText)
@@ -2274,14 +2423,22 @@ int Debugger::ReceiveCommand(int *aCommandLength)
 //
 // Sends a response to a command, using mResponseBuf.mData as the message body.
 //
-int Debugger::SendResponse()
+int Debugger::SendResponse(size_t aStartOffset)
 {
 	ASSERT(!mResponseBuf.mFailed);
+	ASSERT(aStartOffset < mResponseBuf.mDataUsed);
+	ASSERT(mResponseBuf.mDataUsed <= mResponseBuf.mDataSize);
 
 	char response_header[DEBUGGER_RESPONSE_OVERHEAD];
+
+	size_t data_length = mResponseBuf.mDataUsed - aStartOffset;
+	
+	// Messages sent by the debugger engine must always be NULL terminated.
+	// ExpandIfNecessary() reserved 1 byte for this (excluded from mDataSize):
+	mResponseBuf.mData[mResponseBuf.mDataUsed] = '\0';
 	
 	// Each message is prepended with a stringified integer representing the length of the XML data packet.
-	Exp32or64(_itoa,_i64toa)(mResponseBuf.mDataUsed + DEBUGGER_XML_TAG_SIZE, response_header, 10);
+	Exp32or64(_itoa,_i64toa)(data_length + DEBUGGER_XML_TAG_SIZE, response_header, 10);
 
 	// The length and XML data are separated by a NULL byte.
 	char *buf = strchr(response_header, '\0') + 1;
@@ -2291,18 +2448,14 @@ int Debugger::SendResponse()
 
 	// Send the response header.
 	if (  SOCKET_ERROR == send(mSocket, response_header, (int)(buf - response_header), 0)
-	   // Messages sent by the debugger engine must always be NULL terminated.
-	   // Failure to write the last byte should be extremely rare, so no attempt
-	   // is made to recover from that condition.
-	   || DEBUGGER_E_OK != mResponseBuf.Write("\0", 1)
 	   // Send the message body.
-	   || SOCKET_ERROR == send(mSocket, mResponseBuf.mData, (int)mResponseBuf.mDataUsed, 0)  )
+	   || SOCKET_ERROR == send(mSocket, mResponseBuf.mData + aStartOffset, (int)(data_length + 1), 0)  )
 	{
 		// Unrecoverable error: disconnect the debugger.
 		return FatalError();
 	}
 
-	mResponseBuf.Clear();
+	mResponseBuf.mDataUsed = aStartOffset;
 	return DEBUGGER_E_OK;
 }
 
@@ -2679,16 +2832,16 @@ int Debugger::Buffer::EstimateFileURILength(LPCTSTR aPath)
 
 // Convert a file path to a URI and write it to the buffer.
 // Caller has already verified there is enough space in the buffer.
-void Debugger::Buffer::WriteFileURI(LPCTSTR aPath)
+void Debugger::Buffer::WriteFileURI(LPCWSTR aPath)
 {
 	memcpy(mData + mDataUsed, "file:///", 8);
 	mDataUsed += 8;
 
-	CStringUTF8FromTChar path8(aPath);
+	char utf8[4];
 
 	// Write to the buffer, encoding as we go.
 	int c;
-	for (LPCSTR ptr = path8; c = *ptr; ++ptr)
+	for (auto ptr = aPath; c = *ptr; ++ptr)
 	{
 		if (cisalnum(c) || strchr("-_.!~*()/", c))
 		{
@@ -2701,9 +2854,15 @@ void Debugger::Buffer::WriteFileURI(LPCTSTR aPath)
 		}
 		else
 		{
-			int len = sprintf(mData + mDataUsed, "%%%02X", c & 0xff);
-			if (len != -1)
-				mDataUsed += len;
+			bool extra = IS_SURROGATE_PAIR(ptr[0], ptr[1]);
+			int utf8_size = WideCharToMultiByte(CP_UTF8, 0, ptr, 1 + extra, utf8, sizeof(utf8), NULL, NULL);
+			ptr += extra;
+			for (int i = 0; i < utf8_size; ++i)
+			{
+				int len = sprintf(mData + mDataUsed, "%%%02X", utf8[i] & 0xff);
+				if (len != -1)
+					mDataUsed += len;
+			}
 		}
 	}
 }
@@ -2770,7 +2929,7 @@ void Debugger::DecodeURI(char *aUri)
 // Initialize or expand the buffer, don't care how much.
 int Debugger::Buffer::Expand()
 {
-	return ExpandIfNecessary(mDataSize ? mDataSize * 2 : DEBUGGER_INITIAL_BUFFER_SIZE);
+	return ExpandIfNecessary(mDataSize + 1);
 }
 
 // Expand as necessary to meet a minimum required size.
@@ -2780,11 +2939,11 @@ int Debugger::Buffer::ExpandIfNecessary(size_t aRequiredSize)
 		return DEBUGGER_E_INTERNAL_ERROR;
 
 	size_t new_size;
-	for (new_size = mDataSize ? mDataSize : DEBUGGER_INITIAL_BUFFER_SIZE
-		; new_size < aRequiredSize
+	for (new_size = mDataSize ? mDataSize + 1 : DEBUGGER_INITIAL_BUFFER_SIZE
+		; new_size <= aRequiredSize
 		; new_size *= 2);
 
-	if (new_size > mDataSize)
+	if (new_size > mDataSize + 1)
 	{
 		// For simplicity, this preserves all of mData not just the first mDataUsed bytes.  Some sections may rely on this.
 		char *new_data = (char*)realloc(mData, new_size);
@@ -2796,7 +2955,7 @@ int Debugger::Buffer::ExpandIfNecessary(size_t aRequiredSize)
 		}
 
 		mData = new_data;
-		mDataSize = new_size;
+		mDataSize = new_size - 1; // Reserve 1 byte for null-termination.
 	}
 	return DEBUGGER_E_OK;
 }
@@ -2947,40 +3106,29 @@ void Debugger::PropertyWriter::WriteProperty(ExprTokenType &aKey, ExprTokenType 
 void Debugger::PropertyWriter::WriteBaseProperty(IObject *aBase)
 {
 	mProp.fullname.Append(".<base>", 7);
-	_WriteProperty(ExprTokenType(aBase), mProp.this_object ? mProp.this_object : mObject);
+	_WriteProperty(mProp.value, aBase);
 }
 
 
 void Debugger::PropertyWriter::WriteDynamicProperty(LPTSTR aName)
 {
 	FuncResult result_token;
-	ExprTokenType t_this(mProp.this_object ? mProp.this_object : mObject);
-	auto excpt_mode = g->ExcptMode;
-	g->ExcptMode |= EXCPTMODE_CATCH;
-	auto result = mObject->Invoke(result_token, IT_GET | (mProp.this_object ? IF_SUPER : 0), aName, t_this, nullptr, 0);
-	g->ExcptMode = excpt_mode;
+	auto result = mProp.invokee->Invoke(result_token, IT_GET, aName, mProp.value, nullptr, 0);
 	if (!result)
-	{
-		if (g->ThrownToken)
-			g_script.FreeExceptionToken(g->ThrownToken);
 		result_token.SetValue(_T("<error>"), 7);
-	}
 	mDbg.AppendPropertyName(mProp.fullname, mNameLength, CStringUTF8FromTChar(aName));
 	_WriteProperty(result_token);
 	result_token.Free();
 }
 
 
-void Debugger::PropertyWriter::_WriteProperty(ExprTokenType &aValue, IObject *aThisOverride)
+void Debugger::PropertyWriter::_WriteProperty(ExprTokenType &aValue, IObject *aInvokee)
 {
 	if (mError)
 		return;
 	PropertyInfo prop(mProp.fullname, mProp.value.buf);
-	if (aThisOverride)
-	{
-		aThisOverride->AddRef();
-		prop.this_object = aThisOverride;
-	}
+	if (aInvokee)
+		prop.invokee = aInvokee;
 	// Find the property's "relative" name at the end of the buffer:
 	prop.name = mProp.fullname.GetString() + mNameLength;
 	if (*prop.name == '.')
@@ -3008,9 +3156,15 @@ void Debugger::PropertyWriter::BeginProperty(LPCSTR aName, LPCSTR aType, int aNu
 
 	if (mDepth == 1) // Write <property> for the object itself.
 	{
-		LPTSTR classname = mObject->Type();
-		mError = mDbg.mResponseBuf.WriteF("<property name=\"%e\" fullname=\"%e\" type=\"%s\" facet=\"%s\" classname=\"%s\" address=\"%p\" size=\"0\" page=\"%i\" pagesize=\"%i\" children=\"%i\" numchildren=\"%i\">"
-					, mProp.name, mProp.fullname.GetString(), aType, mProp.facet, U4T(classname), mObject, mProp.page, mProp.pagesize, aNumChildren > 0, aNumChildren);
+		LPTSTR classname;
+		LPSTR class_suffix = "";
+		if (   mProp.invokee->IsOfType(Object::sPrototype)
+			&& (classname = static_cast<Object*>(mProp.invokee)->GetOwnPropString(_T("__Class")))   )
+			class_suffix = ".Prototype";
+		else
+			classname = mProp.invokee->Type();
+		mError = mDbg.mResponseBuf.WriteF("<property name=\"%e\" fullname=\"%e\" type=\"%s\" facet=\"%s\" classname=\"%s%s\" address=\"%p\" size=\"0\" page=\"%i\" pagesize=\"%i\" children=\"%i\">"
+					, mProp.name, mProp.fullname.GetString(), aType, mProp.facet, U4T(classname), class_suffix, mProp.invokee, mProp.page, mProp.pagesize, aNumChildren > 0);
 		return;
 	}
 
@@ -3028,8 +3182,8 @@ void Debugger::PropertyWriter::BeginProperty(LPCSTR aName, LPCSTR aType, int aNu
 	aCookie = (DebugCookie)mNameLength;
 	mNameLength = mProp.fullname.GetLength();
 
-	mError = mDbg.mResponseBuf.WriteF("<property name=\"%e\" fullname=\"%e\" type=\"%s\" size=\"0\" page=\"0\" pagesize=\"%i\" children=\"%i\" numchildren=\"%i\">"
-				, name, mProp.fullname.GetString(), aType, mProp.pagesize, aNumChildren > 0, aNumChildren);
+	mError = mDbg.mResponseBuf.WriteF("<property name=\"%e\" fullname=\"%e\" type=\"%s\" size=\"0\" page=\"0\" pagesize=\"%i\" children=\"%i\">"
+				, name, mProp.fullname.GetString(), aType, mProp.pagesize, aNumChildren > 0);
 }
 
 

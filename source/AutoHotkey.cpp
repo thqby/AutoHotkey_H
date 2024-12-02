@@ -194,21 +194,11 @@ ResultType ParseCmdLineArgs(LPTSTR &script_filespec)
 		}
 	}
 	
-	if (Var *var = g_script.FindOrAddVar(_T("A_Args"), 6, VAR_DECLARE_GLOBAL))
-	{
-		// Store the remaining args in an array and assign it to "Args".
-		// If there are no args, assign an empty array so that A_Args[1]
-		// and A_Args.MaxIndex() don't cause an error.
-		auto args = Array::FromArgV(__targv + i, __argc - i);
-		if (!args)
-			return FAIL;  // Realistically should never happen.
-		var->AssignSkipAddRef(args);
-	}
-	else
-		return FAIL;
+	// Pass any remaining args to the script via the A_Args array.
+	auto args = Array::FromArgV(__targv + i, __argc - i);
 
 	// Set up the basics of the script:
-	return g_script.Init(script_filespec);
+	return g_script.Init(script_filespec, args);
 }
 
 

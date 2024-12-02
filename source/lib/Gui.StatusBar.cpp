@@ -16,6 +16,7 @@ GNU General Public License for more details.
 
 #include "stdafx.h"
 #include "script.h"
+#include "script_gui.h"
 
 
 

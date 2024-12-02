@@ -118,6 +118,7 @@ enum ExcptModeType {EXCPTMODE_NONE = 0
 	, EXCPTMODE_CATCH = 2 // Exception will be suppressed or caught.
 	, EXCPTMODE_DELETE = 4 // Unhandled exceptions will display ERR_ABORT_DELETE vs. ERR_ABORT.
 	, EXCPTMODE_CAUGHT = 0x10 // An exception is already being handled within a CATCH, and is not shadowed by TRY.
+	, EXCPTMODE_DEBUGGER = 0x20 // Debugger is evaluating a property and wants uncaught errors suppressed.
 };
 
 #define SEND_MODES { _T("Event"), _T("Input"), _T("Play"), _T("InputThenPlay") } // Must match the enum below.
@@ -136,11 +137,11 @@ enum ExitReasons {EXIT_CRITICAL = -2, EXIT_DESTROY = -1, EXIT_NONE = 0, EXIT_ERR
 	, EXIT_CLOSE, EXIT_MENU, EXIT_EXIT, EXIT_RELOAD, EXIT_SINGLEINSTANCE};
 #define EXITREASON_MUST_EXIT(er) (static_cast<ExitReasons>(er) <= EXIT_DESTROY)
 
-enum WarnType {WARN_LOCAL_SAME_AS_GLOBAL, WARN_UNREACHABLE, WARN_VAR_UNSET, WARN_ALL};
+enum WarnType {WARN_LOCAL_SAME_AS_GLOBAL, WARN_UNREACHABLE, WARN_VAR_UNSET, WARN_ALL, INVALID_WARN_TYPE};
 #define WARN_TYPE_STRINGS _T("LocalSameAsGlobal"), _T("Unreachable"), _T("VarUnset"), _T("All")
 
-enum WarnMode {WARNMODE_OFF, WARNMODE_OUTPUTDEBUG, WARNMODE_MSGBOX, WARNMODE_STDOUT};	// WARNMODE_OFF must be zero.
-#define WARN_MODE_STRINGS _T("Off"), _T("OutputDebug"), _T("MsgBox"), _T("StdOut")
+enum WarnMode {WARNMODE_OFF, WARNMODE_ON, WARNMODE_OUTPUTDEBUG, WARNMODE_MSGBOX, WARNMODE_STDOUT};	// WARNMODE_OFF must be zero.
+#define WARN_MODE_STRINGS _T("Off"), _T("On"), _T("OutputDebug"), _T("MsgBox"), _T("StdOut")
 
 enum SingleInstanceType {SINGLE_INSTANCE_OFF, SINGLE_INSTANCE_PROMPT, SINGLE_INSTANCE_REPLACE
 	, SINGLE_INSTANCE_IGNORE }; // SINGLE_INSTANCE_OFF must be zero.
@@ -240,7 +241,7 @@ enum SymbolType // For use with ExpandExpression() and IsNumeric().
 		|| sym == SYM_PRE_INCREMENT || sym == SYM_PRE_DECREMENT)
 
 enum VarRefUsageType { VARREF_READ = 0, VARREF_ISSET, VARREF_READ_MAYBE
-	, VARREF_REF, VARREF_LVALUE, VARREF_LVALUE_MAYBE, VARREF_OUTPUT_VAR };
+	, VARREF_REF, VARREF_LVALUE, VARREF_LVALUE_MAYBE, VARREF_LVALUE_ISSET, VARREF_OUTPUT_VAR };
 #define VARREF_IS_WRITE(var_usage) ((var_usage) >= VARREF_REF)
 #define VARREF_IS_READ(var_usage) ((var_usage) == VARREF_READ || (var_usage) == VARREF_READ_MAYBE) // But not VARREF_ISSET.
 
@@ -268,14 +269,6 @@ struct DECLSPEC_NOVTABLE IObject // L31: Abstract interface for "objects".
 		LPTSTR Type() { return _T(name); }
 	virtual Object *Base() = 0;
 	virtual bool IsOfType(Object *aPrototype) = 0;
-	
-#ifdef CONFIG_DEBUGGER
-	#define IObject_DebugWriteProperty_Def \
-		void DebugWriteProperty(IDebugProperties *, int aPage, int aPageSize, int aMaxDepth)
-	virtual IObject_DebugWriteProperty_Def;
-#else
-	#define IObject_DebugWriteProperty_Def
-#endif
 };
 
 
@@ -307,6 +300,7 @@ struct DECLSPEC_NOVTABLE IDebugProperties
 	virtual void WriteEnumItems(IObject *aEnumerable, int aStart, int aEnd) = 0;
 	virtual void BeginProperty(LPCSTR aName, LPCSTR aType, int aNumChildren, DebugCookie &aCookie) = 0;
 	virtual void EndProperty(DebugCookie aCookie) = 0;
+	virtual ExprTokenType &ThisToken() = 0;
 };
 
 #endif
@@ -325,6 +319,7 @@ struct DECLSPEC_NOVTABLE IDebugProperties
 #define IF_SUPER			0x000040 // super.something invocation.
 #define IF_NO_NEW_PROPS		0x000080 // Don't permit new properties.
 #define IF_NEWENUM			0x000200 // Workaround for COM objects which don't resolve "_NewEnum" to DISPID_NEWENUM.
+#define IF_BYPASS___VALUE	0x000400
 
 #define EIF_VARIADIC		0x010000
 #define EIF_STACK_MEMBER	0x020000
@@ -439,11 +434,16 @@ struct ExprTokenType  // Something in the compiler hates the name TokenType, so 
 	// overwritten by a subsequent concat/function call while still on the stack).
 	// Yielding SYM_VAR means subsequent assignments may affect it, but in a safer way
 	// that doesn't risk dangling pointers.
-	void SetVar(Var *aVar)
+	void SetVar(Var *aVar, VarRefUsageType aRefType = VARREF_READ)
 	{
 		symbol = SYM_VAR;
 		var = aVar;
-		var_usage = VARREF_READ;
+		var_usage = aRefType;
+	}
+
+	bool IsOptimizedOutputVar()
+	{
+		return symbol == SYM_VAR && !VARREF_IS_READ(var_usage); // VARREF_ISSET is tolerated for use by IsSet().
 	}
 
 private: // Force code to use one of the CopyFrom() methods, for clarity.
@@ -629,7 +629,7 @@ enum enum_act {
 , ACT_EXIT // Used with AddLine(), but excluded from the "named" range below so that the function is preferred.
 // ================================================================================
 // Named actions recognized by ConvertActionType:
-, ACT_STATIC, ACT_GLOBAL, ACT_LOCAL
+, ACT_STATIC, ACT_EXPORT, ACT_GLOBAL, ACT_LOCAL
 , ACT_IF
 , ACT_ELSE
 , ACT_LOOP, ACT_LOOP_FILE, ACT_LOOP_REG, ACT_LOOP_READ, ACT_LOOP_PARSE
@@ -910,11 +910,9 @@ struct ScriptThreadState
 	int UninterruptedLineCount; // Stored as a g-struct attribute in case OnExit func interrupts it while uninterruptible.
 	int UninterruptibleDuration; // Must be int to preserve negative values found in g_script.mUninterruptibleTime.
 	DWORD ThreadStartTime;
-	DWORD CalledByIsDialogMessageOrDispatchMsg; // Detects the fact that some messages (like WM_KEYDOWN->WM_NOTIFY for UpDown controls) are translated to different message numbers by IsDialogMessage (and maybe Dispatch too).
 
 	bool IsPaused;
 	bool MsgBoxTimedOut; // Meaningful only while a MsgBox call is in progress.
-	bool CalledByIsDialogMessageOrDispatch; // Helps avoid launching a monitor function twice for the same message.  This would probably be okay if it were a normal global rather than in the g-struct, but due to messaging complexity, this lends peace of mind and robustness.
 	bool AllowThreadToBeInterrupted; // Whether this thread can be interrupted by custom menu items, hotkeys, or timers.  Separate from g_AllowInterruption because that's for use by ongoing operations, such as SendKeys, and should override the thread's setting.
 };
 
@@ -985,11 +983,6 @@ inline void global_clear_state(ScriptThreadState &g)
 	//g.UninterruptedLineCount = 0;
 	//g.DialogHWND = NULL;
 	//g.DialogOwner = NULL;
-	//g.CalledByIsDialogMessageOrDispatch = false; // CalledByIsDialogMessageOrDispatchMsg doesn't need to be cleared because it's value is only considered relevant when CalledByIsDialogMessageOrDispatch==true.
-	// Above line is done because allowing it to be permanently changed by the auto-exec section
-	// seems like it would cause more confusion that it's worth.  A change to the global default
-	// or even an override/always-use-this-window-number mode can be added if there is ever a
-	// demand for it.
 	//g.mLoopIteration = 0; // Zero seems preferable to 1, to indicate "no loop currently running" when a thread first starts off.  This should probably be left unchanged for backward compatibility (even though script's aren't supposed to rely on it).
 	//g.mLoopFile = NULL;
 	//g.mLoopRegItem = NULL;

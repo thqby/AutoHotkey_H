@@ -4,6 +4,7 @@
 #include "script_object.h"
 #include "script_com.h"
 #include "script_func_impl.h"
+#include "script_gui.h"
 #include <DispEx.h>
 
 
@@ -1092,8 +1093,8 @@ STDMETHODIMP ComEvent::Invoke(DISPID dispIdMember, REFIID riid, LCID lcid, WORD 
 		// Copy method name into our buffer, applying prefix and converting if necessary.
 		TCHAR funcName[256];
 		sntprintf(funcName, _countof(funcName), _T("%s%ws"), mPrefix, memberName);
-		// Find the script function:
-		func = g_script.FindGlobalFunc(funcName);
+		// Find the script function (or any callable object in a global var):
+		func = mModule->FindGlobalObject(funcName);
 		dispid = DISPID_VALUE;
 		hr = func ? S_OK : DISP_E_MEMBERNOTFOUND;
 	}
@@ -1148,7 +1149,10 @@ void ComEvent::SetPrefixOrSink(LPCTSTR pfx, IObject *ahkObject)
 		mAhkObject = ahkObject;
 	}
 	if (pfx)
+	{
+		mModule = g_script.CurrentModule();
 		tcslcpy(mPrefix, pfx, _countof(mPrefix));
+	}
 }
 
 ResultType ComObject::Invoke(IObject_Invoke_PARAMS_DECL)
@@ -1315,6 +1319,7 @@ ObjectMemberMd ComObject::sArrayMembers[]
 ObjectMember ComObject::sRefMembers[]
 {
 	Object_Property_get_set(__Item),
+	Object_Property_get_set(__Value),
 };
 
 ObjectMember ComObject::sValueMembers[]
@@ -1467,9 +1472,8 @@ LPTSTR ComObject::Type()
 			return sBuf;
 		}
 	}
-	ExprTokenType value;
-	if (Base()->GetOwnProp(value, _T("__Class")))
-		return TokenToString(value);
+	if (auto classname = Base()->GetOwnPropString(_T("__Class")))
+		return classname;
 	return _T("ComValue"); // Provide a safe default in case __Class was removed.
 }
 
@@ -1912,8 +1916,7 @@ STDMETHODIMP IObjectComCompatible::Invoke(DISPID dispIdMember, REFIID riid, LCID
 						pExcepInfo->bstrSource = SysStringFromToken(token, result_token.buf);
 					if (obj->GetOwnProp(token, _T("File")))
 						pExcepInfo->bstrHelpFile = SysStringFromToken(token, result_token.buf);
-					if (obj->GetOwnProp(token, _T("Line")))
-						pExcepInfo->dwHelpContext = (DWORD)TokenToInt64(token);
+					pExcepInfo->dwHelpContext = (DWORD)obj->GetOwnPropInt64(_T("Line"));
 				}
 				else
 				{
@@ -1974,37 +1977,3 @@ STDMETHODIMP IObjectComCompatible::Invoke(DISPID dispIdMember, REFIID riid, LCID
 
 	return result_to_return;
 }
-
-
-#ifdef CONFIG_DEBUGGER
-
-void WriteComObjType(IDebugProperties *aDebugger, ComObject *aObject, LPCSTR aName, LPTSTR aWhichType)
-{
-	TCHAR buf[_f_retval_buf_size];
-	ResultToken resultToken;
-	resultToken.symbol = SYM_INTEGER;
-	resultToken.marker_length = -1;
-	resultToken.mem_to_free = NULL;
-	resultToken.buf = buf;
-	ExprTokenType paramToken[] = { aObject, aWhichType };
-	ExprTokenType *param[] = { &paramToken[0], &paramToken[1] };
-	BIF_ComObjType(resultToken, param, 2);
-	aDebugger->WriteProperty(aName, resultToken);
-	if (resultToken.mem_to_free)
-		free(resultToken.mem_to_free);
-}
-
-void ComObject::DebugWriteProperty(IDebugProperties *aDebugger, int aPage, int aPageSize, int aDepth)
-{
-	DebugCookie rootCookie;
-	aDebugger->BeginProperty(NULL, "object", 2 + (mVarType == VT_DISPATCH)*2 + (mEventSink != NULL), rootCookie);
-	if (aPage == 0 && aDepth > 0)
-	{
-		// For simplicity, assume aPageSize >= 2.
-		aDebugger->WriteProperty("Value", ExprTokenType(mVal64));
-		aDebugger->WriteProperty("VarType", ExprTokenType((__int64)mVarType));
-	}
-	aDebugger->EndProperty(rootCookie);
-}
-
-#endif

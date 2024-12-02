@@ -20,6 +20,7 @@ GNU General Public License for more details.
 #include "application.h" // for MsgSleep()
 #include "window.h" // for SetForegroundWindowEx()
 #include "script_func_impl.h"
+#include "script_gui.h"
 
 
 
@@ -39,8 +40,8 @@ ObjectMemberMd UserMenu::sMembers[] =
 	md_member(UserMenu, SetColor, CALL, (In_Opt, Variant, Color), (In_Opt, Bool32, ApplyToSubmenus)),
 	md_member(UserMenu, SetIcon, CALL, (In, String, Item), (In, String, File), (In_Opt, Int32, Number), (In_Opt, Int32, Width)),
 	md_member(UserMenu, Show, CALL, (In_Opt, Int32, X), (In_Opt, Int32, Y), (In_Opt, Bool32, Wait)),
-	md_member(UserMenu, ToggleCheck, CALL, (In, String, Item)),
-	md_member(UserMenu, ToggleEnable, CALL, (In, String, Item)),
+	md_member(UserMenu, ToggleCheck, CALL, (In, String, Item), (Ret, Bool32, RetVal)),
+	md_member(UserMenu, ToggleEnable, CALL, (In, String, Item), (Ret, Bool32, RetVal)),
 	md_member(UserMenu, Uncheck, CALL, (In, String, Item)),
 };
 int UserMenu::sMemberCount = _countof(sMembers);
@@ -214,9 +215,12 @@ FResult UserMenu::Check(StrArg aItemName)
 	return SetItemState(aItemName, MFS_CHECKED, MFS_CHECKED);
 }
 
-FResult UserMenu::ToggleCheck(StrArg aItemName)
+FResult UserMenu::ToggleCheck(StrArg aItemName, BOOL &aRetVal)
 {
-	return SetItemState(aItemName, MFS_CHECKED, 0);
+	UINT state;
+	auto fr = SetItemState(aItemName, MFS_CHECKED, 0, &state);
+	aRetVal = (state & MFS_CHECKED) ? TRUE : FALSE;
+	return fr;
 }
 
 FResult UserMenu::Uncheck(StrArg aItemName)
@@ -234,9 +238,12 @@ FResult UserMenu::Enable(StrArg aItemName)
 	return SetItemState(aItemName, 0, MFS_DISABLED);
 }
 
-FResult UserMenu::ToggleEnable(StrArg aItemName)
+FResult UserMenu::ToggleEnable(StrArg aItemName, BOOL &aRetVal)
 {
-	return SetItemState(aItemName, MFS_DISABLED, 0);
+	UINT state;
+	auto fr = SetItemState(aItemName, MFS_DISABLED, 0, &state);
+	aRetVal = (state & MFS_DISABLED) ? FALSE : TRUE;
+	return fr;
 }
 
 
@@ -459,6 +466,7 @@ FResult UserMenu::GetItem(LPCTSTR aNameOrPos, UserMenuItem *&aItem)
 
 
 
+__declspec(noinline)
 FResult UserMenu::ItemNotFoundError(LPCTSTR aItem)
 {
 	return FError(ERR_INVALID_MENU_ITEM, aItem, ErrorPrototype::Target);
@@ -485,7 +493,7 @@ UserMenuItem *UserMenu::FindItem(LPCTSTR aNameOrPos, UserMenuItem *&aPrevItem, b
 		; menu_item
 		; menu_item_prev = menu_item, menu_item = menu_item->mNextMenuItem, ++current_index)
 		if (current_index == index_to_find // Found by index.
-			|| !lstrcmpi(menu_item->mName, aNameOrPos)) // Found by case-insensitive text match.
+			|| !_tcsicmp(menu_item->mName, aNameOrPos)) // Found by case-insensitive text match.
 			break;
 	aPrevItem = menu_item_prev;
 	return menu_item;
@@ -925,13 +933,16 @@ void UserMenu::SetItemState(UserMenuItem *aMenuItem, UINT aState, UINT aStateMas
 
 
 
-FResult UserMenu::SetItemState(StrArg aItemName, UINT aState, UINT aStateMask)
+__declspec(noinline)
+FResult UserMenu::SetItemState(StrArg aItemName, UINT aState, UINT aStateMask, UINT *aNewState)
 {
 	UserMenuItem *item;
 	auto fr = GetItem(aItemName, item);
 	if (fr != OK)
 		return fr;
 	SetItemState(item, aState, aStateMask);
+	if (aNewState)
+		*aNewState = item->mMenuState;
 	return OK;
 }
 
@@ -1203,29 +1214,7 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 	if (change_fore = (!fore_win || GetWindowThreadProcessId(fore_win, NULL) != g_MainThreadID))
 	{
 		// Always bring main window to foreground right before TrackPopupMenu(), even if window is hidden.
-		// UPDATE: This is a problem because SetForegroundWindowEx() will restore the window if it's hidden,
-		// but restoring also shows the window if it's hidden.  Could re-hide it... but the question here
-		// is can a minimized window be the foreground window?  If not, how to explain why
-		// SetForegroundWindow() always seems to work for the purpose of the tray menu?
-		//if (aForceToForeground)
-		//{
-		//	// Seems best to avoid using the script's current setting of #WinActivateForce.  Instead, always
-		//	// try the gentle approach first since it is unlikely that displaying a menu will cause the
-		//	// "flashing task bar button" problem?
-		//	bool original_setting = g_WinActivateForce;
-		//	g_WinActivateForce = false;
-		//	SetForegroundWindowEx(g_hWnd);
-		//	g_WinActivateForce = original_setting;
-		//}
-		//else
-		if (!SetForegroundWindow(g_hWnd))
-		{
-			// The below fixes the problem where the menu cannot be canceled by clicking outside of
-			// it (due to the main window not being active).  That usually happens the first time the
-			// menu is displayed after the script launches.  0 is not enough sleep time, but 10 is:
-			SLEEP_WITHOUT_INTERRUPTION(10);
-			SetForegroundWindow(g_hWnd);  // 2nd time always seems to work for this particular window.
-		}
+		SetForegroundWindowEx(g_hWnd, true);
 	}
 	if (g_MenuIsTempModeless)
 	{
@@ -1233,6 +1222,15 @@ ResultType UserMenu::Display(int aX, int aY, optl<BOOL> aWait)
 		// This is necessary to ensure the menu/window style changes made below are reverted.
 		EndMenu();
 		MsgSleep(-1);
+	}
+	// This works around an issue observed on Windows 10, where the menu doesn't respond to
+	// keyboard input if none of the script's windows have previously received input:
+	static bool sAppliedWorkaround = false;
+	if (!sAppliedWorkaround)
+	{
+		sAppliedWorkaround = true;
+		PostMessage(change_fore ? g_hWnd : fore_win, WM_KEYUP, 0, 0);
+		SLEEP_WITHOUT_INTERRUPTION(-1);
 	}
 	MENUINFO mi;
 	mi.cbSize = sizeof(mi);

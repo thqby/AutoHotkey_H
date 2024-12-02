@@ -40,6 +40,7 @@ HWND g_hWnd = NULL;
 HWND g_hWndEdit = NULL;
 HFONT g_hFontEdit = NULL;
 HACCEL g_hAccelTable = NULL;
+MSG *g_CalledByIsDialogMessageOrDispatch = nullptr;
 
 WNDPROC g_TabClassProc = NULL;
 
@@ -73,9 +74,7 @@ HHOOK g_MouseHook = NULL;
 HHOOK g_PlaybackHook = NULL;
 bool g_ForceLaunch = false;
 bool g_WinActivateForce = false;
-WarnMode g_Warn_LocalSameAsGlobal = WARNMODE_OFF;
-WarnMode g_Warn_Unreachable = WARNMODE_MSGBOX;
-WarnMode g_Warn_VarUnset = WARNMODE_MSGBOX;
+WarnMode g_WarnMode = WARNMODE_MSGBOX;
 SingleInstanceType g_AllowOnlyOneInstance = SINGLE_INSTANCE_PROMPT;
 bool g_persistent = false;  // Whether the script should stay running even after the auto-exec section finishes.
 bool g_NoTrayIcon = false;
@@ -177,6 +176,7 @@ TCHAR g_EndChars[HS_MAX_END_CHARS + 1] = _T("-()[]{}:;'\"/\\,.?!\n \t");  // Hot
 
 // Global objects:
 input_type *g_input = NULL;
+int g_inputBeforeHotkeysCount = 0;
 Script g_script;
 // This made global for performance reasons (determining size of clipboard data then
 // copying contents in or out without having to close & reopen the clipboard in between):
@@ -247,9 +247,10 @@ Action g_act[] =
 	, {_T("}"), 0, 0}
 
 	, {_T("#HotIf"), 0, 1}
-	, {_T("Exit"), 0, 1} // ExitCode
+	, {_T(";end"), 0, 0} // ACT_EXIT
 
 	, {_T("Static"), 1, 1} // ACT_STATIC - executes once and then the Line is removed.
+	, {_T("Export"), 1, 1} // ACT_EXPORT - used only at load time.
 	, {_T("Global"), 1, 1} // ACT_GLOBAL - used only at load time.
 	, {_T("Local"), 1, 1} // ACT_LOCAL - used only at load time.
 

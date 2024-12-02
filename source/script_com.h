@@ -12,6 +12,7 @@ class ComEvent : public ObjectBase
 	ITypeInfo *mTypeInfo = nullptr;
 	IID mIID;
 	IObject *mAhkObject = nullptr;
+	ScriptModule *mModule = nullptr;
 	TCHAR mPrefix[64];
 
 public:
@@ -57,7 +58,8 @@ public:
 	{
 		P_Ptr,
 		// ComValueRef
-		P___Item,
+		P___Item, // v2.0: Allows accessing a VT_BYREF value via comobj[].
+		P___Value = P___Item, // v2.1: Alias to allow use with VAR_VIRTUAL_OBJ (ByRef parameters).
 	};
 	static ObjectMember sRefMembers[], sValueMembers[];
 	static ObjectMemberMd sArrayMembers[];
@@ -75,7 +77,6 @@ public:
 	void Invoke(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount);
 	LPTSTR Type();
 	Object *Base();
-	IObject_DebugWriteProperty_Def;
 
 	void ToVariant(VARIANT &aVar)
 	{

@@ -87,14 +87,16 @@ class Breakpoint
 public:
 	int id;
 	char type;
-	char state;
-	bool temporary;
-	
-	// Not yet supported: function, hit_count, hit_value, hit_condition, exception
+	char state = BS_Disabled;
+	bool temporary = false;
 
-	Breakpoint() : id(AllocateID()), type(BT_Line), state(BS_Enabled), temporary(false)
-	{
-	}
+	Line *line = nullptr;
+	Breakpoint *next = nullptr;
+	
+	// Not yet supported: function, hit_count, hit_value, hit_condition
+
+	Breakpoint(BreakpointTypeType aType = BT_Line, int aID = AllocateID())
+		: id(aID), type((char)aType) {}
 
 	static int AllocateID() { return ++sMaxId; }
 
@@ -192,33 +194,13 @@ public:
 	inline bool IsStepping() { return mInternalState >= DIS_StepInto; }
 	inline bool HasStdErrHook() { return mStdErrMode != SR_Disabled; }
 	inline bool HasStdOutHook() { return mStdOutMode != SR_Disabled; }
-	inline bool BreakOnExceptionIsEnabled() { return mBreakOnException; }
+	inline bool BreakOnExceptionIsEnabled() { return mBreakOnException.state == BS_Enabled; }
 
 	LPCTSTR WhatThrew();
 
-	__declspec(noinline) // Avoiding inlining should reduce the code size of ExpandExpression(), which might help performance since this is only called when the debugger is connected.
-	void PostExecFunctionCall(Line *aExpressionLine)
-	{
-		// If the debugger is stepping into/over/out from a function call, we want to
-		// break at the line which called that function, since the next line to execute
-		// might be a line in some other function (i.e. because the line which called
-		// the function is "return func()" or calls another function after this one).
-		if ((mInternalState == DIS_StepInto
-			|| ((mInternalState == DIS_StepOut || mInternalState == DIS_StepOver)
-				// Always '<' since '<=' (for StepOver) shouldn't be possible,
-				// since we just returned from a function call:
-				&& mStack.Depth() < mContinuationDepth))
-			// The final check ensures we don't repeatedly break at a line containing
-			// multiple built-in function calls; i.e. don't break unless some script
-			// has been executed since we began evaluating aExpressionLine.  Something
-			// like "return recursivefunc()" should work if this is StepInto or StepOver
-			// since mCurrLine would probably be the '}' of that function:
-			&& mCurrLine != aExpressionLine)
-			PreExecLine(aExpressionLine);
-	}
-
 	// Code flow notification functions:
 	int PreExecLine(Line *aLine); // Called before executing each line.
+	void LeaveFunction();
 	bool PreThrow(ExprTokenType *aException);
 	
 	// Receive and process commands. Returns when a continuation command is received.
@@ -272,12 +254,7 @@ public:
 	DEBUGGER_COMMAND(redirect_stderr);
 
 
-	Debugger() : mSocket(INVALID_SOCKET), mInternalState(DIS_Starting)
-		, mMaxPropertyData(1024), mContinuationTransactionId(""), mStdErrMode(SR_Disabled), mStdOutMode(SR_Disabled)
-		, mMaxChildren(20), mMaxDepth(2), mDisabledHooks(0)
-		, mThrownToken(NULL), mBreakOnExceptionID(0), mBreakOnExceptionWasSet(false), mBreakOnExceptionIsTemporary(false), mBreakOnException(false)
-	{
-	}
+	Debugger() {}
 
 	
 	// Stack - keeps track of threads and function calls.
@@ -285,11 +262,13 @@ public:
 	friend struct DbgStack;
 
 private:
-	SOCKET mSocket;
-	Line *mCurrLine; // Similar to g_script.mCurrLine, but may be different when breaking post-function-call, before continuing expression evaluation.
-	ExprTokenType *mThrownToken; // The exception that triggered the current exception breakpoint.
-	bool mBreakOnExceptionWasSet, mBreakOnExceptionIsTemporary, mBreakOnException; // Supports a single coverall breakpoint exception.
-	int mBreakOnExceptionID;
+	SOCKET mSocket = INVALID_SOCKET;
+	Line *mCurrLine = nullptr; // Similar to g_script.mCurrLine, but may be different when breaking post-function-call, before continuing expression evaluation.
+	ExprTokenType *mThrownToken = nullptr; // The exception that triggered the current exception breakpoint.
+	// Linked list of breakpoints.  Using the exception breakpoint as the const head of the list simplifies
+	// some operations and reduces code size.  The first line breakpoint is always mFirstBreakpoint->next.
+	Breakpoint *const mFirstBreakpoint = &mBreakOnException, *mLastBreakpoint = &mBreakOnException;
+	Breakpoint mBreakOnException { BT_Exception, 0 }; // Supports a single catchall breakpoint exception.
 
 	class Buffer
 	{
@@ -315,7 +294,7 @@ private:
 		}
 	private:
 		int EstimateFileURILength(LPCTSTR aPath);
-		void WriteFileURI(LPCTSTR aPath);
+		void WriteFileURI(LPCWSTR aPath);
 	} mCommandBuf, mResponseBuf;
 
 	enum DebuggerInternalStateType {
@@ -326,20 +305,21 @@ private:
 		DIS_StepInto,
 		DIS_StepOver,
 		DIS_StepOut
-	} mInternalState;
+	} mInternalState = DIS_Starting;
 
 	enum StreamRedirectType {
 		SR_Disabled = 0,
 		SR_Copy = 1,
 		SR_Redirect = 2
-	} mStdErrMode, mStdOutMode;
+	} mStdErrMode = SR_Disabled, mStdOutMode = SR_Disabled;
 
-	int mContinuationDepth; // Stack depth at last continuation command, for step_into/step_over.
-	CStringA mContinuationTransactionId; // transaction_id of last continuation command.
+	int mContinuationDepth = 0; // Stack depth at last continuation command, for step_into/step_over.
+	CStringA mContinuationTransactionId {""}; // transaction_id of last continuation command.
 
-	int mMaxPropertyData, mMaxChildren, mMaxDepth;
+	int mMaxPropertyData = 1024, mMaxChildren = 1000, mMaxDepth = 1;
 
-	HookType mDisabledHooks;
+	HookType mDisabledHooks = 0;
+	bool mProcessingCommands;
 
 
 	enum PropertyType
@@ -353,20 +333,17 @@ private:
 
 	struct PropertySource
 	{
-		PropertyType kind;
+		PropertyType kind = PropNone;
 		Var *var;
 		VarBkp *bkp;
-		Object::Variant *field;
 		ResultToken value;
-		IObject *this_object = nullptr;
+		IObject *invokee = nullptr;
 		PropertySource(LPTSTR aResultBuf)
 		{
 			value.InitResult(aResultBuf);
 		}
 		~PropertySource()
 		{
-			if (this_object)
-				this_object->Release();
 			value.Free();
 		}
 	};
@@ -390,15 +367,13 @@ private:
 	{
 		Debugger &mDbg;
 		PropertyInfo &mProp;
-		IObject *mObject;
 		size_t mNameLength;
 		int mDepth;
 		int mError;
 
-		PropertyWriter(Debugger &aDbg, PropertyInfo &aProp, IObject *aObject)
+		PropertyWriter(Debugger &aDbg, PropertyInfo &aProp)
 			: mDbg(aDbg)
 			, mProp(aProp)
-			, mObject(aObject)
 			, mNameLength(aProp.fullname.GetLength())
 			, mDepth(0)
 			, mError(0)
@@ -412,10 +387,12 @@ private:
 		void WriteDynamicProperty(LPTSTR aName);
 		void WriteEnumItems(IObject *aEnumerable, int aStart, int aEnd);
 
-		void _WriteProperty(ExprTokenType &aValue, IObject *aThisOverride = nullptr);
+		void _WriteProperty(ExprTokenType &aValue, IObject *aInvokee = nullptr);
 
 		void BeginProperty(LPCSTR aName, LPCSTR aType, int aNumChildren, DebugCookie &aCookie);
 		void EndProperty(DebugCookie aCookie);
+
+		ExprTokenType &ThisToken() { return mProp.value; }
 	};
 
 
@@ -423,7 +400,7 @@ private:
 	int ReceiveCommand(int *aCommandSize=NULL);
 
 	// Send XML response to debugger UI:
-	int SendResponse();
+	int SendResponse(size_t aStartOffset = 0);
 	int SendErrorResponse(char *aCommandName, char *aTransactionId, int aError=999, char *aExtraAttributes=NULL);
 	int SendStandardResponse(char *aCommandName, char *aTransactionId);
 	int SendContinuationResponse(LPCSTR aCommand = nullptr, LPCSTR aStatus = "break", LPCSTR aReason = "ok");
@@ -431,9 +408,10 @@ private:
 	int EnterBreakState(LPCSTR aReason = "ok");
 	void ExitBreakState();
 
-	int WriteBreakpointXml(Breakpoint *aBreakpoint, Line *aLine);
-	int WriteExceptionBreakpointXml();
+	int WriteBreakpointXml(Breakpoint *aBreakpoint);
 	Line *FindFirstLineForBreakpoint(int file_index, UINT line_no);
+	Breakpoint *CreateBreakpoint();
+	void DeleteBreakpoint(Breakpoint *aBp);
 
 	void AppendPropertyName(CStringA &aNameBuf, size_t aParentNameLength, const char *aName);
 	void AppendStringKey(CStringA &aNameBuf, size_t aParentNameLength, const char *aKey);
@@ -441,18 +419,22 @@ private:
 	int GetPropertyInfo(Var &aVar, PropertyInfo &aProp);
 	int GetPropertyInfo(VarBkp &aBkp, PropertyInfo &aProp);
 	
-	int GetPropertyValue(Var &aVar, PropertySource &aProp);
+	int GetPropertyValue(Var &aVar, ResultToken &aValue);
+	int GetPropertyValue(VarBkp &aBkp, ResultToken &aValue);
 
 	int WritePropertyXml(PropertyInfo &aProp);
 	int WritePropertyXml(PropertyInfo &aProp, LPTSTR aName);
-	int WritePropertyXml(PropertyInfo &aProp, IObject *aObject);
+	int WritePropertyObjectXml(PropertyInfo &aProp);
 
 	int WritePropertyData(LPCTSTR aData, size_t aDataSize, int aMaxEncodedSize);
 	int WritePropertyData(ExprTokenType &aValue, int aMaxEncodedSize);
 
-	int WriteEnumItems(PropertyInfo &aProp, IObject *aObject);
+	int WriteEnumItems(PropertyInfo &aProp);
 
+	LPWSTR ParsePropertyKeyLiteral(LPWSTR aPtr, ExprTokenType &aKey);
 	int ParsePropertyName(LPCSTR aFullName, int aDepth, int aVarScope, ExprTokenType *aSetValue
+		, PropertySource &aResult);
+	int ParsePropertyName(LPWSTR aNamePtr, int aDepth, int aVarScope, ExprTokenType *aSetValue
 		, PropertySource &aResult);
 	int property_get_or_value(char **aArgV, int aArgCount, char *aTransactionId, bool aIsPropertyGet);
 	int redirect_std(char **aArgV, int aArgCount, char *aTransactionId, char *aCommandName);

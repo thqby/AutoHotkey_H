@@ -352,7 +352,8 @@ void ConvertDllArgType(LPTSTR aBuf, DYNAPARM &aDynaParam)
 		}
 		break;
 	case 'p': if (!_tcsicmp(buf, _T("Ptr")))	{ aDynaParam.type = Exp32or64(DLL_ARG_INT, DLL_ARG_INT64); return; } break;
-	case 's': if (!_tcsicmp(buf, _T("Str")))	{ aDynaParam.type = DLL_ARG_STR; return; }
+	case 's': if (!_tcsicmp(buf, _T("Str"))
+				&& !aDynaParam.is_unsigned)		{ aDynaParam.type = DLL_ARG_STR; return; }
 			  if (!_tcsicmp(buf, _T("Short")))	{ aDynaParam.type = DLL_ARG_SHORT; return; } break;
 	case 'd': if (!_tcsicmp(buf, _T("Double")))	{ aDynaParam.type = DLL_ARG_DOUBLE; return; } break;
 	case 'f': if (!_tcsicmp(buf, _T("Float")))	{ aDynaParam.type = DLL_ARG_FLOAT; return; } break;
@@ -700,7 +701,7 @@ has_valid_return_type:
 		if (this_param_obj && this_dyna_param.type != DLL_ARG_STRUCT)
 		{
 			if ((this_dyna_param.passed_by_address || this_dyna_param.type == DLL_ARG_STR)
-				&& dynamic_cast<VarRef*>(this_param_obj))
+				&& this_param_obj->Base() == Object::sVarRefPrototype)
 			{
 				aParam[i + 1] = (ExprTokenType *)_alloca(sizeof(ExprTokenType));
 				aParam[i + 1]->SetVarRef(static_cast<VarRef*>(this_param_obj));
@@ -769,7 +770,7 @@ has_valid_return_type:
 				_f_throw_type(_T("String"), this_param);
 			// String needing translation: ASTR on Unicode build, WSTR on ANSI build.
 			pStr[nStr++] = new UorA(CStringCharFromWChar,CStringWCharFromChar)(TokenToString(this_param));
-			this_dyna_param.ptr = pStr[nStr-1]->GetBuffer();
+			this_dyna_param.ptr = (void*)pStr[nStr-1]->GetString();
 			break;
 
 		case DLL_ARG_DOUBLE:
@@ -795,14 +796,13 @@ has_valid_return_type:
 				aResultToken.symbol = SYM_STRING; // Set default for Invoke (New set aResultToken to obj without calling AddRef).
 				aResultToken.marker = _T("");
 				auto result = obj->Invoke(aResultToken, IT_SET | IF_BYPASS_METAFUNC | IF_NO_NEW_PROPS
-					, _T("__value"), ExprTokenType(obj), aParam + i + 1, 1);
+					, _T("__Value"), ExprTokenType(obj), aParam + i + 1, 1);
 				if (result == INVOKE_NOT_HANDLED)
 				{
 					if (this_param.symbol == SYM_MISSING)
 						_f_throw(ERR_PARAM_REQUIRED);
-					ExprTokenType tn;
-					_f_throw_type(param_proto->GetOwnProp(tn, _T("__Class")) && tn.symbol == SYM_STRING
-						? tn.marker : _T("Object"), *aParam[i + 1]);
+					auto classname = param_proto->GetOwnPropString(_T("__Class"));
+					_f_throw_type(classname ? classname : _T("Object"), *aParam[i + 1]);
 				}
 				if (aResultToken.Exited())
 					return;
@@ -1048,6 +1048,7 @@ has_valid_return_type:
 
 	// Store any output parameters back into the input variables.  This allows a function to change the
 	// contents of a variable for the following arg types: String and Pointer to <various number types>.
+	int nxStr = -1;
 	for (arg_count = 0, i = 0; i < aParamCount; ++arg_count, i += 2) // Same loop as used above, so maintain them together.
 	{
 		ExprTokenType &this_param = *aParam[i + 1];  // Resolved for performance and convenience.
@@ -1059,6 +1060,9 @@ has_valid_return_type:
 				SetObjectIntProperty(obj, _T("Ptr"), this_dyna_param.value_int64, aResultToken);
 			continue;
 		}
+
+		if (this_dyna_param.type == DLL_ARG_xSTR)
+			++nxStr; // Must be done for all args of this type in case a later arg needs its index.
 
 		if (this_param.symbol != SYM_VAR)
 			continue;
@@ -1085,34 +1089,36 @@ has_valid_return_type:
 		if (VARREF_IS_READ(this_param.var_usage))
 			continue; // Output parameters are copied back only if provided with a VarRef (&variable).
 
+		ResultType result = OK;
+
 		switch (this_dyna_param.type)
 		{
 		case DLL_ARG_INT:
 			if (this_dyna_param.is_unsigned)
-				output_var.Assign((DWORD)this_dyna_param.value_int);
+				result = output_var.Assign((DWORD)this_dyna_param.value_int);
 			else // Signed.
-				output_var.Assign(this_dyna_param.value_int);
+				result = output_var.Assign(this_dyna_param.value_int);
 			break;
 		case DLL_ARG_SHORT:
 			if (this_dyna_param.is_unsigned) // Force omission of the high-order word in case it is non-zero from a parameter that was originally and erroneously larger than a short.
-				output_var.Assign(this_dyna_param.value_int & 0x0000FFFF); // This also forces the value into the unsigned domain of a signed int.
+				result = output_var.Assign(this_dyna_param.value_int & 0x0000FFFF); // This also forces the value into the unsigned domain of a signed int.
 			else // Signed.
-				output_var.Assign((int)(SHORT)(WORD)this_dyna_param.value_int); // These casts properly preserve negatives.
+				result = output_var.Assign((int)(SHORT)(WORD)this_dyna_param.value_int); // These casts properly preserve negatives.
 			break;
 		case DLL_ARG_CHAR:
 			if (this_dyna_param.is_unsigned) // Force omission of the high-order bits in case it is non-zero from a parameter that was originally and erroneously larger than a char.
-				output_var.Assign(this_dyna_param.value_int & 0x000000FF); // This also forces the value into the unsigned domain of a signed int.
+				result = output_var.Assign(this_dyna_param.value_int & 0x000000FF); // This also forces the value into the unsigned domain of a signed int.
 			else // Signed.
-				output_var.Assign((int)(char)(BYTE)this_dyna_param.value_int); // These casts properly preserve negatives.
+				result = output_var.Assign((int)(char)(BYTE)this_dyna_param.value_int); // These casts properly preserve negatives.
 			break;
 		case DLL_ARG_INT64: // Unsigned and signed are both written as signed for the reasons described elsewhere above.
-			output_var.Assign(this_dyna_param.value_int64);
+			result = output_var.Assign(this_dyna_param.value_int64);
 			break;
 		case DLL_ARG_FLOAT:
-			output_var.Assign(this_dyna_param.value_float);
+			result = output_var.Assign(this_dyna_param.value_float);
 			break;
 		case DLL_ARG_DOUBLE:
-			output_var.Assign(this_dyna_param.value_double);
+			result = output_var.Assign(this_dyna_param.value_double);
 			break;
 		case DLL_ARG_STR: // Str*
 			// The use of LPWSTR* vs. LPWSTR typically means the function will pass back the
@@ -1120,18 +1126,21 @@ has_valid_return_type:
 			// passed_by_address for all other types.  However, it must be used carefully since
 			// there's no way for Str* to know how or whether the function requires the string
 			// to be freed (e.g. by calling CoTaskMemFree()).
-			if (this_dyna_param.ptr != output_var.Contents(FALSE)
-				&& !output_var.AssignString((LPTSTR)this_dyna_param.ptr))
-				aResultToken.SetExitResult(FAIL);
+			if (this_dyna_param.ptr != output_var.Contents(FALSE))
+				result = output_var.AssignString((LPTSTR)this_dyna_param.ptr);
 			break;
 		case DLL_ARG_xSTR: // AStr* on Unicode builds and WStr* on ANSI builds.
-			if (this_dyna_param.ptr != output_var.Contents(FALSE)
-				&& !output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr))
-				aResultToken.SetExitResult(FAIL);
+			if (this_dyna_param.ptr != pStr[nxStr]->GetString())
+				result = output_var.AssignStringFromCodePage(UorA(LPSTR,LPWSTR)this_dyna_param.ptr);
+		}
+		if (!result)
+		{
+			aResultToken.SetExitResult(FAIL);
+			break;
 		}
 	}
 
-	if (return_struct_size && !aResultToken.Exited()) // This is done late in case of error.
+	if (return_struct_size && !aResultToken.Exited())
 	{
 		aResultToken.symbol = SYM_STRING; // Set default for Invoke.
 		aResultToken.marker = _T("");

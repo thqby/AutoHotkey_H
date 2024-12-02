@@ -23,18 +23,9 @@ GNU General Public License for more details.
 #include <richedit.h>
 
 
-Line *Line::PreparseError(LPTSTR aErrorText, LPTSTR aExtraInfo)
-// Returns a different type of result for use with the Pre-parsing methods.
+ResultType Line::PreparseError(LPTSTR aErrorText, LPTSTR aExtraInfo)
 {
-	// Make all preparsing errors critical because the runtime reliability
-	// of the program relies upon the fact that the aren't any kind of
-	// problems in the script (otherwise, unexpected behavior may result).
-	// Update: It's okay to return FAIL in this case.  CRITICAL_ERROR should
-	// be avoided whenever OK and FAIL are sufficient by themselves, because
-	// otherwise, callers can't use the NOT operator to detect if a function
-	// failed (since FAIL is value zero, but CRITICAL_ERROR is non-zero):
-	LineError(aErrorText, FAIL, aExtraInfo);
-	return NULL; // Always return NULL because the callers use it as their return value.
+	return LineError(aErrorText, FAIL, aExtraInfo);
 }
 
 
@@ -144,11 +135,14 @@ ResultType Line::SetThrownToken(global_struct &g, ResultToken *aToken, ResultTyp
 #ifdef CONFIG_DEBUGGER
 	if (g_Debugger.IsConnected())
 		if (g_Debugger.PreThrow(aToken) && !(g.ExcptMode & EXCPTMODE_CATCH))
+		{
 			// The debugger has entered (and left) a break state, so the client has had a
 			// chance to inspect the exception and report it.  There's nothing in the DBGp
 			// spec about what to do next, probably since PHP would just log the error.
 			// In our case, it seems more useful to suppress the dialog than to show it.
+			g_script.FreeExceptionToken(aToken);
 			return FAIL;
+		}
 #endif
 	g.ThrownToken = aToken;
 	if (!(g.ExcptMode & EXCPTMODE_CATCH))
@@ -160,7 +154,11 @@ ResultType Line::SetThrownToken(global_struct &g, ResultToken *aToken, ResultTyp
 BIF_DECL(BIF_Throw)
 {
 	if (!aParamCount || aParam[aParamCount - 1]->symbol == SYM_MISSING)
+	{
+		if (g->ExcptMode & EXCPTMODE_CAUGHT) // Re-throw.
+			_f_return_FAIL;
 		_f_throw(ERR_EXCEPTION);
+	}
 	auto &param = *aParam[aParamCount - 1];
 	ResultToken* token = new ResultToken;
 	token->mem_to_free = nullptr;
@@ -181,10 +179,10 @@ BIF_DECL(BIF_Throw)
 		delete token;
 		_f_throw_oom;
 	}
-	if (FAIL == g_script.mCurrLine->SetThrownToken(*g, token, FAIL_OR_OK))
-		aResultToken.SetExitResult(FAIL);
-	else
-		aResultToken.symbol = SYM_MISSING;
+	// Throw() isn't made continuable in v2.1 because existing v2.0 code isn't
+	// expected to deal with the possibility that the thread doesn't exit.
+	g_script.mCurrLine->SetThrownToken(*g, token, FAIL);
+	aResultToken.SetExitResult(FAIL);
 }
 
 
@@ -309,7 +307,7 @@ struct ErrorBoxParam
 	ResultType type;
 	LPCTSTR info;
 	Line *line;
-	IObject *obj;
+	Object *obj;
 #ifdef CONFIG_DEBUGGER
 	int stack_index;
 #endif
@@ -323,9 +321,8 @@ void InsertCallStack(HWND re, ErrorBoxParam &error)
 	if (error.obj && error.obj->IsOfType(Object::sPrototype))
 	{
 		auto obj = static_cast<Object*>(error.obj);
-		ExprTokenType stk;
-		if (obj->GetOwnProp(stk, _T("Stack")) && stk.symbol == SYM_STRING)
-			stack = stk.marker;
+		if (auto temp = obj->GetOwnPropString(_T("Stack")))
+			stack = temp;
 	}
 	else if (error.stack_index >= 0)
 	{
@@ -428,24 +425,37 @@ void InitErrorBox(HWND hwnd, ErrorBoxParam &error)
 	cf.dwEffects = 0;
 	SendMessage(re, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
 	
-	sntprintf(buf, _countof(buf), _T("%s: %.500s\n\n")
+	sntprintf(buf, _countof(buf), _T("%s: %.500s\n")
 		, error.type == CRITICAL_ERROR ? _T("Critical Error")
 			: error.type == WARN ? _T("Warning") : _T("Error")
 		, error.text);
-	SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)buf);
+	auto cp = _tcschr(buf, '\n');
+	if (auto c = *++cp) // Multiple lines in error.text.
+	{
+		// Insert a break *after* the \n so that formatting will revert to default afterward.
+		*cp = '\0';
+		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)buf);
+		*cp = c;
+	}
+	else
+		cp = buf;
+	SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)cp);
 	
+	bool file_needs_break = true;
 	if (error.info && *error.info)
 	{
 		UINT suffix = _tcslen(error.info) > 80 ? 8230 : 0;
-		if (error.line)
-			sntprintf(buf, _countof(buf), _T("Specifically: %.80s%s\n\n"), error.info, &suffix);
+		if (file_needs_break = error.line || error.obj)
+			sntprintf(buf, _countof(buf), _T("\nSpecifically: %.80s%s\n"), error.info, &suffix);
 		else
-			sntprintf(buf, _countof(buf), _T("Text:\t%.80s%s\n"), error.info, &suffix);
+			sntprintf(buf, _countof(buf), _T("\nText:\t%.80s%s\n"), error.info, &suffix);
 		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)buf);
 	}
 
 	if (error.line)
 	{
+		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)_T("\n"));
+
 		#define LINES_ABOVE_AND_BELOW 2
 
 		// Determine the range of lines to be shown:
@@ -491,39 +501,60 @@ void InitErrorBox(HWND hwnd, ErrorBoxParam &error)
 	}
 	else
 	{
-		sntprintf(buf, _countof(buf), _T("Line:\t%d\nFile:\t"), g_script.CurrentLine());
-		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)buf);
-		cf.dwMask = CFM_LINK;
-		cf.dwEffects = CFE_LINK; // Mark it as a link.
-		SendMessage(re, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
-		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)g_script.CurrentFile());
-		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)_T("\n\n"));
+		LPCTSTR file = nullptr;
+		LineNumberType line = 0;
+		if (error.obj)
+		{
+			file = error.obj->GetOwnPropString(_T("File"));
+			line = (LineNumberType)error.obj->GetOwnPropInt64(_T("Line"));
+		}
+		else
+		{
+			file = g_script.CurrentFile();
+			line = g_script.CurrentLine();
+		}
+		if (file && *file)
+		{
+			sntprintf(buf, _countof(buf), line ? _T("\nLine:\t%d\nFile:\t") : _T("\nFile: "), line);
+			SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)(buf + !file_needs_break));
+			cf.dwMask = CFM_LINK;
+			cf.dwEffects = CFE_LINK; // Mark it as a link.
+			SendMessage(re, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+			SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)file);
+			SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)_T("\n"));
+		}
 	}
 
-	LPCTSTR footer;
-	switch (error.type)
+	LPCTSTR footer = error.obj ? error.obj->GetOwnPropString(_T("Hint")) : nullptr;
+	if (footer) // Footer was specified.
 	{
-	case WARN: footer = ERR_WARNING_FOOTER; break;
-	case FAIL_OR_OK: footer = nullptr; break;
-	case CRITICAL_ERROR: footer = UNSTABLE_WILL_EXIT; break;
-	default: footer = (g->ExcptMode & EXCPTMODE_DELETE) ? ERR_ABORT_DELETE
-		: g_script.mIsReadyToExecute ? ERR_ABORT_NO_SPACES
-		: g_script.mIsRestart ? OLD_STILL_IN_EFFECT
-		: WILL_EXIT;
+		if (!*footer) // Explicitly blank: omit default footer.
+			footer = nullptr;
+	}
+	else // Use default footer for this error type, if any.
+	{
+		switch (error.type)
+		{
+		case WARN: footer = ERR_WARNING_FOOTER; break;
+		case FAIL_OR_OK: break;
+		case CRITICAL_ERROR: footer = UNSTABLE_WILL_EXIT; break;
+		default: footer = (g->ExcptMode & EXCPTMODE_DELETE) ? ERR_ABORT_DELETE
+			: g_script.mIsReadyToExecute ? ERR_ABORT_NO_SPACES
+			: g_script.mIsRestart ? OLD_STILL_IN_EFFECT
+			: WILL_EXIT;
+		}
 	}
 	if (footer)
 	{
-		if (error.line)
-			SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)_T("\n"));
+		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)_T("\n"));
 		SendMessage(re, EM_REPLACESEL, FALSE, (LPARAM)footer);
 	}
 
 #ifdef CONFIG_DEBUGGER
-	ExprTokenType tk;
+	LPCTSTR stack;
 	if (   error.stack_index >= 0
 		|| error.obj && error.obj->IsOfType(Object::sPrototype)
-			&& static_cast<Object*>(error.obj)->GetOwnProp(tk, _T("Stack"))
-			&& !TokenIsEmptyString(tk)   )
+			&& (stack = error.obj->GetOwnPropString(_T("Stack"))) && *stack   )
 	{
 		// Stack trace appears to be available, so add a link to show it.
 		CHARRANGE cr;
@@ -542,7 +573,7 @@ void InitErrorBox(HWND hwnd, ErrorBoxParam &error)
 	}
 #endif
 
-	SendMessage(re, EM_SETEVENTMASK, 0, ENM_REQUESTRESIZE | ENM_LINK);
+	SendMessage(re, EM_SETEVENTMASK, 0, ENM_REQUESTRESIZE | ENM_LINK | ENM_KEYEVENTS);
 	SendMessage(re, EM_REQUESTRESIZE, 0, 0);
 
 #ifndef AUTOHOTKEYSC
@@ -610,6 +641,14 @@ INT_PTR CALLBACK ErrorBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			HWND re = ((NMHDR*)lParam)->hwndFrom;
 			switch (((NMHDR*)lParam)->code)
 			{
+			case EN_MSGFILTER:
+			{
+				auto mf = (MSGFILTER*)lParam;
+				if (mf->msg == WM_CHAR)
+					// Forward it to any of the buttons so the dialog will process it as a mnemonic.
+					PostMessage(GetDlgItem(hwnd, IDCANCEL), mf->msg, mf->wParam, mf->lParam);
+				break;
+			}
 			case EN_REQUESTRESIZE: // Received when the RichEdit's content grows beyond its capacity to display all at once.
 			{
 				RECT &rcNew = ((REQRESIZE*)lParam)->rc;
@@ -672,22 +711,30 @@ INT_PTR CALLBACK ErrorBoxProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 
-ResultType Script::ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aExtraInfo, Line *aLine, IObject *aException)
+__declspec(noinline)
+ResultType Script::ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aExtraInfo, Line *aLine)
+{
+	// This overload reduces code size vs. using optional parameters since the the latter
+	// works by the compiler implicitly inserting the default values in the compiled code.
+	return ShowError(aErrorText, aErrorType, aExtraInfo, aLine, nullptr);
+}
+
+
+ResultType Script::ShowError(LPCTSTR aErrorText, ResultType aErrorType, LPCTSTR aExtraInfo, Line *aLine, Object *aException)
 {
 	if (!aErrorText)
 		aErrorText = _T("");
 	if (!aExtraInfo)
 		aExtraInfo = _T("");
-	if (!aLine)
-		aLine = mCurrLine;
 
 #ifdef CONFIG_DEBUGGER
 	if (g_Debugger.HasStdErrHook())
 	{
 		TCHAR buf[LINE_SIZE * 2];
+		Line *line = aLine ? aLine : mCurrLine;
 		FormatStdErr(buf, _countof(buf), aErrorText, aExtraInfo
-			, aLine ? aLine->mFileIndex : mCurrFileIndex
-			, aLine ? aLine->mLineNumber : mCombinedLineNumber
+			, line ? line->mFileIndex : mCurrFileIndex
+			, line ? line->mLineNumber : mCombinedLineNumber
 			, aErrorType == WARN);
 		g_Debugger.OutputStdErr(buf);
 	}
@@ -743,7 +790,7 @@ ResultType Script::ScriptError(LPCTSTR aErrorText, LPCTSTR aExtraInfo)
 	if (g_script.mErrorStdOut && !g_script.mIsReadyToExecute) // i.e. runtime errors are always displayed via dialog.
 	{
 		// See LineError() for details.
-		PrintErrorStdOut(aErrorText, aExtraInfo, mCurrFileIndex, mCombinedLineNumber);
+		PrintErrorStdOut(aErrorText, aExtraInfo, mCurrLine ? mCurrLine->mFileIndex : mCurrFileIndex, CurrentLine());
 	}
 	else
 	{
@@ -775,22 +822,20 @@ ResultType Script::ConflictingDeclarationError(LPCTSTR aDeclType, Var *aExisting
 
 ResultType Line::ValidateVarUsage(Var *aVar, int aUsage)
 {
-	if (   VARREF_IS_WRITE(aUsage)
-		&& (aUsage == VARREF_REF
-			? aVar->Type() != VAR_NORMAL // Aliasing VAR_VIRTUAL is currently unsupported.
-			: aVar->IsReadOnly() && aUsage != VARREF_LVALUE_MAYBE)   )
+	if (VARREF_IS_WRITE(aUsage) && aVar->IsReadOnly() && aUsage != VARREF_LVALUE_MAYBE)
 		return VarIsReadOnlyError(aVar, aUsage);
 	return OK;
 }
 
+__declspec(noinline)
 ResultType Script::VarIsReadOnlyError(Var *aVar, int aErrorType)
 {
 	TCHAR buf[127];
 	sntprintf(buf, _countof(buf), _T("This %s cannot %s.")
 		, VarKindForErrorMessage(aVar)
-		, aErrorType == VARREF_LVALUE ? _T("be assigned a value")
+		, aErrorType == VARREF_OUTPUT_VAR ? _T("be used as an output variable")
 		: aErrorType == VARREF_REF ? _T("have its reference taken")
-		: _T("be used as an output variable"));
+		: _T("be assigned a value"));
 	return ScriptError(buf, aVar->mName);
 }
 
@@ -941,6 +986,8 @@ ResultType TypeError(LPCTSTR aExpectedType, ExprTokenType &aActualValue)
 {
 	TCHAR number_buf[MAX_NUMBER_SIZE];
 	LPCTSTR actual_type, value_as_string;
+	if (aActualValue.symbol == SYM_VAR && aActualValue.var->IsUninitializedNormalVar())
+		return g_script.VarUnsetError(aActualValue.var);
 	TokenTypeAndValue(aActualValue, actual_type, value_as_string, number_buf);
 	return TypeError(aExpectedType, actual_type, value_as_string);
 }
@@ -1081,11 +1128,9 @@ ResultType FResultToError(ResultToken &aResultToken, ExprTokenType *aParam[], in
 
 
 
+__declspec(noinline)
 ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
 {
-	LPCTSTR message = _T(""), extra = _T("");
-	TCHAR extra_buf[MAX_NUMBER_SIZE], message_buf[MAX_NUMBER_SIZE];
-
 	global_struct &g = *::g;
 	
 	ResultToken *token = g.ThrownToken;
@@ -1093,7 +1138,15 @@ ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
 	// This includes OnError callbacks explicitly called below, but also COM events
 	// and CallbackCreate callbacks that execute while MsgBox() is waiting.
 	g.ThrownToken = NULL;
-
+	
+#ifdef CONFIG_DEBUGGER
+	if (g.ExcptMode & EXCPTMODE_DEBUGGER)
+	{
+		FreeExceptionToken(token);
+		return FAIL;
+	}
+#endif
+	
 	// OnError: Allow the script to handle it via a global callback.
 	static bool sOnErrorRunning = false;
 	if (mOnError.Count() && !sOnErrorRunning)
@@ -1137,7 +1190,24 @@ ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
 	}
 #endif
 
-	if (Object *ex = dynamic_cast<Object *>(TokenToObject(*token)))
+	if (ShowError(aLine, aErrorType, token) == OK)
+	{
+		FreeExceptionToken(token);
+		return OK;
+	}
+	g.ThrownToken = token;
+	return FAIL;
+}
+
+
+
+ResultType Script::ShowError(Line* aLine, ResultType aErrorType, ExprTokenType *token)
+{
+	LPCTSTR message = _T(""), extra = _T("");
+	TCHAR extra_buf[MAX_NUMBER_SIZE], message_buf[MAX_NUMBER_SIZE];
+	
+	Object *ex = dynamic_cast<Object *>(TokenToObject(*token));
+	if (ex)
 	{
 		// For simplicity and safety, we call into the Object directly rather than via Invoke().
 		ExprTokenType t;
@@ -1145,28 +1215,26 @@ ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
 			message = TokenToString(t, message_buf);
 		if (ex->GetOwnProp(t, _T("Extra")))
 			extra = TokenToString(t, extra_buf);
-		if (ex->GetOwnProp(t, _T("Line")))
+		LPCTSTR file = ex->GetOwnPropString(_T("File"));
+		LineNumberType line_no = (LineNumberType)ex->GetOwnPropInt64(_T("Line"));
+		if (file && *file && line_no)
 		{
-			LineNumberType line_no = (LineNumberType)TokenToInt64(t);
-			if (ex->GetOwnProp(t, _T("File")))
+			// Locate the line by number and file index, then display that line instead
+			// of the caller supplied one since it's probably more relevant.
+			int file_index;
+			for (file_index = 0; file_index < Line::sSourceFileCount; ++file_index)
+				if (!_tcsicmp(file, Line::sSourceFile[file_index]))
+					break;
+			if (!aLine || aLine->mFileIndex != file_index || aLine->mLineNumber != line_no) // Keep aLine if it matches, in case of multiple Lines with the same number.
 			{
-				LPCTSTR file = TokenToString(t);
-				// Locate the line by number and file index, then display that line instead
-				// of the caller supplied one since it's probably more relevant.
-				int file_index;
-				for (file_index = 0; file_index < Line::sSourceFileCount; ++file_index)
-					if (!_tcsicmp(file, Line::sSourceFile[file_index]))
-						break;
-				if (!aLine || aLine->mFileIndex != file_index || aLine->mLineNumber != line_no) // Keep aLine if it matches, in case of multiple Lines with the same number.
-				{
-					Line *line;
-					for (line = mFirstLine;
-						line && (line->mLineNumber != line_no || line->mFileIndex != file_index
-							|| !line->mArgc && line->mNextLine && line->mNextLine->mLineNumber == line_no); // Skip any same-line block-begin/end, try, else or finally.
-						line = line->mNextLine);
-					if (line)
-						aLine = line;
-				}
+				Line *line = nullptr;
+				for (auto mod = mLastModule; mod; mod = mod->mPrev)
+				for (line = mod->mFirstLine;
+					line && (line->mLineNumber != line_no || line->mFileIndex != file_index
+						|| !line->mArgc && line->mNextLine && line->mNextLine->mLineNumber == line_no); // Skip any same-line block-begin/end, try, else or finally.
+					line = line->mNextLine);
+				if (line)
+					aLine = line;
 			}
 		}
 	}
@@ -1180,13 +1248,33 @@ ResultType Script::UnhandledException(Line* aLine, ResultType aErrorType)
 	if (!*message)
 		message = _T("Unhandled exception.");
 
-	if (ShowError(message, aErrorType, extra, aLine, TokenToObject(*token)) == OK)
+	return ShowError(message, aErrorType, extra, aLine, ex);
+}
+
+
+
+void Object::Error_Show(ResultToken &aResultToken, int aID, int aFlags, ExprTokenType *aParam[], int aParamCount)
+{
+	ResultType type = FAIL_OR_OK;
+	if (aParamCount && aParam[0]->symbol != SYM_MISSING)
 	{
-		FreeExceptionToken(token);
-		return OK;
+		static LPCTSTR sKindName[] { _T("Return"), _T("Exit"), _T("ExitApp"), _T("Warn") };
+		static ResultType sKindType[] { FAIL_OR_OK, FAIL, CRITICAL_ERROR, WARN };
+		auto kind = TokenToString(*aParam[0]);
+		for (int i = 0;; ++i)
+		{
+			if (i == _countof(sKindName))
+				_f_throw_param(0);
+			if (!_tcsicmp(kind, sKindName[i]))
+			{
+				type = sKindType[i];
+				break;
+			}
+		}
 	}
-	g.ThrownToken = token;
-	return FAIL;
+
+	ExprTokenType t_this(this);
+	_o_return(g_script.ShowError(nullptr, type, &t_this) == OK ? -1 : 1);
 }
 
 
@@ -1227,6 +1315,8 @@ void Script::ScriptWarning(WarnMode warnMode, LPCTSTR aWarningText, LPCTSTR aExt
 		return;
 #endif
 	
+	if (warnMode == WARNMODE_ON)
+		warnMode = g_WarnMode;
 	if (warnMode == WARNMODE_OFF)
 		return;
 
@@ -1252,12 +1342,12 @@ void Script::ScriptWarning(WarnMode warnMode, LPCTSTR aWarningText, LPCTSTR aExt
 
 void Script::WarnUnassignedVar(Var *var, Line *aLine)
 {
-	auto warnMode = g_Warn_VarUnset;
+	auto warnMode = mCurrentModule->Warn_VarUnset;
 	if (!warnMode)
 		return;
 
 	// Currently only the first reference to each var generates a warning even when using
-	// StdOut/OutputDebug, since MarkAlreadyWarned() is used to suppress warnings for any
+	// StdOut/OutputDebug. MarkAlreadyWarned() is also used to suppress warnings for any
 	// var which is checked with IsSet().
 	//if (warnMode == WARNMODE_MSGBOX)
 	{
@@ -1269,26 +1359,23 @@ void Script::WarnUnassignedVar(Var *var, Line *aLine)
 		var->MarkAlreadyWarned();
 	}
 
-	bool isUndeclaredLocal = (var->Scope() & (VAR_LOCAL | VAR_DECLARED)) == VAR_LOCAL;
-	LPCTSTR sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName) ? _T("  (same name as a global)") : _T("");
-	TCHAR buf[DIALOG_TITLE_SIZE];
-	sntprintf(buf, _countof(buf), _T("%s %s%s"), Var::DeclarationType(var->Scope()), var->mName, sameNameAsGlobal);
-	ScriptWarning(warnMode, WARNING_ALWAYS_UNSET_VARIABLE, buf, aLine);
+	// No check for a global variable is done because var is unassigned and therefore should
+	// have resolved to a global if there was one, unless it was declared local.
+	TCHAR buf[1024];
+	sntprintf(buf, _countof(buf), _T("This %s appears to never be assigned a value."), Var::DeclarationType(var->Scope()));
+	ScriptWarning(warnMode, buf, var->mName, aLine);
 }
 
 
 
 ResultType Script::VarUnsetError(Var *var)
 {
+	TCHAR buf[1024];
 	bool isUndeclaredLocal = (var->Scope() & (VAR_LOCAL | VAR_DECLARED)) == VAR_LOCAL;
-	TCHAR buf[DIALOG_TITLE_SIZE];
-	if (*var->mName) // Avoid showing "Specifically: global " for temporary VarRefs of unspecified scope, such as those used by Array::FromEnumerable or the debugger.
-	{
-		LPCTSTR sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName) ? _T("  (same name as a global)") : _T("");
-		sntprintf(buf, _countof(buf), _T("%s %s%s"), Var::DeclarationType(var->Scope()), var->mName, sameNameAsGlobal);
-	}
-	else *buf = '\0';
-	return RuntimeError(ERR_VAR_UNSET, buf, FAIL_OR_OK, nullptr, ErrorPrototype::Unset);
+	bool sameNameAsGlobal = isUndeclaredLocal && FindGlobalVar(var->mName);
+	sntprintf(buf, _countof(buf), _T("This %s has not been assigned a value.%s"), Var::DeclarationType(var->Scope())
+		, sameNameAsGlobal ? _T("\nA global declaration inside the function may be required.") : _T(""));
+	return RuntimeError(buf, var->mName, FAIL_OR_OK, nullptr, ErrorPrototype::Unset);
 }
 
 
@@ -1297,11 +1384,10 @@ void Script::WarnLocalSameAsGlobal(LPCTSTR aVarName)
 // Relies on the following pre-conditions:
 //  1) It is an implicit (not declared) variable.
 //  2) Caller has verified that a global variable exists with the same name.
-//  3) g_Warn_LocalSameAsGlobal is on (true).
+//  3) g->CurrentFunc->mModule->Warn_LocalSameAsGlobal is on (true).
 //  4) g->CurrentFunc is the function which contains this variable.
 {
-	auto func_name = g->CurrentFunc ? g->CurrentFunc->mName : _T("");
 	TCHAR buf[DIALOG_TITLE_SIZE];
-	sntprintf(buf, _countof(buf), _T("%s  (in function %s)"), aVarName, func_name);
-	ScriptWarning(g_Warn_LocalSameAsGlobal, WARNING_LOCAL_SAME_AS_GLOBAL, buf);
+	sntprintf(buf, _countof(buf), _T("%s  (in function %s)"), aVarName, g->CurrentFunc->mName);
+	ScriptWarning(g->CurrentFunc->mModule->Warn_LocalSameAsGlobal, WARNING_LOCAL_SAME_AS_GLOBAL, buf);
 }

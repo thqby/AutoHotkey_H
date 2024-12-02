@@ -5985,13 +5985,13 @@ for (;; ptr++)
               *errorcodeptr = ERR39;
               goto FAILED;
               }
+            arglen = (int)(ptr - tempptr);
             }
           if (n > 255)
             {
             *errorcodeptr = ERR38;
             goto FAILED;
             }
-          arglen = (int)(ptr - tempptr);
           /* AutoHotkey: store the name the same way as (*MARK:NAME), and before the callout number */
           *code++ = arglen;
           memcpy(code, tempptr, IN_UCHARS(arglen));

@@ -188,50 +188,42 @@ enum InputStatusType {INPUT_OFF, INPUT_IN_PROGRESS, INPUT_TIMED_OUT, INPUT_TERMI
 class InputObject;
 struct input_type
 {
-	InputStatusType Status;
-	input_type *Prev;
-	InputObject *ScriptObject;
-	LPTSTR Buffer; // Stores the user's actual input.
-	int BufferLength; // The current length of what the user entered.
-	int BufferLengthMax; // The maximum allowed length of the input.
-	TCHAR *EndChars; // A string of characters that should terminate the input.
-	UINT EndCharsMax; // Current size of EndChars buffer.
-	LPTSTR *match; // Array of strings, each string is a match-phrase which if entered, terminates the input.
+	InputStatusType Status = INPUT_OFF;
+	input_type *Prev = nullptr;
+	InputObject *ScriptObject = nullptr;
+	LPTSTR Buffer = nullptr; // Stores the user's actual input.
+	int BufferLength = 0; // The current length of what the user entered.
+	int BufferLengthMax = INPUTHOOK_BUFFER_SIZE - 1; // The maximum allowed length of the input.
+	TCHAR *EndChars = nullptr; // A string of characters that should terminate the input.
+	UINT EndCharsMax = 0; // Current size of EndChars buffer.
+	LPTSTR *match = nullptr; // Array of strings, each string is a match-phrase which if entered, terminates the input.
 	UINT MatchCount; // The number of strings currently in the array.
 	UINT MatchCountMax; // The maximum number of strings that the match array can contain.
 	#define INPUT_ARRAY_BLOCK_SIZE 1024  // The increment by which the above array expands.
-	LPTSTR MatchBuf; // The is the buffer whose contents are pointed to by the match array.
-	UINT MatchBufSize; // The capacity of the above buffer.
-	int Timeout;
+	LPTSTR MatchBuf = nullptr; // The is the buffer whose contents are pointed to by the match array.
+	UINT MatchBufSize = 0; // The capacity of the above buffer.
+	int Timeout = 0;
 	DWORD TimeoutAt;
-	SendLevelType MinSendLevel; // The minimum SendLevel that can be captured by this input (0 allows all).
-	bool BackspaceIsUndo;
-	bool CaseSensitive;
-	bool TranscribeModifiedKeys; // Whether the input command will attempt to transcribe modified keys such as ^c.
-	bool VisibleText, VisibleNonText;
-	bool NotifyNonText;
-	bool FindAnywhere;
-	bool EndCharMode;
+	SendLevelType MinSendLevel = 0; // The minimum SendLevel that can be captured by this input (0 allows all).
+	bool BackspaceIsUndo = true;
+	bool CaseSensitive = false;
+	bool TranscribeModifiedKeys = false; // Whether the input command will attempt to transcribe modified keys such as ^c.
+	bool VisibleText = false, VisibleNonText = true;
+	bool NotifyNonText = false;
+	bool FindAnywhere = false;
+	bool EndCharMode = false;
+	bool BeforeHotkeys = false;
 	vk_type EndingVK; // The hook puts the terminating key into one of these if that's how it was terminated.
 	sc_type EndingSC;
 	TCHAR EndingChar;
 	bool EndingBySC; // Whether the Ending key was one handled by VK or SC.
 	bool EndingRequiredShift; // Whether the key that terminated the input was one that needed the SHIFT key.
-	modLR_type EndingMods;
+	modLR_type EndingMods = 0;
 	UINT EndingMatchIndex;
-	UCHAR KeyVK[VK_ARRAY_COUNT]; // A sparse array of key flags by VK.
-	UCHAR KeySC[SC_ARRAY_COUNT]; // A sparse array of key flags by SC.
-	input_type::input_type() // A simple constructor to initialize the fields that need it.
-		: Status(INPUT_OFF), Prev(NULL), ScriptObject(NULL)
-		, Buffer(NULL), match(NULL), MatchBuf(NULL), MatchBufSize(0)
-		, EndChars(NULL), EndCharsMax(0), KeyVK(), KeySC(), BufferLength(0)
-		, EndingMods(0)
-		// Default options:
-		, MinSendLevel(0), BackspaceIsUndo(true), CaseSensitive(false), TranscribeModifiedKeys(false)
-		, VisibleText(false), VisibleNonText(true), NotifyNonText(false), FindAnywhere(false), EndCharMode(false)
-		, BufferLengthMax(INPUTHOOK_BUFFER_SIZE - 1), Timeout(0)
-	{
-	}
+	UCHAR KeyVK[VK_ARRAY_COUNT] {}; // A sparse array of key flags by VK.
+	UCHAR KeySC[SC_ARRAY_COUNT] {}; // A sparse array of key flags by SC.
+	
+	input_type::input_type() {}
 	~input_type()
 	{
 		free(Buffer);
@@ -240,7 +232,9 @@ struct input_type
 		if (EndCharsMax) // If zero, EndChars may point to static memory.
 			free(EndChars);
 	}
+
 	inline bool InProgress() { return Status == INPUT_IN_PROGRESS; }
+	bool IsEarly() { return BeforeHotkeys; }
 	bool IsInteresting(KBDLLHOOKSTRUCT &aEvent);
 	ResultType Setup(LPCTSTR aOptions, LPCTSTR aEndKeys, LPCTSTR aMatchList);
 	void ParseOptions(LPCTSTR aOptions);
@@ -290,6 +284,14 @@ struct KeyHistoryItem
 	TCHAR target_window[KEY_HISTORY_WINDOW_TITLE_SIZE];
 };
 
+struct CollectInputState
+{
+	bool early_collected, used_dead_key_non_destructively;
+	TCHAR ch[2];
+	int char_count;
+	HWND active_window;
+	HKL keyboard_layout;
+};
 
 //-------------------------------------------
 
@@ -305,15 +307,17 @@ LRESULT SuppressThisKeyFunc(const HHOOK aHook, LPARAM lParam, const vk_type aVK,
 	, bool aKeyUp, ULONG_PTR aExtraInfo, KeyHistoryItem *pKeyHistoryCurr, WPARAM aHotkeyIDToPost
 	, WPARAM aHSwParamToPost = HOTSTRING_INDEX_INVALID, LPARAM aHSlParamToPost = 0);
 
-#define AllowKeyToGoToSystem AllowIt(aHook, aCode, wParam, lParam, aVK, aSC, aKeyUp, aExtraInfo, pKeyHistoryCurr, hotkey_id_to_post)
+#define AllowKeyToGoToSystem AllowIt(aHook, aCode, wParam, lParam, aVK, aSC, aKeyUp, aExtraInfo, collect_input_state, pKeyHistoryCurr, hotkey_id_to_post)
 LRESULT AllowIt(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lParam, const vk_type aVK, const sc_type aSC
-	, bool aKeyUp, ULONG_PTR aExtraInfo, KeyHistoryItem *pKeyHistoryCurr, WPARAM aHotkeyIDToPost);
+	, bool aKeyUp, ULONG_PTR aExtraInfo, CollectInputState &aState, KeyHistoryItem *pKeyHistoryCurr, WPARAM aHotkeyIDToPost);
 
+bool EarlyCollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, bool aKeyUp, bool aIsIgnored
+	, CollectInputState &aState, KeyHistoryItem *pKeyHistoryCurr);
 bool CollectInput(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, bool aKeyUp, bool aIsIgnored
-	, KeyHistoryItem *pKeyHistoryCurr, WPARAM &aHotstringWparamToPost, LPARAM &aHotstringLparamToPost);
+	, CollectInputState &aState, KeyHistoryItem *pKeyHistoryCurr, WPARAM &aHotstringWparamToPost, LPARAM &aHotstringLparamToPost);
 bool CollectHotstring(KBDLLHOOKSTRUCT &aEvent, TCHAR aChar[], int aCharCount, HWND aActiveWindow
 	, KeyHistoryItem *pKeyHistoryCurr, WPARAM &aHotstringWparamToPost, LPARAM &aHotstringLparamToPost);
-bool CollectInputHook(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, TCHAR aChar[], int aCharCount, bool aIsIgnored);
+bool CollectInputHook(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, TCHAR aChar[], int aCharCount, bool aIsIgnored, bool aEarly);
 bool IsHotstringWordChar(TCHAR aChar);
 void UpdateKeybdState(KBDLLHOOKSTRUCT &aEvent, const vk_type aVK, const sc_type aSC, bool aKeyUp, bool aIsSuppressed);
 bool KeybdEventIsPhysical(DWORD aEventFlags, const vk_type aVK, bool aKeyUp);

@@ -449,6 +449,16 @@ bif_impl void SetStoreCapsLockMode(BOOL aMode, BOOL &aRetVal)
 	g->StoreCapslockMode = aMode;
 }
 
+BIV_DECL_R(BIV_KeybdHookInstalled)
+{
+	_f_return_i((g_KeybdHook ? 1 : 0) | (SystemHasAnotherKeybdHook() ? 2 : 0));
+}
+
+BIV_DECL_R(BIV_MouseHookInstalled)
+{
+	_f_return_i((g_MouseHook ? 1 : 0) | (SystemHasAnotherMouseHook() ? 2 : 0));
+}
+
 BIV_DECL_R(BIV_Hotkey)
 {
 	if (aVarName[2] == 'M') // A_MaxHotkeysPerInterval
@@ -660,9 +670,9 @@ BIV_DECL_R(BIV_ScreenDPI)
 
 BIV_DECL_R(BIV_TrayMenu)
 {
-	// Currently ExpandExpression() does not automatically release objects returned
-	// by BIVs since this is the only one, and we're retaining a reference to it.
-	//g_script.mTrayMenu->AddRef();
+	if (!g_script.mTrayMenu)
+		_f_return_unset;
+	g_script.mTrayMenu->AddRef();
 	_f_return(g_script.mTrayMenu);
 }
 
@@ -981,35 +991,21 @@ BIV_DECL_R(BIV_MyDocuments) // Called by multiple callers.
 
 
 
-BIF_DECL(BIF_CaretGetPos)
+BOOL CaretGetPos(ResultToken *aX, ResultToken *aY)
 {
-	Var *varX = ParamIndexToOutputVar(0);
-	Var *varY = ParamIndexToOutputVar(1);
-	
 	// I believe only the foreground window can have a caret position due to relationship with focused control.
-	HWND target_window = GetForegroundWindow(); // Variable must be named target_window for ATTACH_THREAD_INPUT.
-	if (!target_window) // No window is in the foreground, report blank coordinate.
-	{
-		if (varX)
-			varX->Assign();
-		if (varY)
-			varY->Assign();
-		_f_return_i(FALSE);
-	}
-
-	DWORD now_tick = GetTickCount();
+	HWND target_window = GetForegroundWindow();
 
 	GUITHREADINFO info;
 	info.cbSize = sizeof(GUITHREADINFO);
-	BOOL result = GetGUIThreadInfo(GetWindowThreadProcessId(target_window, NULL), &info) // Got info okay...
+	BOOL result = target_window // A window is in the foreground (usually true).
+		&& GetGUIThreadInfo(GetWindowThreadProcessId(target_window, NULL), &info) // Got info okay...
 		&& info.hwndCaret; // ...and there is a caret.
 	if (!result)
 	{
-		if (varX)
-			varX->Assign();
-		if (varY)
-			varY->Assign();
-		_f_return_i(FALSE);
+		if (aX) aX->SetValue(_T(""), 0); // For backward-compatibility, these must be made "blank".
+		if (aY) aY->SetValue(_T(""), 0);
+		return FALSE;
 	}
 	POINT pt;
 	pt.x = info.rcCaret.left;
@@ -1022,11 +1018,9 @@ BIF_DECL(BIF_CaretGetPos)
 	pt.x -= origin.x;
 	pt.y -= origin.y;
 	
-	if (varX)
-		varX->Assign(pt.x);
-	if (varY)
-		varY->Assign(pt.y);
-	_f_return_i(TRUE);
+	if (aX) aX->SetValue(pt.x);
+	if (aY) aY->SetValue(pt.y);
+	return TRUE;
 }
 
 
@@ -1421,6 +1415,14 @@ BIV_DECL_R(BIV_EndChar)
 	_f_retval_buf[0] = g_script.mEndChar;
 	_f_retval_buf[1] = '\0';
 	_f_return_p(_f_retval_buf);
+}
+
+
+
+void SetHotIfReturnValue(ResultToken &aResultToken);
+BIV_DECL_R(BIV_HotIf)
+{
+	SetHotIfReturnValue(aResultToken);
 }
 
 

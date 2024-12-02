@@ -234,10 +234,6 @@ BIF_DECL(BIF_NumPut)
 		case 1: *(UINT8 *)op.target = (UINT8)num_i64; break;
 		}
 	}
-	if (target_token.symbol == SYM_VAR && !target_token.var->IsPureNumeric())
-		target_token.var->Close(); // This updates various attributes of the variable.
-	//else the target was an raw address.  If that address is inside some variable's contents, the above
-	// attributes would already have been removed at the time the & operator was used on the variable.
 	aResultToken.value_int64 = num_end; // aResultToken.symbol was set to SYM_INTEGER by our caller.
 }
 
@@ -483,6 +479,8 @@ BIF_DECL(BIF_StrGetPut) // BIF_DECL(BIF_StrGet), BIF_DECL(BIF_StrPut)
 				}
 				// Convert to target encoding.
 				char_count = WideCharToMultiByte(encoding, flags, (LPCWSTR)source_string, source_length, (LPSTR)address, length, NULL, NULL);
+				if (!char_count && flags && GetLastError() == ERROR_INVALID_FLAGS) // See the similar check above for comments; this one covers cases where length was specified.
+					char_count = WideCharToMultiByte(encoding, 0, (LPCWSTR)source_string, source_length, (LPSTR)address, length, NULL, NULL);
 				// Since above did not null-terminate, check for buffer space and null-terminate if there's room.
 				// It is tempting to always null-terminate (potentially replacing the last byte of data),
 				// but that would exclude this function as a means to copy a string into a fixed-length array.
@@ -576,7 +574,7 @@ BIF_DECL(BIF_StrPtr)
 		_f_return((UINT_PTR)aParam[0]->marker);
 	case SYM_VAR:
 		if (!aParam[0]->var->IsPureNumericOrObject())
-			_f_return((UINT_PTR)aParam[0]->var->Contents());
+			_f_return((UINT_PTR)aParam[0]->var->Contents(FALSE)); // VAR_NORMAL and the above condition imply passing FALSE is safe.
 	default:
 		_f_throw_type(_T("String"), *aParam[0]);
 	}

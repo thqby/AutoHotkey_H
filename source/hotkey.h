@@ -65,7 +65,7 @@ enum HotkeyTypeEnum {HK_NORMAL, HK_KEYBD_HOOK, HK_MOUSE_HOOK, HK_BOTH_HOOKS, HK_
 
 HWND HotCriterionAllowsFiring(HotkeyCriterion *aCriterion, LPTSTR aHotkeyName); // Used by hotkeys and hotstrings.
 bool HotInputLevelAllowsFiring(SendLevelType inputLevel, ULONG_PTR aEventExtraInfo, LPTSTR aKeyHistoryChar);
-FResult SetHotkeyCriterion(HotCriterionType aType, LPCTSTR aWinTitle, LPCTSTR aWinText);
+FResult SetHotkeyCriterion(HotCriterionType aType, LPCTSTR aWinTitle, LPCTSTR aWinText, ResultToken &aResultToken);
 HotkeyCriterion *AddHotkeyCriterion(HotkeyCriterion *aCriterion);
 HotkeyCriterion *AddHotkeyCriterion(HotCriterionType aType, LPCTSTR aWinTitle, LPCTSTR aWinText);
 HotkeyCriterion *AddHotkeyIfExpr();

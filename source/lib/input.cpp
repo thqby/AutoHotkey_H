@@ -66,6 +66,9 @@ void InputStart(input_type &input)
 	input.Start();
 	g_input = &input; // Signal the hook to start the input.
 
+	if (input.BeforeHotkeys)
+		++g_inputBeforeHotkeysCount;
+
 	Hotkey::InstallKeybdHook(); // Install the hook (if needed).
 }
 
@@ -81,6 +84,9 @@ void input_type::ParseOptions(LPCTSTR aOptions)
 			break;
 		case 'C':
 			CaseSensitive = true;
+			break;
+		case 'H':
+			BeforeHotkeys = true;
 			break;
 		case 'I':
 			MinSendLevel = (cp[1] <= '9' && cp[1] >= '0') ? (SendLevelType)_ttoi(cp + 1) : 1;
@@ -252,6 +258,9 @@ ResultType input_type::SetKeyFlags(LPCTSTR aKeys, bool aEndKeyMode, UCHAR aFlags
 		if (sc || sc_by_number) // Fixed for v1.1.33.02: Allow sc000 for setting/unsetting flags for any events that lack a scan code.
 		{
 			end_sc[sc] = (end_sc[sc] & ~aFlagsRemove) | aFlagsAdd;
+			// If specified by name, apply flag removal to this key's VK as well.
+			if (aFlagsRemove && !sc_by_number && (vk = sc_to_vk(sc)))
+				end_vk[vk] &= ~aFlagsRemove;
 		}
 	} // for()
 
@@ -474,6 +483,9 @@ void input_type::EndByReason(InputStatusType aReason)
 	ASSERT(InProgress());
 	EndingMods = g_modifiersLR_logical; // Not relevant to all end reasons, but might be useful anyway.
 	Status = aReason;
+
+	if (BeforeHotkeys)
+		--g_inputBeforeHotkeysCount;
 
 	// It's done this way rather than calling InputRelease() directly...
 	// ...so that we can rely on MsgSleep() to create a new thread for the OnEnd event.

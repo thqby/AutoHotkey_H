@@ -36,6 +36,7 @@ extern HWND g_hWnd;  // The main window
 extern HWND g_hWndEdit;  // The edit window, child of main.
 extern HFONT g_hFontEdit;
 extern HACCEL g_hAccelTable; // Accelerator table for main menu shortcut keys.
+extern MSG *g_CalledByIsDialogMessageOrDispatch; // Helps avoid launching a monitor function twice for the same message.
 
 typedef int (WINAPI *StrCmpLogicalW_type)(LPCWSTR, LPCWSTR);
 extern StrCmpLogicalW_type g_StrCmpLogicalW;
@@ -73,9 +74,7 @@ extern HHOOK g_MouseHook;
 extern HHOOK g_PlaybackHook;
 extern bool g_ForceLaunch;
 extern bool g_WinActivateForce;
-extern WarnMode g_Warn_LocalSameAsGlobal;
-extern WarnMode g_Warn_Unreachable;
-extern WarnMode g_Warn_VarUnset;
+extern WarnMode g_WarnMode;
 extern SingleInstanceType g_AllowOnlyOneInstance;
 extern bool g_persistent;
 extern bool g_NoTrayIcon;
@@ -155,6 +154,7 @@ extern TCHAR g_EndChars[HS_MAX_END_CHARS + 1];
 
 // Global objects:
 extern input_type *g_input;
+extern int g_inputBeforeHotkeysCount;
 EXTERN_SCRIPT;
 EXTERN_CLIPBOARD;
 EXTERN_OSVER;
@@ -302,32 +302,5 @@ if (g_InputTimerExists && KillTimer(g_hWnd, TIMER_ID_INPUT))\
 #define KILL_DEREF_TIMER \
 if (g_DerefTimerExists && KillTimer(g_hWnd, TIMER_ID_DEREF))\
 	g_DerefTimerExists = false;
-
-static inline void AddGuiToList(GuiType* gui)
-{
-	gui->mNextGui = NULL;
-	gui->mPrevGui = g_lastGui;
-	if (g_lastGui)
-		g_lastGui->mNextGui = gui;
-	g_lastGui = gui;
-	if (!g_firstGui)
-		g_firstGui = gui;
-	// AddRef() is not called here because we want the GUI to be destroyed automatically
-	// when the script releases its last reference if it's not visible, or when the GUI
-	// is closed if the script has no references.  See VisibilityChanged().
-}
-
-static inline void RemoveGuiFromList(GuiType* gui)
-{
-	if (!gui->mPrevGui && gui != g_firstGui)
-		// !mPrevGui indicates this is either the first Gui or not in the list.
-		// Since both conditions were met, this Gui must have been partially constructed
-		// but not added to the list, and is being destroyed due to an error in Create.
-		return;
-	GuiType *prev = gui->mPrevGui, *&prevNext = prev ? prev->mNextGui : g_firstGui;
-	GuiType *next = gui->mNextGui, *&nextPrev = next ? next->mPrevGui : g_lastGui;
-	prevNext = next;
-	nextPrev = prev;
-}
 
 #endif

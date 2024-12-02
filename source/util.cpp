@@ -1479,12 +1479,18 @@ bool DoesFilePatternExist(LPCTSTR aFilePattern, DWORD *aFileAttr, DWORD aRequire
 		// Skip . and .., which appear to always be listed first (for dir\* and dir\*.*).
 		while (wfd.cFileName[0] == '.' && (!wfd.cFileName[1] || wfd.cFileName[1] == '.' && !wfd.cFileName[2]))
 			if (!FindNextFile(hFile, &wfd))
+			{
+				FindClose(hFile);
 				return false;
+			}
 		if (aRequiredAttr) // Caller wants to check for a file/folder with specific attributes.
 		{
 			while ((wfd.dwFileAttributes & aRequiredAttr) != aRequiredAttr)
 				if (!FindNextFile(hFile, &wfd))
+				{
+					FindClose(hFile);
 					return false;
+				}
 			// Since above didn't return, a file/folder with the required attribute was found.
 		}
 		FindClose(hFile);
@@ -2645,22 +2651,26 @@ HICON ExtractIconFromExecutable(LPCTSTR aFilespec, int aIconNumber, int aWidth, 
 			NEWHEADER *resHead = (NEWHEADER *)presdata;
 			WORD resCount = resHead->ResCount;
 			RESDIR *resDir = (RESDIR *)(resHead + 1), *chosen = NULL;
-			int chosen_width = 0;
+			int chosen_width = 0, chosen_depth = 0;
 			for (int i = 0; i < resCount; ++i)
 			{
 				int this_width = resDir[i].Icon.Width;
 				if (!this_width) // Workaround for 256x256 icons.
 					this_width = 256;
+				int this_depth = resDir[i].BitCount;
 				// Find the closest match for size, preferring the next larger icon if there's
 				// no exact match.  Normally the system will just pick the closest size, but
 				// at least for our icon, the 32x32 icon rendered at 20x20 looks much better
 				// than the 16x16 icon rendered at 20x20 (i.e. small icon size for 125% DPI).
 				if (this_width > chosen_width
 					? chosen_width < aWidth // Current icon smaller than desired, so up-size.
-					: this_width >= aWidth) // This icon is closer to the desired size, so down-size.
+					: this_width < chosen_width
+					? this_width >= aWidth // This icon is closer to the desired size, so down-size.
+					: this_depth > chosen_depth) // Prioritize size, but otherwise prefer higher bit count.
 				{
 					chosen = &resDir[i];
 					chosen_width = this_width;
+					chosen_depth = this_depth;
 				}
 			}
 			if (   (chosen) // It would be NULL if there were no icons.
