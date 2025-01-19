@@ -1897,7 +1897,7 @@ LPWSTR Debugger::ParsePropertyKeyLiteral(LPWSTR src, ExprTokenType &t_key)
 		t_key.symbol = SYM_OBJECT;
 		return src + 1;
 	}
-	else
+	else if (!cisalpha(*src)) // Rule out inf/nan.
 	{
 		LPTSTR iend, fend;
 		auto ival = istrtoi64(src, &iend);
