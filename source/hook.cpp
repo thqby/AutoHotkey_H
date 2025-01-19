@@ -2761,6 +2761,8 @@ bool CollectHotstring(KBDLLHOOKSTRUCT &aEvent, TCHAR ch[], int char_count, HWND 
 				while (skip_chars < len)
 				{
 					TCHAR c = hs.mReplacement[skip_chars];
+					if (!hs.mSendRaw && _tcschr(_T("^+!#{}"), c)) // Account for cases like ::+a::+b and ::{r}::{Left 4}.
+						break;
 					if (cpbuf[skip_chars] != c)
 					{
 						if (cpbuf[skip_chars] != ltoupper(c))
