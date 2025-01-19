@@ -5787,6 +5787,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, FuncDefType aIsInExpres
 	TCHAR buf[LINE_SIZE];
 	bool param_must_have_default = false;
 	bool at_least_one_default_expr = false;
+	LPCTSTR saved_pending_hotkey;
 
 #ifdef CONFIG_DLL
 	func.mLineNumber = mCombinedLineNumber;
@@ -5939,6 +5940,8 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, FuncDefType aIsInExpres
 						if (!at_least_one_default_expr)
 						{
 							at_least_one_default_expr = true;
+							saved_pending_hotkey = mPendingHotkey;
+							mPendingHotkey = nullptr;
 							if (!AddLine(ACT_BLOCK_BEGIN))
 								return FAIL;
 						}
@@ -5983,7 +5986,10 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, FuncDefType aIsInExpres
 	} // for() each formal parameter.
 
 	if (at_least_one_default_expr)
+	{
 		mIgnoreNextBlockBegin = true; // This is only set after all parameters are parsed, in case they contain fat arrow functions.
+		mPendingHotkey = saved_pending_hotkey;
+	}
 
 	if (param_count)
 	{
