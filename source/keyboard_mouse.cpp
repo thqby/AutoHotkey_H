@@ -881,6 +881,8 @@ brace_case_end: // This label is used to simplify the code without sacrificing p
 		// Put any modifiers in sModifiersLR_remapped back into effect, as if they were physically down.
 		mods_down_physically |= sModifiersLR_remapped;
 
+		modLR_type mods_current = GetModifierLRState();
+
 		// Restore the state of the modifiers to be those the user is physically holding down right now.
 		// Any modifiers that are logically "persistent", as detected upon entrance to this function
 		// (e.g. due to something such as a prior "Send, {LWinDown}"), are also pushed down if they're not already.
@@ -890,7 +892,10 @@ brace_case_end: // This label is used to simplify the code without sacrificing p
 		// user resumes typing.
 		// v1.0.42.04: Now that SendKey() is lazy about releasing Ctrl and/or Shift (but not Win/Alt),
 		// the section below also releases Ctrl/Shift if appropriate.  See SendKey() for more details.
-		mods_to_set = persistent_modifiers_for_this_SendKeys; // Set default.
+		// Fix for v2.0.19: Filter the default value to just the modifiers which are currently in effect.
+		// If any "persistent" modifiers aren't down now, they were likely released by something external
+		// during the Send, and to avoid stuck modifiers, they should not be pushed back down.
+		mods_to_set = persistent_modifiers_for_this_SendKeys & mods_current; // Set default.
 		if (sInBlindMode) // This section is not needed for the array-sending modes because they exploit uninterruptibility to perform a more reliable restoration.
 		{
 			// For selective {Blind!#^+}, restore any modifiers that were automatically released at the
@@ -952,7 +957,7 @@ brace_case_end: // This label is used to simplify the code without sacrificing p
 		// which in turn causes the Shift key to stick down.  If non-zero, the Shift key is currently "up"
 		// but should be "released" anyway, since the system will inject Shift-down either before the next
 		// keyboard event or after the Numpad key is released.  Find "fake shift" for more details.
-		SetModifierLRState(mods_to_set, GetModifierLRState() | g_modifiersLR_numpad_mask, aTargetWindow, true, true); // It also does DoKeyDelay(g->PressDuration).
+		SetModifierLRState(mods_to_set, mods_current | g_modifiersLR_numpad_mask, aTargetWindow, true, true); // It also does DoKeyDelay(g->PressDuration).
 	} // End of non-array Send.
 
 	// For peace of mind and because that's how it was tested originally, the following is done
