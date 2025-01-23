@@ -244,6 +244,9 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 	case AHK_HOTSTRING: // Added for v1.0.36.02 so that hotstrings work even while an InputBox or other non-standard msg pump is running.
 	case AHK_CLIPBOARD_CHANGE: // Added for v1.0.44 so that clipboard notifications aren't lost while the script is displaying a MsgBox or other dialog.
 	case AHK_INPUT_END:
+	case AHK_INPUT_KEYDOWN:
+	case AHK_INPUT_CHAR:
+	case AHK_INPUT_KEYUP:
 		// If the following facts are ever confirmed, there would be no need to post the message in cases where
 		// the MsgSleep() won't be done:
 		// 1) The mere fact that any of the above messages has been received here in MainWindowProc means that a
