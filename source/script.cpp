@@ -5084,9 +5084,11 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 	case ACT_FINALLY:
 		bool expected = false;
 		Line *parent = mPendingRelatedLine;
+		if (parent->mActionType == ACT_BLOCK_BEGIN) // For mPendingRelatedLine, this means an entire block preceding this line.
+			parent = parent->mParentLine;
 		for (;; parent = parent->mParentLine)
 		{
-			if (!parent)
+			if (!parent || parent->mActionType == ACT_BLOCK_BEGIN) // If parent is a block-begin, it would be enclosing this line.
 				return line.LineUnexpectedError();
 			enum_act parent_act = (enum_act)parent->mActionType;
 			switch (aActionType)
