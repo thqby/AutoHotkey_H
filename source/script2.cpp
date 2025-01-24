@@ -1381,7 +1381,7 @@ bif_impl FResult MouseGetPos(int *aX, int *aY, ResultToken *aParent, ResultToken
 	TCHAR class_nn[WINDOW_CLASS_NN_SIZE];
 	auto fr = ControlGetClassNN(parent_under_cursor, child_under_cursor, class_nn, _countof(class_nn));
 	if (fr != OK)
-		return fr;
+		return OK; // Leave aChild blank and do not throw.
 	if (!TokenSetResult(*aChild, class_nn))
 		return aChild->Exited() ? FR_FAIL : FR_ABORTED;
 	return OK;
