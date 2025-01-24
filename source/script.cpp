@@ -10088,9 +10088,17 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 				}
 				if (!g.ThrownToken && line->mActionType == ACT_ELSE && result == OK && !jump_to_line)
 				{
-					// Since no exception was thrown, execute the ELSE (by jumping to its first statement).
-					line = line->mNextLine;
-					continue;
+					// Since no exception was thrown, execute the ELSE.
+					if (line->mNextLine->mActionType == ACT_BLOCK_BEGIN)
+					{
+						do
+							result = line->mNextLine->mNextLine->ExecUntil(UNTIL_BLOCK_END, aResultToken, &jump_to_line);
+						while (jump_to_line == line->mNextLine); // The above call encountered a Goto that jumps to the "{". See ACT_BLOCK_BEGIN in ExecUntil() for details.
+					}
+					else
+						result = line->mNextLine->ExecUntil(ONLY_ONE_LINE, aResultToken, &jump_to_line);
+					// Continue on in case there is a FINALLY after this ELSE.
+					UnhandledException_was_not_called = false; // It would have been called by ExecUntil() above if appropriate.
 				}
 			}
 			else // this_act == ACT_CATCH
