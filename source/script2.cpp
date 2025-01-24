@@ -1666,6 +1666,9 @@ bif_impl FResult FileSelect(optl<StrArg> aOptions, optl<StrArg> aWorkingDir, opt
 		// from one another, which may help script automation in rare cases:
 		sntprintf(greeting, _countof(greeting), _T("Select %s - %s")
 			, (flags & FOS_PICKFOLDERS) ? _T("Folder") : _T("File"), g_script.DefaultDialogTitle());
+	
+	if (!IsNumeric(options_str, false, true))
+		return FR_E_ARG(0);
 
 	int options = ATOI(options_str);
 	if (options & 0x20)
