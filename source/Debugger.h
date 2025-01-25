@@ -406,6 +406,7 @@ private:
 	int WriteBreakpointXml(Breakpoint *aBreakpoint, Line *aLine);
 	int WriteExceptionBreakpointXml();
 	Line *FindFirstLineForBreakpoint(int file_index, UINT line_no);
+	void SetBreakpointForLineGroup(Line *line, Breakpoint *bp);
 
 	void AppendPropertyName(CStringA &aNameBuf, size_t aParentNameLength, const char *aName);
 	void AppendStringKey(CStringA &aNameBuf, size_t aParentNameLength, const char *aKey);

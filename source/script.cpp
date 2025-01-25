@@ -7470,21 +7470,32 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 					// all skip an initial ACT_BLOCK_BEGIN (to avoid an extra ExecUntil call),
 					// which would result in executing the function's body instead of skipping it.
 					Line *body = line->mNextLine;
-				#ifdef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST // Currently unused.
-					block_begin = parent->mNextLine; // In case there are multiple fat arrow functions on one line.
-					Line *after_body = parent->mRelatedLine;
-					Line *body_end = after_body->mPrevLine; // In case body is multiple lines (such as a nested IF or LOOP).
-					// Swap the statement body and fat arrow functions around to make it work:
-					parent   ->mNextLine = body       , body       ->mPrevLine = parent;
-					body_end ->mNextLine = block_begin, block_begin->mPrevLine = body_end;
-					line     ->mNextLine = after_body , after_body ->mPrevLine = line;
-				#else
 					// Remove the fat arrow functions to allow the correct body to execute.
-					// This relies on there being no need for the fat arrow functions to
-					// remain in the Line list after this point (so for instance, there's
-					// no possibility of setting a breakpoint in one of these functions).
 					parent->mNextLine = body, body->mPrevLine = parent;
-				#endif
+					// If this wasn't unset, an error dialog would walk upward to find a previous line,
+					// then step forward and fail to find the original target line.  Instead, it will
+					// display from the function's block-begin downward, usually including the expression
+					// which contains the function.  Must not change line->mNextLine or line itself because
+					// they are still needed by the current and next iteration of this loop.
+					block_begin->mPrevLine = nullptr;
+					// An alternative approach used in v2.0.17 & .18 was to move the function's body,
+					// but identifying the right place to move it was deceptively complicated:
+					//   if cond
+					//       ; BAD: executed by IF
+					//       f(A()=>)
+					//       ; OK for A
+					//   else
+					//       ; BAD: executed by ELSE
+					//       if f(B()=>)
+					//           ; BAD: executed by IF
+					//           body
+					//           ; OK? Difficult to locate because mRelatedLine points us to the very end of the ladder.
+					//       else ...
+					// This was intended to group the lines together so that the debugger can iterate
+					// over them efficiently, but as demonstrated above, they can't always be kept in a
+					// continuguous sequence.  Instead, the debugger now iterates over the function list.
+					// If ever we do shuffle lines around again, be sure that the loop here is redesigned
+					// to finish preparsing this current "line" and continue iterating correctly.
 				}
 				else if (parent && parent->mActionType != ACT_BLOCK_BEGIN)
 				{
