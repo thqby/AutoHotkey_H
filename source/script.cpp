@@ -2116,7 +2116,7 @@ process_completed_line:
 					auto open_block = mLineParent;
 					if (!ParseAndAddLineInBlock(buf)) // Function body - one line
 						return FAIL;
-					if (open_block != mLineParent) // key::try { or similar.
+					if (open_block != mLineParent && !mExprContainingThisFunc) // key::try { or similar.
 					{
 						mCurrLine = nullptr;
 						return ScriptError(ERR_HOTKEY_MISSING_BRACE);
@@ -2248,8 +2248,7 @@ process_completed_line:
 					}
 					else
 					{
-						if (  !ParseAndAddLine(buf, expr->action)
-							|| expr->add_block_end_after && !AddLine(ACT_BLOCK_END)  )
+						if (!ParseAndAddLine(buf, expr->action))
 							return FAIL;
 					}
 					if (mExprContainingThisFunc != expr->outer) // (f1(){},f2(){}) or f2(a:=f1(){}){}
@@ -2257,6 +2256,7 @@ process_completed_line:
 						mExprContainingThisFunc->pending_hotkey = expr->pending_hotkey;
 						mExprContainingThisFunc->rejoin_first_line = expr->rejoin_first_line;
 						mExprContainingThisFunc->rejoin_last_line = expr->rejoin_last_line;
+						mExprContainingThisFunc->add_block_end_after = expr->add_block_end_after;
 					}
 					else if (expr->pending_hotkey) // #HotIf fn(){}
 					{
@@ -2272,6 +2272,11 @@ process_completed_line:
 						mLastLine = expr->rejoin_last_line;
 						if (mLastLine->mActionType == ACT_BLOCK_END)
 							mPendingRelatedLine = mLastLine->mParentLine;
+					}
+					else if (expr->add_block_end_after) // Single-line hotkey.
+					{
+						if (!AddLine(ACT_BLOCK_END))
+							return FAIL;
 					}
 					delete expr;
 					goto continue_main_loop;
