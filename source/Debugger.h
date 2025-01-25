@@ -410,6 +410,7 @@ private:
 
 	int WriteBreakpointXml(Breakpoint *aBreakpoint);
 	Line *FindFirstLineForBreakpoint(int file_index, UINT line_no);
+	void SetBreakpointForLineGroup(Line *line, Breakpoint *bp);
 	Breakpoint *CreateBreakpoint();
 	void DeleteBreakpoint(Breakpoint *aBp);
 
