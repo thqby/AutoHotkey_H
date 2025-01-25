@@ -7470,6 +7470,7 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 					// all skip an initial ACT_BLOCK_BEGIN (to avoid an extra ExecUntil call),
 					// which would result in executing the function's body instead of skipping it.
 					Line *body = line->mNextLine;
+				#ifdef KEEP_FAT_ARROW_FUNCTIONS_IN_LINE_LIST // Currently unused.
 					block_begin = parent->mNextLine; // In case there are multiple fat arrow functions on one line.
 					Line *after_body = parent->mRelatedLine;
 					Line *body_end = after_body->mPrevLine; // In case body is multiple lines (such as a nested IF or LOOP).
@@ -7477,6 +7478,13 @@ Line *Script::PreparseCommands(Line *aStartingLine)
 					parent   ->mNextLine = body       , body       ->mPrevLine = parent;
 					body_end ->mNextLine = block_begin, block_begin->mPrevLine = body_end;
 					line     ->mNextLine = after_body , after_body ->mPrevLine = line;
+				#else
+					// Remove the fat arrow functions to allow the correct body to execute.
+					// This relies on there being no need for the fat arrow functions to
+					// remain in the Line list after this point (so for instance, there's
+					// no possibility of setting a breakpoint in one of these functions).
+					parent->mNextLine = body, body->mPrevLine = parent;
+				#endif
 				}
 				else if (parent && parent->mActionType != ACT_BLOCK_BEGIN)
 				{
