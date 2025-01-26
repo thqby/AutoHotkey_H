@@ -2293,6 +2293,7 @@ public:
     
 	ResultType Init(LPTSTR aScriptFilename, IObject *aArgs);
 	ResultType CreateWindows();
+	void SetMainWindowEditFont(UINT aDPI);
 	void EnableClipboardListener(bool aEnable);
 	void AllowMainWindow(bool aAllow);
 	void EnableOrDisableViewMenuItems(HMENU aMenu, UINT aFlags);

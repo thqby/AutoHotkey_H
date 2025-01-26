@@ -434,6 +434,11 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		}
 		break;
 
+	case WM_DPICHANGED:
+		if (hWnd == g_hWnd)
+			g_script.SetMainWindowEditFont(LOWORD(wParam));
+		break;
+
 	case WM_CLIPBOARDUPDATE:
 		if (g_script.mOnClipboardChange.Count()) // In case it's a bogus msg, it's our responsibility to avoid posting the msg if there's no function to call.
 			PostMessage(g_hWnd, AHK_CLIPBOARD_CHANGE, 0, 0); // It's done this way to buffer it when the script is uninterruptible, etc.  v1.0.44: Post to g_hWnd vs. NULL so that notifications aren't lost when script is displaying a MsgBox or other dialog.

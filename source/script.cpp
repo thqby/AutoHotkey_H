@@ -680,13 +680,7 @@ ResultType Script::CreateWindows()
 		MsgBox(_T("CreateWindow")); // Short msg since so rare.
 		return FAIL;
 	}
-	// FONTS: The font used by default, at least on XP, is GetStockObject(SYSTEM_FONT).
-	// Use something more appealing (monospaced seems preferable):
-	HDC hdc = GetDC(g_hWndEdit);
-	g_hFontEdit = CreateFont(FONT_POINT(hdc, 10), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-		, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, _T("Consolas"));
-	ReleaseDC(g_hWndEdit, hdc);
-	SendMessage(g_hWndEdit, WM_SETFONT, (WPARAM)g_hFontEdit, 0);
+	SetMainWindowEditFont(g_ScreenDPI);
 
 	// v1.0.30.05: Specifying a limit of zero opens the control to its maximum text capacity,
 	// which removes the 32K size restriction.  Testing shows that this does not increase the actual
@@ -734,6 +728,22 @@ ResultType Script::CreateWindows()
 		CreateTrayIcon();
 
 	return OK;
+}
+
+
+
+void Script::SetMainWindowEditFont(UINT aDPI)
+{
+	// Use something more appealing than the default font (monospaced seems preferable):
+	auto font = CreateFont(FONT_POINT_FOR_DPI(aDPI, 10), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, _T("Consolas"));
+	if (font)
+	{
+		SendMessage(g_hWndEdit, WM_SETFONT, (WPARAM)font, 0);
+		if (g_hFontEdit)
+			DeleteObject(g_hFontEdit);
+		g_hFontEdit = font;
+	}
 }
 
 
