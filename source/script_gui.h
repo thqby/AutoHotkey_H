@@ -400,9 +400,11 @@ public:
 	int mCurrentFontIndex;
 	COLORREF mCurrentColor;       // The default color of text in controls.
 	COLORREF mBackgroundColorWin; // The window's background color itself.
+	// Keep the following position/size fields in sequence from mMarginX to mMaxHeight for RescaleForDPI():
 	int mMarginX, mMarginY, mPrevX, mPrevY, mPrevWidth, mPrevHeight, mMaxExtentRight, mMaxExtentDown
 		, mSectionX, mSectionY, mMaxExtentRightSection, mMaxExtentDownSection;
 	LONG mMinWidth, mMinHeight, mMaxWidth, mMaxHeight;
+	int mDPI;
 	// 8-BIT FIELDS:
 	TabControlIndexType mTabControlCount;
 	TabControlIndexType mCurrentTabControlIndex; // Which tab control of the window.
@@ -530,7 +532,7 @@ public:
 		, mMaxWidth(COORD_UNSPECIFIED), mMaxHeight(COORD_UNSPECIFIED)
 		, mGuiShowHasNeverBeenDone(true), mFirstActivation(true), mShowIsInProgress(false)
 		, mDestroyWindowHasBeenCalled(false), mControlWidthWasSetByContents(false)
-		, mUsesDPIScaling(true)
+		, mUsesDPIScaling(true), mDPI(0)
 		, mDisposed(false)
 		, mVisibleRefCounted(false)
 	{
@@ -701,10 +703,12 @@ public:
 	FResult get_Margin(int &aRetVal, int &aMargin);
 
 	// See DPIScale() and DPIUnscale() for more details.
-	int Scale(int x) { return mUsesDPIScaling ? DPIScale(x) : x; }
-	int Unscale(int x) { return mUsesDPIScaling ? DPIUnscale(x) : x; }
+	int Scale(int x) { return mUsesDPIScaling ? MulDiv(x, mDPI, 96) : x; }
+	int Unscale(int x) { return mUsesDPIScaling ? MulDiv(x, 96, mDPI) : x; }
 	// The following is a workaround for the "w-1" and "h-1" options:
 	int ScaleSize(int x) { return mUsesDPIScaling && x != -1 ? DPIScale(x) : x; }
+
+	void RescaleForDPI(int aDPI, RECT &aRect);
 
 protected:
 	bool Delete() override;

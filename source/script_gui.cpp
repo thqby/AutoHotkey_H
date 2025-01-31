@@ -2474,6 +2474,8 @@ FResult GuiType::Create(LPCTSTR aTitle)
 	SendMessage(mHwnd, WM_SETICON, ICON_SMALL, (LPARAM)small_icon); // Testing shows that a zero is returned for both;
 	SendMessage(mHwnd, WM_SETICON, ICON_BIG, (LPARAM)big_icon);   // i.e. there is no previous icon to destroy in this case.
 
+	mDPI = g_ScreenDPI;
+
 	return OK;
 }
 
@@ -9148,6 +9150,10 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		return 0; // "An application should return zero if it processes this message."
 	}
 
+	case WM_DPICHANGED:
+		pgui->RescaleForDPI(LOWORD(wParam), *(RECT*)lParam);
+		return 0;
+
 	case AHK_GUI_ACTION:
 	case AHK_USER_MENU:
 		// v1.0.36.03: The g_MenuIsVisible check was added as a means to discard the message. Otherwise
@@ -11109,4 +11115,95 @@ void GuiType::SetDefaultMargins()
 		mMarginX = MulDiv(sFont[mCurrentFontIndex].lfHeight, -90, 96); // Seems to be a good rule of thumb.  Originally 1.25 * point_size.
 	if (mMarginY == COORD_UNSPECIFIED)
 		mMarginY = MulDiv(sFont[mCurrentFontIndex].lfHeight, -54, 96); // Also seems good.  Originally 0.75 * point_size.
+}
+
+
+
+void GuiType::RescaleForDPI(int aDPI, RECT &aRect)
+{
+	if (aDPI == mDPI)
+		return;
+	
+	// This requires Windows 10, version 1607 or later.
+	static auto GetWindowDpiAwarenessContext = (DPI_AWARENESS_CONTEXT (WINAPI *)(HWND))GetProcAddress(GetModuleHandle(_T("user32.dll")), "GetWindowDpiAwarenessContext");
+	static auto GetAwarenessFromDpiAwarenessContext = GetWindowDpiAwarenessContext ? (DPI_AWARENESS (WINAPI *)(DPI_AWARENESS_CONTEXT))GetProcAddress(GetModuleHandle(_T("user32.dll")), "GetAwarenessFromDpiAwarenessContext") : nullptr;
+
+	// Must adjust at least min/max width/height before resizing the main window:
+	for (int *p = &mMarginX; p <= (int*)&mMaxHeight; ++p)
+		if (*p != COORD_UNSPECIFIED)
+			*p = MulDiv(*p, aDPI, mDPI);
+
+	// Attempts to use WM_SETREDRAW to prevent incremental redrawing only resulted in
+	// parts of the window failing to redraw sporadically, even with RedrawWindow().
+	// Painting generally won't occur until the message queue is emptied anyway.
+	HDWP dwp = BeginDeferWindowPos(mControlCount);
+
+	HFONT last_old_font = NULL, last_new_font = NULL;
+	bool erase_needed = false;
+
+	for (GuiIndexType i = 0; i < mControlCount; ++i)
+	{
+		auto &control = *mControl[i];
+
+		// SetThreadDpiHostingBehavior() and SetThreadDpiAwarenessContext() can be used to make
+		// specific controls DPI-unaware, in which case the system will scale them and we mustn't.
+		if (GetAwarenessFromDpiAwarenessContext
+			&& GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(control.hwnd)) != DPI_AWARENESS_PER_MONITOR_AWARE)
+		{
+			// The part of the GUI background previously covered by the control typically doesn't
+			// get erased automatically, at least for ListView.
+			erase_needed = true;
+			continue;
+		}
+
+		if (control.UsesFontAndTextColor())
+		{
+			// Scale the font.
+			FontType font;
+			font.hfont = (HFONT)SendMessage(control.hwnd, WM_GETFONT, 0, 0);
+			if (font.hfont)
+			{
+				if (last_old_font != font.hfont)
+				{
+					FontGetAttributes(font);
+
+					font.lfHeight = MulDiv(font.lfHeight, aDPI, mDPI);
+
+					int font_index = FindFont(font);
+					if (font_index == -1)
+					{
+						if (sFontCount >= MAX_GUI_FONTS)
+							continue; // Silent failure.
+						if (!(font.hfont = CreateFontIndirect(&font)))
+							continue; // Silent failure.
+						sFont[font_index = sFontCount++] = font; // Copy the newly created font's attributes into the next array element.
+					}
+					last_old_font = font.hfont;
+					last_new_font = sFont[font_index].hfont;
+				}
+
+				SendMessage(control.hwnd, WM_SETFONT, (WPARAM)last_new_font, 0);
+			}
+		}
+
+		// Scale the position and size.
+		RECT rect;
+		GetWindowRect(control.hwnd, &rect);
+		MapWindowPoints(NULL, mHwnd, (LPPOINT)&rect, 2);
+		int x = MulDiv(rect.left, aDPI, mDPI);
+		int y = MulDiv(rect.top, aDPI, mDPI);
+		int w = MulDiv(rect.right, aDPI, mDPI) - x;
+		int h = MulDiv(rect.bottom, aDPI, mDPI) - y;
+		dwp = DeferWindowPos(dwp, control.hwnd, NULL, x, y, w, h, SWP_NOZORDER);
+	}
+	
+	EndDeferWindowPos(dwp);
+	mDPI = aDPI;
+
+	if (erase_needed)
+		RedrawWindow(mHwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE);
+	
+	// It appears the system will move/resize the window even if we don't,
+	// but it wouldn't trigger the OnSize handler, whereas this will.
+	MoveWindow(mHwnd, aRect.left, aRect.top, aRect.right - aRect.left, aRect.bottom - aRect.top, TRUE);
 }
