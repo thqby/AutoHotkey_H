@@ -618,7 +618,7 @@ public:
 
 	int FindGroup(GuiIndexType aControlIndex, GuiIndexType &aGroupStart, GuiIndexType &aGroupEnd);
 
-	static int FindOrCreateFont(LPCTSTR aOptions = _T(""), LPCTSTR aFontName = _T(""), FontType *aFoundationFont = NULL
+	int FindOrCreateFont(LPCTSTR aOptions = _T(""), LPCTSTR aFontName = _T(""), FontType *aFoundationFont = NULL
 		, COLORREF *aColor = NULL);
 	static int FindFont(FontType &aFont);
 	static void FontGetAttributes(FontType &aFont);

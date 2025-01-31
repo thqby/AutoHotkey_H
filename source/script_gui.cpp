@@ -8217,10 +8217,17 @@ int GuiType::FindOrCreateFont(LPCTSTR aOptions, LPCTSTR aFontName, FontType *aFo
 	if (aColor) // Caller wanted color returned in an output parameter.
 		*aColor = color;
 
-	HDC hdc = GetDC(HWND_DESKTOP);
-	// Fetch the value every time in case it can change while the system is running (e.g. due to changing
-	// display to TV-Out, etc).
-	int pixels_per_point_y = GetDeviceCaps(hdc, LOGPIXELSY);
+	HDC hdc = GetDC(mHwnd); // mHwnd vs. HWND_DESKTOP doesn't actually seem to help, but it shows the intent better.
+
+	// On modern systems (probably Windows 8.1 and later) GetDeviceCaps(hdc, LOGPIXELSY) returns
+	// either the fixed "system DPI" of the current process or 96, depending on the current DPI
+	// awareness context.  mDPI should be the same, except:
+	//   - It does not depend on the thread's current awareness, only the values received with
+	//     WM_DPICHANGED (which is sent only to per-monitor aware windows).
+	//   - If the script handles WM_DPICHANGED itself, mDPI may remain set to the system DPI,
+	//     which should generally cause font sizes to be calculated as in v2.0.
+	//   - The script may send WM_DPICHANGED to set the scale independent of actual DPI.
+	int pixels_per_point_y = mDPI;
 	
 	// MulDiv() is usually better because it has automatic rounding, getting the target font
 	// closer to the size specified.  This must be done prior to calling FindFont below:
@@ -8232,7 +8239,7 @@ int GuiType::FindOrCreateFont(LPCTSTR aOptions, LPCTSTR aFontName, FontType *aFo
 	if (!FontExist(hdc, font.lfFaceName)) // Fall back to foundation font's type face, as documented.
 		_tcscpy(font.lfFaceName, aFoundationFont ? aFoundationFont->lfFaceName : sFont[0].lfFaceName);
 
-	ReleaseDC(HWND_DESKTOP, hdc);
+	ReleaseDC(mHwnd, hdc);
 
 	// Now that the attributes of the requested font are known, see if such a font already
 	// exists in the array:
