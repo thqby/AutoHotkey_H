@@ -11143,10 +11143,10 @@ void GuiType::RescaleForDPI(int aDPI, RECT &aRect)
 	// Attempts to use WM_SETREDRAW to prevent incremental redrawing only resulted in
 	// parts of the window failing to redraw sporadically, even with RedrawWindow().
 	// Painting generally won't occur until the message queue is emptied anyway.
-	HDWP dwp = BeginDeferWindowPos(mControlCount);
+	// DeferWindowPos isn't used because it doesn't work with mixed parent windows
+	// (such as Tab3 together with other controls), and it seems to give no benefit.
 
 	HFONT last_old_font = NULL, last_new_font = NULL;
-	bool erase_needed = false;
 
 	for (GuiIndexType i = 0; i < mControlCount; ++i)
 	{
@@ -11156,12 +11156,7 @@ void GuiType::RescaleForDPI(int aDPI, RECT &aRect)
 		// specific controls DPI-unaware, in which case the system will scale them and we mustn't.
 		if (GetAwarenessFromDpiAwarenessContext
 			&& GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(control.hwnd)) != DPI_AWARENESS_PER_MONITOR_AWARE)
-		{
-			// The part of the GUI background previously covered by the control typically doesn't
-			// get erased automatically, at least for ListView.
-			erase_needed = true;
 			continue;
-		}
 
 		if (control.UsesFontAndTextColor())
 		{
@@ -11196,21 +11191,21 @@ void GuiType::RescaleForDPI(int aDPI, RECT &aRect)
 		// Scale the position and size.
 		RECT rect;
 		GetWindowRect(control.hwnd, &rect);
-		MapWindowPoints(NULL, mHwnd, (LPPOINT)&rect, 2);
+		MapWindowPoints(NULL, GetParent(control.hwnd), (LPPOINT)&rect, 2);
 		int x = MulDiv(rect.left, aDPI, mDPI);
 		int y = MulDiv(rect.top, aDPI, mDPI);
 		int w = MulDiv(rect.right, aDPI, mDPI) - x;
 		int h = MulDiv(rect.bottom, aDPI, mDPI) - y;
-		dwp = DeferWindowPos(dwp, control.hwnd, NULL, x, y, w, h, SWP_NOZORDER);
+		MoveWindow(control.hwnd, x, y, w, h, FALSE);
 	}
 	
-	EndDeferWindowPos(dwp);
 	mDPI = aDPI;
 
-	if (erase_needed)
-		RedrawWindow(mHwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE);
-	
 	// It appears the system will move/resize the window even if we don't,
 	// but it wouldn't trigger the OnSize handler, whereas this will.
-	MoveWindow(mHwnd, aRect.left, aRect.top, aRect.right - aRect.left, aRect.bottom - aRect.top, TRUE);
+	MoveWindow(mHwnd, aRect.left, aRect.top, aRect.right - aRect.left, aRect.bottom - aRect.top, FALSE);
+
+	// A full redraw is needed in some cases to prevent visual glitches, and doesn't
+	// seem useful to avoid in any other case since all of the controls are changing.
+	RedrawWindow(mHwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE);
 }
