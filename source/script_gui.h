@@ -101,7 +101,7 @@ struct GuiControlType : public Object
 	// Keep any fields that are smaller than 4 bytes adjacent to each other.  This conserves memory
 	// due to byte-alignment.  It has been verified to save 4 bytes per struct in this case:
 	GuiControls type = GUI_CONTROL_INVALID;
-	// Unused: 0x01
+	#define GUI_CONTROL_ATTRIB_DPI_RESIZE          0x01
 	#define GUI_CONTROL_ATTRIB_ALTSUBMIT           0x02
 	// Unused: 0x04
 	#define GUI_CONTROL_ATTRIB_EXPLICITLY_HIDDEN   0x08
@@ -414,6 +414,7 @@ public:
 	bool mGuiShowHasNeverBeenDone, mFirstActivation, mShowIsInProgress, mDestroyWindowHasBeenCalled;
 	bool mControlWidthWasSetByContents; // Whether the most recently added control was auto-width'd to fit its contents.
 	bool mUsesDPIScaling; // Whether the GUI uses DPI scaling.
+	bool mDefaultDPIResize; // Default DPIResize setting to apply to new controls.
 	bool mIsMinimized; // Workaround for bad OS behaviour; see "case WM_SETFOCUS".
 	bool mDisposed; // Simplifies Dispose().
 	bool mVisibleRefCounted; // Whether AddRef() has been done as a result of the window being shown.
@@ -532,7 +533,7 @@ public:
 		, mMaxWidth(COORD_UNSPECIFIED), mMaxHeight(COORD_UNSPECIFIED)
 		, mGuiShowHasNeverBeenDone(true), mFirstActivation(true), mShowIsInProgress(false)
 		, mDestroyWindowHasBeenCalled(false), mControlWidthWasSetByContents(false)
-		, mUsesDPIScaling(true), mDPI(0)
+		, mUsesDPIScaling(true), mDPI(0), mDefaultDPIResize(true)
 		, mDisposed(false)
 		, mVisibleRefCounted(false)
 	{

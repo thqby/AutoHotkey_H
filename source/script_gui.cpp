@@ -2793,6 +2793,8 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPCTSTR aOptions, LPCTS
 	// aOpt.checked is already okay since BST_UNCHECKED == 0
 	// Similarly, the zero-init of "control" higher above set the right values for password_char, new_section, etc.
 
+	if (mDefaultDPIResize)
+		control.attrib |= GUI_CONTROL_ATTRIB_DPI_RESIZE;
 	if (aControlType == GUI_CONTROL_TAB2) // v1.0.47.05: Replace TAB2 with TAB at an early stage to simplify the code.  The only purpose of TAB2 is to flag this as the new type of tab that avoids redrawing issues but has a new z-order that would break some existing scripts.
 	{
 		aControlType = GUI_CONTROL_TAB;
@@ -5160,6 +5162,9 @@ ResultType GuiType::ParseOptions(LPCTSTR aOptions, bool &aSetLastFoundWindow, To
 		else if (!_tcsicmp(option, _T("DPIScale")))
 			mUsesDPIScaling = adding;
 
+		else if (!_tcsicmp(option, _T("DPIResize"))) // v2.1
+			mDefaultDPIResize = adding;
+
 		// This one should be near the bottom since "E" is fairly vague and might be contained at the start
 		// of future option words such as Edge, Exit, etc.
 		else if (ctoupper(*option) == 'E' && ParsePositiveInteger(option + 1, option_dword)) // Extended style
@@ -5389,6 +5394,10 @@ ResultType GuiType::ControlParseOptions(LPCTSTR aOptions, GuiControlOptionsType 
 			//// All other types either use the bit for some internal purpose or want it reserved for possible
 			//// future use.  So don't allow the presence of "AltSubmit" to change the bit.
 			//}
+		}
+		else if (!_tcsicmp(option, _T("DPIResize"))) // v2.1
+		{
+			if (adding) aControl.attrib |= GUI_CONTROL_ATTRIB_DPI_RESIZE; else aControl.attrib &= ~GUI_CONTROL_ATTRIB_DPI_RESIZE;
 		}
 
 		// Content of control (these are currently only effective if the control is being newly created):
@@ -11151,6 +11160,9 @@ void GuiType::RescaleForDPI(int aDPI, RECT &aRect)
 	for (GuiIndexType i = 0; i < mControlCount; ++i)
 	{
 		auto &control = *mControl[i];
+
+		if (!(control.attrib & GUI_CONTROL_ATTRIB_DPI_RESIZE)) // -DPIResize
+			continue;
 
 		// SetThreadDpiHostingBehavior() and SetThreadDpiAwarenessContext() can be used to make
 		// specific controls DPI-unaware, in which case the system will scale them and we mustn't.
