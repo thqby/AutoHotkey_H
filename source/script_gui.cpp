@@ -11158,6 +11158,10 @@ void GuiType::RescaleForDPI(int aDPI, RECT &aRect)
 			&& GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(control.hwnd)) != DPI_AWARENESS_PER_MONITOR_AWARE)
 			continue;
 
+		RECT rect;
+		// Get this before changing the font, since it can cause the control to resize.
+		GetWindowRect(control.hwnd, &rect);
+
 		if (control.UsesFontAndTextColor())
 		{
 			// Scale the font.
@@ -11189,14 +11193,24 @@ void GuiType::RescaleForDPI(int aDPI, RECT &aRect)
 		}
 
 		// Scale the position and size.
-		RECT rect;
-		GetWindowRect(control.hwnd, &rect);
 		MapWindowPoints(NULL, GetParent(control.hwnd), (LPPOINT)&rect, 2);
 		int x = MulDiv(rect.left, aDPI, mDPI);
 		int y = MulDiv(rect.top, aDPI, mDPI);
-		int w = MulDiv(rect.right, aDPI, mDPI) - x;
-		int h = MulDiv(rect.bottom, aDPI, mDPI) - y;
+		int w = MulDiv(rect.right - rect.left, aDPI, mDPI); // Calculate width using the pre-rounded values, not "- x".
+		int h = MulDiv(rect.bottom - rect.top, aDPI, mDPI);
 		MoveWindow(control.hwnd, x, y, w, h, FALSE);
+
+		if (control.type == GUI_CONTROL_LISTBOX)
+		{
+			// Without the LBS_NOINTEGRALHEIGHT style, list boxes automatically shrink to avoid
+			// showing a partial item (i.e. the size to a multiple of item height plus borders).
+			// Shrinkage of 1-4 pixels due to rounding becomes shrinkage of 1 whole item, which
+			// can cause the control to shrink to 0 items after enough transitions.
+			GetWindowRect(control.hwnd, &rect);
+			int item_height = (int)SendMessage(control.hwnd, LB_GETITEMHEIGHT, 0, 0);
+			if (h - (rect.bottom - rect.top) > item_height / 2)
+				MoveWindow(control.hwnd, x, y, w, rect.bottom - rect.top + item_height, FALSE);
+		}
 	}
 	
 	mDPI = aDPI;
