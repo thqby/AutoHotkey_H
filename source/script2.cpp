@@ -249,6 +249,9 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 	case AHK_HOTSTRING: // Added for v1.0.36.02 so that hotstrings work even while an InputBox or other non-standard msg pump is running.
 	case AHK_CLIPBOARD_CHANGE: // Added for v1.0.44 so that clipboard notifications aren't lost while the script is displaying a MsgBox or other dialog.
 	case AHK_INPUT_END:
+	case AHK_INPUT_KEYDOWN:
+	case AHK_INPUT_CHAR:
+	case AHK_INPUT_KEYUP:
 		// If the following facts are ever confirmed, there would be no need to post the message in cases where
 		// the MsgSleep() won't be done:
 		// 1) The mere fact that any of the above messages has been received here in MainWindowProc means that a
@@ -1497,7 +1500,7 @@ bif_impl FResult MouseGetPos(int *aX, int *aY, ResultToken *aParent, ResultToken
 	TCHAR class_nn[WINDOW_CLASS_NN_SIZE];
 	auto fr = ControlGetClassNN(parent_under_cursor, child_under_cursor, class_nn, _countof(class_nn));
 	if (fr != OK)
-		return fr;
+		return OK; // Leave aChild blank and do not throw.
 	if (!TokenSetResult(*aChild, class_nn))
 		return aChild->Exited() ? FR_FAIL : FR_ABORTED;
 	return OK;
@@ -1782,6 +1785,9 @@ bif_impl FResult FileSelect(optl<StrArg> aOptions, optl<StrArg> aWorkingDir, opt
 		// from one another, which may help script automation in rare cases:
 		sntprintf(greeting, _countof(greeting), _T("Select %s - %s")
 			, (flags & FOS_PICKFOLDERS) ? _T("Folder") : _T("File"), g_script->DefaultDialogTitle());
+	
+	if (!IsNumeric(options_str, false, true))
+		return FR_E_ARG(0);
 
 	int options = ATOI(options_str);
 	if (options & 0x20)
