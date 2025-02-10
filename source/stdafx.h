@@ -29,7 +29,7 @@ GNU General Public License for more details.
 
 // Windows Header Files:
 // Necessary to do this prior to including windows.h so that NT functions are unlocked:
-#define _WIN32_WINNT 0x0600
+#define _WIN32_WINNT 0x0602
 #define _WIN32_IE _WIN32_IE_IE70  // Added for TVN_ITEMCHANGED, which most likely requires Vista.
 
 #ifdef _MSC_VER

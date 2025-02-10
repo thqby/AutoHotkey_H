@@ -1499,6 +1499,7 @@ public:
 	// Keep small members adjacent to each other to save space and improve perf. due to byte alignment:
 	FuncDefType mIsFuncExpression; // Whether this function was defined *within* an expression and is therefore allowed under a control flow statement.
 	bool mIsStatic = false; // Whether the "static" keyword was used with a function (not method); this prevents a nested function from becoming a closure.
+	bool mDefaultReturnUnset = false; // Whether "#DefaultReturn unset" was in effect for the function's block end.
 #define VAR_DECLARE_GLOBAL (VAR_DECLARED | VAR_GLOBAL)
 #define VAR_DECLARE_LOCAL  (VAR_DECLARED | VAR_LOCAL)
 #define VAR_DECLARE_STATIC (VAR_DECLARED | VAR_LOCAL | VAR_LOCAL_STATIC)
@@ -2327,6 +2328,7 @@ public:
 
 	ResultType Init(LPTSTR aScriptFilename, IObject *aArgs);
 	ResultType CreateWindows();
+	void SetMainWindowEditFont(UINT aDPI);
 	void EnableClipboardListener(bool aEnable);
 	void AllowMainWindow(bool aAllow);
 	void EnableOrDisableViewMenuItems(HMENU aMenu, UINT aFlags);

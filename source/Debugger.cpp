@@ -176,15 +176,26 @@ void Debugger::DeleteBreakpoint(Breakpoint *aBp)
 // Set Line::mBreakpoint for all executable lines that share the line's number,
 // such as an expression and any fat arrow function's it contains, or all param
 // default initializers in e.g. `Fn(a:=[], b:={}) {`.
-void SetBreakpointForLineGroup(Line *line, Breakpoint *bp)
+void Debugger::SetBreakpointForLineGroup(Line *line, Breakpoint *bp)
 {
 	auto line_no = line->mLineNumber;
 	auto file_no = line->mFileIndex;
-	do {
-		if (line->mActionType != ACT_BLOCK_BEGIN) // Skip the block-begin implied by any fat-arrow.
-			line->mBreakpoint = bp;
-		line = line->mNextLine;
-	} while (line && line->mLineNumber == line_no && line->mFileIndex == file_no);
+	line->mBreakpoint = bp;
+	for (int i = 0; i < g_script->mFuncs.mCount; ++i)
+	{
+		ASSERT(dynamic_cast<UserFunc*>(g_script->mFuncs.mItem[i]));
+		auto &func = *(UserFunc *)g_script->mFuncs.mItem[i];
+		auto fl = func.mJumpToLine;
+		// Fat arrow functions are either removed from the main line list or come after the
+		// line which contains them, in which case our caller would have found the latter.
+		if (fl->mLineNumber == line_no && fl->mFileIndex == file_no && func.mIsFuncExpression)
+			fl->mBreakpoint = bp;
+		// After the script loads, a function's parameter default initializers precede mJumpToLine.
+		for (fl = fl->mPrevLine
+			; fl->mLineNumber == line_no && fl->mFileIndex == file_no && fl->mActionType == ACT_EXPRESSION
+			; fl = fl->mPrevLine)
+			fl->mBreakpoint = bp;
+	}
 }
 
 
@@ -1308,16 +1319,6 @@ void Debugger::PropertyWriter::WriteEnumItems(IObject *aEnumerable, int aStart, 
 		//mError = DEBUGGER_E_EVAL_FAIL;
 		return;
 	}
-	if (enumerator == aEnumerable) // Only valid when result == OK.
-	{
-		// No __Enum method, so Object::DebugWriteProperty wouldn't have returned <enum>.
-		// CallEnumerator could succeed for `f.<enum>` if `f` is an enumerator function,
-		// but proceeding would generally put the enumerator in a state where subsequent
-		// calls by the debugger or script return nothing.  Prohibiting this also ensures
-		// we don't return a <property> for any arbitrary non-enumerable value.
-		enumerator->Release();
-		return;
-	}
 
 	DebugCookie cookie;
 	bool write_main_property = !mDepth;
@@ -1934,7 +1935,7 @@ LPWSTR Debugger::ParsePropertyKeyLiteral(LPWSTR src, ExprTokenType &t_key)
 		t_key.symbol = SYM_OBJECT;
 		return src + 1;
 	}
-	else if (!IS_LEADING_IDENTIFIER_CHAR(*src))
+	else if (!cisalpha(*src)) // Rule out inf/nan.
 	{
 		LPTSTR iend, fend;
 		auto ival = istrtoi64(src, &iend);

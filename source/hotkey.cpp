@@ -237,14 +237,6 @@ void Script::PreparseHotkeyIfExpr(Line* aLine)
 		hc->Type = invert ? HOT_IF_NOT_EXIST : HOT_IF_EXIST;
 	hc->WinTitle = param_count > 0 ? postfix[0].marker : _T("");
 	hc->WinText = param_count > 1 ? postfix[1].marker : _T("");
-	// The following adds a duplicate in the event that there are two different expressions
-	// which resolve to the same criterion, such as WinExist("x","") and WinExist("x", "").
-	// In that case, only the first criterion can be referenced by its WinTitle & WinText
-	// (but each can be referenced by its unique expression text).  This seems unavoidable
-	// since variants are only unique to a given expression, and trying to work around that
-	// here would cause inconsistency since this only applies to very specific expressions.
-	// At this stage, the only criterion in the list are those added by the following line:
-	AddHotkeyCriterion(hc);
 }
 
 

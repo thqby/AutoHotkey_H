@@ -668,15 +668,13 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 	HotkeyIDType hotkey_id_temp; // For informal/temp storage of the ID-without-flags.
 
 	bool fire_with_no_suppress = false; // Set default.
-	bool down_performed_action, was_down_before_up;
+	bool was_down_before_up = false;
+	bool down_performed_action = this_key.down_performed_action;  // Save prior to reset.
+	// Reset this in preparation for the next call to this procedure that involves this key:
+	this_key.down_performed_action = false; // Reset this for both key-up and key-repeat.
 	if (aKeyUp)
 	{
-		// Save prior to reset.  These var's should only be used further below in conjunction with aKeyUp
-		// being TRUE.  Otherwise, their values will be unreliable (refer to some other key, probably).
-		was_down_before_up = this_key.is_down;
-		down_performed_action = this_key.down_performed_action;  // Save prior to reset below.
-		// Reset these values in preparation for the next call to this procedure that involves this key:
-		this_key.down_performed_action = false;
+		was_down_before_up = this_key.is_down; // Save prior to reset.
 		if (this_key.hotkey_to_fire_upon_release != HOTKEY_ID_INVALID)
 		{
 			hotkey_id_with_flags = this_key.hotkey_to_fire_upon_release;
@@ -916,6 +914,9 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 	// script such as the following would send two M's for +b, one upon down and one upon up:
 	// +b::Send, M
 	// b & z::return
+	// Although the final suppress/allow determination could be based on hotkey_down_was_suppressed,
+	// the entry condition must be based on down_performed_action, otherwise the issue described above
+	// would occur for non-suppressed versions of those hotkeys.
 	// I don't remember exactly what the "pPrefixKey != &this_key" check is for below, but it is kept
 	// to minimize the chance of breaking other things:
 	bool fell_through_from_case2 = false; // Set default.
@@ -2765,6 +2766,8 @@ bool CollectHotstring(KBDLLHOOKSTRUCT &aEvent, TCHAR ch[], int char_count, HWND 
 				while (skip_chars < len)
 				{
 					TCHAR c = hs.mReplacement[skip_chars];
+					if (!hs.mSendRaw && _tcschr(_T("^+!#{}"), c)) // Account for cases like ::+a::+b and ::{r}::{Left 4}.
+						break;
 					if (cpbuf[skip_chars] != c)
 					{
 						if (cpbuf[skip_chars] != ltoupper(c))
@@ -4498,6 +4501,7 @@ void ResetKeyTypeState(key_type &key)
 	key.it_put_alt_down = false;
 	key.it_put_shift_down = false;
 	key.down_performed_action = false;
+	key.hotkey_down_was_suppressed = false;
 	key.was_just_used = 0;
 	key.hotkey_to_fire_upon_release = HOTKEY_ID_INVALID;
 	// ABOVE line was added in v1.0.48.03 to fix various ways in which the hook didn't receive the key-down

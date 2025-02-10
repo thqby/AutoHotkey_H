@@ -2601,6 +2601,8 @@ FResult GuiType::Create(LPCTSTR aTitle)
 	SendMessage(mHwnd, WM_SETICON, ICON_SMALL, (LPARAM)small_icon); // Testing shows that a zero is returned for both;
 	SendMessage(mHwnd, WM_SETICON, ICON_BIG, (LPARAM)big_icon);   // i.e. there is no previous icon to destroy in this case.
 
+	mDPI = g_ScreenDPI;
+
 	return OK;
 }
 
@@ -2918,6 +2920,8 @@ ResultType GuiType::AddControl(GuiControls aControlType, LPCTSTR aOptions, LPCTS
 	// aOpt.checked is already okay since BST_UNCHECKED == 0
 	// Similarly, the zero-init of "control" higher above set the right values for password_char, new_section, etc.
 
+	if (mDefaultDPIResize)
+		control.attrib |= GUI_CONTROL_ATTRIB_DPI_RESIZE;
 	if (aControlType == GUI_CONTROL_TAB2) // v1.0.47.05: Replace TAB2 with TAB at an early stage to simplify the code.  The only purpose of TAB2 is to flag this as the new type of tab that avoids redrawing issues but has a new z-order that would break some existing scripts.
 	{
 		aControlType = GUI_CONTROL_TAB;
@@ -5352,6 +5356,9 @@ ResultType GuiType::ParseOptions(LPCTSTR aOptions, bool &aSetLastFoundWindow, To
 		else if (!_tcsicmp(option, _T("DPIScale")))
 			mUsesDPIScaling = adding;
 
+		else if (!_tcsicmp(option, _T("DPIResize"))) // v2.1
+			mDefaultDPIResize = adding;
+
 		// This one should be near the bottom since "E" is fairly vague and might be contained at the start
 		// of future option words such as Edge, Exit, etc.
 		else if (ctoupper(*option) == 'E' && ParsePositiveInteger(option + 1, option_dword)) // Extended style
@@ -5581,6 +5588,10 @@ ResultType GuiType::ControlParseOptions(LPCTSTR aOptions, GuiControlOptionsType 
 			//// All other types either use the bit for some internal purpose or want it reserved for possible
 			//// future use.  So don't allow the presence of "AltSubmit" to change the bit.
 			//}
+		}
+		else if (!_tcsicmp(option, _T("DPIResize"))) // v2.1
+		{
+			if (adding) aControl.attrib |= GUI_CONTROL_ATTRIB_DPI_RESIZE; else aControl.attrib &= ~GUI_CONTROL_ATTRIB_DPI_RESIZE;
 		}
 
 		// Content of control (these are currently only effective if the control is being newly created):
@@ -8514,10 +8525,17 @@ int GuiType::FindOrCreateFont(LPCTSTR aOptions, LPCTSTR aFontName, FontType *aFo
 	if (aColor) // Caller wanted color returned in an output parameter.
 		*aColor = color;
 
-	HDC hdc = GetDC(HWND_DESKTOP);
-	// Fetch the value every time in case it can change while the system is running (e.g. due to changing
-	// display to TV-Out, etc).
-	int pixels_per_point_y = GetDeviceCaps(hdc, LOGPIXELSY);
+	HDC hdc = GetDC(mHwnd); // mHwnd vs. HWND_DESKTOP doesn't actually seem to help, but it shows the intent better.
+
+	// On modern systems (probably Windows 8.1 and later) GetDeviceCaps(hdc, LOGPIXELSY) returns
+	// either the fixed "system DPI" of the current process or 96, depending on the current DPI
+	// awareness context.  mDPI should be the same, except:
+	//   - It does not depend on the thread's current awareness, only the values received with
+	//     WM_DPICHANGED (which is sent only to per-monitor aware windows).
+	//   - If the script handles WM_DPICHANGED itself, mDPI may remain set to the system DPI,
+	//     which should generally cause font sizes to be calculated as in v2.0.
+	//   - The script may send WM_DPICHANGED to set the scale independent of actual DPI.
+	int pixels_per_point_y = mDPI;
 	
 	// MulDiv() is usually better because it has automatic rounding, getting the target font
 	// closer to the size specified.  This must be done prior to calling FindFont below:
@@ -8529,7 +8547,7 @@ int GuiType::FindOrCreateFont(LPCTSTR aOptions, LPCTSTR aFontName, FontType *aFo
 	if (!FontExist(hdc, font.lfFaceName)) // Fall back to foundation font's type face, as documented.
 		_tcscpy(font.lfFaceName, aFoundationFont ? aFoundationFont->lfFaceName : sFont[0].lfFaceName);
 
-	ReleaseDC(HWND_DESKTOP, hdc);
+	ReleaseDC(mHwnd, hdc);
 
 	// Now that the attributes of the requested font are known, see if such a font already
 	// exists in the array:
@@ -9698,6 +9716,10 @@ LRESULT CALLBACK GuiWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPara
 		// See its comments for why.
 		return 0; // "An application should return zero if it processes this message."
 	}
+
+	case WM_DPICHANGED:
+		pgui->RescaleForDPI(LOWORD(wParam), *(RECT*)lParam);
+		return 0;
 
 	case AHK_GUI_ACTION:
 	case AHK_USER_MENU:
@@ -11656,4 +11678,107 @@ void GuiType::SetDefaultMargins()
 		mMarginX = MulDiv(sFont[mCurrentFontIndex].lfHeight, -90, 96); // Seems to be a good rule of thumb.  Originally 1.25 * point_size.
 	if (mMarginY == COORD_UNSPECIFIED)
 		mMarginY = MulDiv(sFont[mCurrentFontIndex].lfHeight, -54, 96); // Also seems good.  Originally 0.75 * point_size.
+}
+
+
+
+void GuiType::RescaleForDPI(int aDPI, RECT &aRect)
+{
+	if (aDPI == mDPI)
+		return;
+	
+	// This requires Windows 10, version 1607 or later.
+	static auto GetWindowDpiAwarenessContext = (DPI_AWARENESS_CONTEXT (WINAPI *)(HWND))GetProcAddress(GetModuleHandle(_T("user32.dll")), "GetWindowDpiAwarenessContext");
+	static auto GetAwarenessFromDpiAwarenessContext = GetWindowDpiAwarenessContext ? (DPI_AWARENESS (WINAPI *)(DPI_AWARENESS_CONTEXT))GetProcAddress(GetModuleHandle(_T("user32.dll")), "GetAwarenessFromDpiAwarenessContext") : nullptr;
+
+	// Must adjust at least min/max width/height before resizing the main window:
+	for (int *p = &mMarginX; p <= (int*)&mMaxHeight; ++p)
+		if (*p != COORD_UNSPECIFIED)
+			*p = MulDiv(*p, aDPI, mDPI);
+
+	// Attempts to use WM_SETREDRAW to prevent incremental redrawing only resulted in
+	// parts of the window failing to redraw sporadically, even with RedrawWindow().
+	// Painting generally won't occur until the message queue is emptied anyway.
+	// DeferWindowPos isn't used because it doesn't work with mixed parent windows
+	// (such as Tab3 together with other controls), and it seems to give no benefit.
+
+	HFONT last_old_font = NULL, last_new_font = NULL;
+
+	for (GuiIndexType i = 0; i < mControlCount; ++i)
+	{
+		auto &control = *mControl[i];
+
+		if (!(control.attrib & GUI_CONTROL_ATTRIB_DPI_RESIZE)) // -DPIResize
+			continue;
+
+		// SetThreadDpiHostingBehavior() and SetThreadDpiAwarenessContext() can be used to make
+		// specific controls DPI-unaware, in which case the system will scale them and we mustn't.
+		if (GetAwarenessFromDpiAwarenessContext
+			&& GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(control.hwnd)) != DPI_AWARENESS_PER_MONITOR_AWARE)
+			continue;
+
+		RECT rect;
+		// Get this before changing the font, since it can cause the control to resize.
+		GetWindowRect(control.hwnd, &rect);
+
+		if (control.UsesFontAndTextColor())
+		{
+			// Scale the font.
+			FontType font;
+			font.hfont = (HFONT)SendMessage(control.hwnd, WM_GETFONT, 0, 0);
+			if (font.hfont)
+			{
+				if (last_old_font != font.hfont)
+				{
+					FontGetAttributes(font);
+
+					font.lfHeight = MulDiv(font.lfHeight, aDPI, mDPI);
+
+					int font_index = FindFont(font);
+					if (font_index == -1)
+					{
+						if (sFontCount >= MAX_GUI_FONTS)
+							continue; // Silent failure.
+						if (!(font.hfont = CreateFontIndirect(&font)))
+							continue; // Silent failure.
+						sFont[font_index = sFontCount++] = font; // Copy the newly created font's attributes into the next array element.
+					}
+					last_old_font = font.hfont;
+					last_new_font = sFont[font_index].hfont;
+				}
+
+				SendMessage(control.hwnd, WM_SETFONT, (WPARAM)last_new_font, 0);
+			}
+		}
+
+		// Scale the position and size.
+		MapWindowPoints(NULL, GetParent(control.hwnd), (LPPOINT)&rect, 2);
+		int x = MulDiv(rect.left, aDPI, mDPI);
+		int y = MulDiv(rect.top, aDPI, mDPI);
+		int w = MulDiv(rect.right - rect.left, aDPI, mDPI); // Calculate width using the pre-rounded values, not "- x".
+		int h = MulDiv(rect.bottom - rect.top, aDPI, mDPI);
+		MoveWindow(control.hwnd, x, y, w, h, FALSE);
+
+		if (control.type == GUI_CONTROL_LISTBOX)
+		{
+			// Without the LBS_NOINTEGRALHEIGHT style, list boxes automatically shrink to avoid
+			// showing a partial item (i.e. the size to a multiple of item height plus borders).
+			// Shrinkage of 1-4 pixels due to rounding becomes shrinkage of 1 whole item, which
+			// can cause the control to shrink to 0 items after enough transitions.
+			GetWindowRect(control.hwnd, &rect);
+			int item_height = (int)SendMessage(control.hwnd, LB_GETITEMHEIGHT, 0, 0);
+			if (h - (rect.bottom - rect.top) > item_height / 2)
+				MoveWindow(control.hwnd, x, y, w, rect.bottom - rect.top + item_height, FALSE);
+		}
+	}
+	
+	mDPI = aDPI;
+
+	// It appears the system will move/resize the window even if we don't,
+	// but it wouldn't trigger the OnSize handler, whereas this will.
+	MoveWindow(mHwnd, aRect.left, aRect.top, aRect.right - aRect.left, aRect.bottom - aRect.top, FALSE);
+
+	// A full redraw is needed in some cases to prevent visual glitches, and doesn't
+	// seem useful to avoid in any other case since all of the controls are changing.
+	RedrawWindow(mHwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE);
 }

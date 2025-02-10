@@ -101,7 +101,7 @@ struct GuiControlType : public Object
 	// Keep any fields that are smaller than 4 bytes adjacent to each other.  This conserves memory
 	// due to byte-alignment.  It has been verified to save 4 bytes per struct in this case:
 	GuiControls type = GUI_CONTROL_INVALID;
-	// Unused: 0x01
+	#define GUI_CONTROL_ATTRIB_DPI_RESIZE          0x01
 	#define GUI_CONTROL_ATTRIB_ALTSUBMIT           0x02
 	// Unused: 0x04
 	#define GUI_CONTROL_ATTRIB_EXPLICITLY_HIDDEN   0x08
@@ -409,9 +409,11 @@ public:
 	int mCurrentFontIndex;
 	COLORREF mCurrentColor;       // The default color of text in controls.
 	COLORREF mBackgroundColorWin; // The window's background color itself.
+	// Keep the following position/size fields in sequence from mMarginX to mMaxHeight for RescaleForDPI():
 	int mMarginX, mMarginY, mPrevX, mPrevY, mPrevWidth, mPrevHeight, mMaxExtentRight, mMaxExtentDown
 	, mSectionX, mSectionY, mMaxExtentRightSection, mMaxExtentDownSection;
 	LONG mMinWidth, mMinHeight, mMaxWidth, mMaxHeight;
+	int mDPI;
 	// 8-BIT FIELDS:
 	TabControlIndexType mTabControlCount;
 	TabControlIndexType mCurrentTabControlIndex; // Which tab control of the window.
@@ -421,6 +423,7 @@ public:
 	bool mGuiShowHasNeverBeenDone, mFirstActivation, mShowIsInProgress, mDestroyWindowHasBeenCalled;
 	bool mControlWidthWasSetByContents; // Whether the most recently added control was auto-width'd to fit its contents.
 	bool mUsesDPIScaling; // Whether the GUI uses DPI scaling.
+	bool mDefaultDPIResize; // Default DPIResize setting to apply to new controls.
 	bool mIsMinimized; // Workaround for bad OS behaviour; see "case WM_SETFOCUS".
 	bool mDisposed; // Simplifies Dispose().
 	bool mVisibleRefCounted; // Whether AddRef() has been done as a result of the window being shown.
@@ -541,7 +544,7 @@ public:
 		, mMaxWidth(COORD_UNSPECIFIED), mMaxHeight(COORD_UNSPECIFIED)
 		, mGuiShowHasNeverBeenDone(true), mFirstActivation(true), mShowIsInProgress(false)
 		, mDestroyWindowHasBeenCalled(false), mControlWidthWasSetByContents(false)
-		, mUsesDPIScaling(true)
+		, mUsesDPIScaling(true), mDPI(0), mDefaultDPIResize(true)
 		, mDisposed(false)
 		, mVisibleRefCounted(false)
 		, mWidth(COORD_UNSPECIFIED), mHeight(COORD_UNSPECIFIED)
@@ -629,7 +632,7 @@ public:
 
 	int FindGroup(GuiIndexType aControlIndex, GuiIndexType &aGroupStart, GuiIndexType &aGroupEnd);
 
-	static int FindOrCreateFont(LPCTSTR aOptions = _T(""), LPCTSTR aFontName = _T(""), FontType *aFoundationFont = NULL
+	int FindOrCreateFont(LPCTSTR aOptions = _T(""), LPCTSTR aFontName = _T(""), FontType *aFoundationFont = NULL
 		, COLORREF *aColor = NULL);
 	static int FindFont(FontType &aFont);
 	static void FontGetAttributes(FontType &aFont);
@@ -714,10 +717,12 @@ public:
 	FResult get_Margin(int &aRetVal, int &aMargin);
 
 	// See DPIScale() and DPIUnscale() for more details.
-	int Scale(int x) { return mUsesDPIScaling ? DPIScale(x) : x; }
-	int Unscale(int x) { return mUsesDPIScaling ? DPIUnscale(x) : x; }
+	int Scale(int x) { return mUsesDPIScaling ? MulDiv(x, mDPI, 96) : x; }
+	int Unscale(int x) { return mUsesDPIScaling ? MulDiv(x, 96, mDPI) : x; }
 	// The following is a workaround for the "w-1" and "h-1" options:
 	int ScaleSize(int x) { return mUsesDPIScaling && x != -1 ? DPIScale(x) : x; }
+
+	void RescaleForDPI(int aDPI, RECT &aRect);
 
 protected:
 	bool Delete() override;

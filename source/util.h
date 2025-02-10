@@ -685,7 +685,8 @@ inline LPTSTR UTF8ToWide(LPCSTR str){
 	HKL active_window_keybd_layout = GetFocusedKeybdLayout();
 
 
-#define FONT_POINT(hdc, p) (-MulDiv(p, GetDeviceCaps(hdc, LOGPIXELSY), 72))
+#define FONT_POINT_FOR_DPI(dpi, p) (-MulDiv(p, dpi, 72))
+#define FONT_POINT(hdc, p) FONT_POINT_FOR_DPI(GetDeviceCaps(hdc, LOGPIXELSY), p)
 #define DATE_FORMAT_LENGTH 14 // "YYYYMMDDHHMISS"
 #define IS_LEAP_YEAR(year) ((year) % 4 == 0 && ((year) % 100 != 0 || (year) % 400 == 0))
 

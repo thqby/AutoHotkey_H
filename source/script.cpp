@@ -1003,13 +1003,7 @@ ResultType Script::CreateWindows()
 		MsgBox(_T("CreateWindow")); // Short msg since so rare.
 		return FAIL;
 	}
-	// FONTS: The font used by default, at least on XP, is GetStockObject(SYSTEM_FONT).
-	// Use something more appealing (monospaced seems preferable):
-	HDC hdc = GetDC(g_hWndEdit);
-	g_hFontEdit = CreateFont(FONT_POINT(hdc, 10), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-		, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, _T("Consolas"));
-	ReleaseDC(g_hWndEdit, hdc);
-	SendMessage(g_hWndEdit, WM_SETFONT, (WPARAM)g_hFontEdit, 0);
+	SetMainWindowEditFont(g_ScreenDPI);
 
 	// v1.0.30.05: Specifying a limit of zero opens the control to its maximum text capacity,
 	// which removes the 32K size restriction.  Testing shows that this does not increase the actual
@@ -1057,6 +1051,22 @@ ResultType Script::CreateWindows()
 		CreateTrayIcon();
 
 	return OK;
+}
+
+
+
+void Script::SetMainWindowEditFont(UINT aDPI)
+{
+	// Use something more appealing than the default font (monospaced seems preferable):
+	auto font = CreateFont(FONT_POINT_FOR_DPI(aDPI, 10), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+		, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, _T("Consolas"));
+	if (font)
+	{
+		SendMessage(g_hWndEdit, WM_SETFONT, (WPARAM)font, 0);
+		if (g_hFontEdit)
+			DeleteObject(g_hFontEdit);
+		g_hFontEdit = font;
+	}
 }
 
 
@@ -2587,7 +2597,7 @@ process_completed_line:
 					auto open_block = mLineParent;
 					if (!ParseAndAddLineInBlock(buf)) // Function body - one line
 						return FAIL;
-					if (open_block != mLineParent) // key::try { or similar.
+					if (open_block != mLineParent && !mExprContainingThisFunc) // key::try { or similar.
 					{
 						mCurrLine = nullptr;
 						return ScriptError(ERR_HOTKEY_MISSING_BRACE);
@@ -2725,8 +2735,7 @@ process_completed_line:
 					}
 					else
 					{
-						if (  !ParseAndAddLine(buf, expr->action)
-							|| expr->add_block_end_after && !AddLine(ACT_BLOCK_END)  )
+						if (!ParseAndAddLine(buf, expr->action))
 						{
 							delete expr;
 							return FAIL;
@@ -2737,6 +2746,7 @@ process_completed_line:
 						mExprContainingThisFunc->pending_hotkey = expr->pending_hotkey;
 						mExprContainingThisFunc->rejoin_first_line = expr->rejoin_first_line;
 						mExprContainingThisFunc->rejoin_last_line = expr->rejoin_last_line;
+						mExprContainingThisFunc->add_block_end_after = expr->add_block_end_after;
 					}
 					else if (expr->pending_hotkey) // #HotIf fn(){}
 					{
@@ -2752,6 +2762,14 @@ process_completed_line:
 						mLastLine = expr->rejoin_last_line;
 						if (mLastLine->mActionType == ACT_BLOCK_END)
 							mPendingRelatedLine = mLastLine->mParentLine;
+					}
+					else if (expr->add_block_end_after) // Single-line hotkey.
+					{
+						if (!AddLine(ACT_BLOCK_END))
+						{
+							delete expr;
+							return FAIL;
+						}
 					}
 					delete expr;
 					goto continue_main_loop;
@@ -5585,14 +5603,6 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 		*aArg = _T("unset");
 		aArgc = 1;
 	}
-	else if (aActionType == ACT_BLOCK_END && mLineParent && mLineParent->mActionType == ACT_BLOCK_BEGIN
-		&& mLineParent->mAttribute == g->CurrentFunc && g->CurrentFunc // This is the block-end of a function.
-		&& mDefaultReturn == SYM_MISSING // It should default to unset, and doesn't end with a return.
-		&& (mLastLine->mActionType != ACT_RETURN || mLastLine->mParentLine != mLineParent)) // It wouldn't be "unreachable".
-	{
-		if (!AddLine(ACT_RETURN, nullptr, 0, true)) // The recursive call will detect that this needs to be `return unset`.
-			return FAIL;
-	}
 
 	DerefList deref;  // Will be used to temporarily store the var-deref locations in each arg.
 	ArgStruct *new_arg;  // We will allocate some dynamic memory for this, then hang it onto the new line.
@@ -5736,9 +5746,11 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 	case ACT_FINALLY:
 		bool expected = false;
 		Line *parent = mPendingRelatedLine;
+		if (parent->mActionType == ACT_BLOCK_BEGIN) // For mPendingRelatedLine, this means an entire block preceding this line.
+			parent = parent->mParentLine;
 		for (;; parent = parent->mParentLine)
 		{
-			if (!parent)
+			if (!parent || parent->mActionType == ACT_BLOCK_BEGIN) // If parent is a block-begin, it would be enclosing this line.
 				return line.LineUnexpectedError();
 			enum_act parent_act = (enum_act)parent->mActionType;
 			switch (aActionType)
@@ -5889,6 +5901,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 
 		if (g->CurrentFunc && g->CurrentFunc == mLineParent->mAttribute)
 		{
+			g->CurrentFunc->mDefaultReturnUnset = mDefaultReturn == SYM_MISSING;
 			line.mAttribute = g->CurrentFunc;  // Flag this ACT_BLOCK_END as the ending brace of this function's body.
 			g->CurrentFunc = g->CurrentFunc->mOuterFunc;  // Step out of this function.
 			if (g->CurrentFunc && !g->CurrentFunc->mJumpToLine)
@@ -6415,6 +6428,7 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, FuncDefType aIsInExpres
 	TCHAR buf[LINE_SIZE];
 	bool param_must_have_default = false;
 	bool at_least_one_default_expr = false;
+	LPCTSTR saved_pending_hotkey;
 
 #ifdef CONFIG_DLL
 	func.mLineNumber = mCombinedLineNumber;
@@ -6567,6 +6581,8 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, FuncDefType aIsInExpres
 						if (!at_least_one_default_expr)
 						{
 							at_least_one_default_expr = true;
+							saved_pending_hotkey = mPendingHotkey;
+							mPendingHotkey = nullptr;
 							if (!AddLine(ACT_BLOCK_BEGIN))
 								return FAIL;
 						}
@@ -6611,7 +6627,10 @@ ResultType Script::DefineFunc(LPTSTR aBuf, bool aStatic, FuncDefType aIsInExpres
 	} // for() each formal parameter.
 
 	if (at_least_one_default_expr)
+	{
 		mIgnoreNextBlockBegin = true; // This is only set after all parameters are parsed, in case they contain fat arrow functions.
+		mPendingHotkey = saved_pending_hotkey;
+	}
 
 	if (param_count)
 	{
@@ -8402,13 +8421,32 @@ ResultType Script::PreparseCommands(Line *aStartingLine)
 					// all skip an initial ACT_BLOCK_BEGIN (to avoid an extra ExecUntil call),
 					// which would result in executing the function's body instead of skipping it.
 					Line *body = line->mNextLine;
-					block_begin = parent->mNextLine; // In case there are multiple fat arrow functions on one line.
-					Line *after_body = parent->mRelatedLine;
-					Line *body_end = after_body->mPrevLine; // In case body is multiple lines (such as a nested IF or LOOP).
-					// Swap the statement body and fat arrow functions around to make it work:
-					parent   ->mNextLine = body       , body       ->mPrevLine = parent;
-					body_end ->mNextLine = block_begin, block_begin->mPrevLine = body_end;
-					line     ->mNextLine = after_body , after_body ->mPrevLine = line;
+					// Remove the fat arrow functions to allow the correct body to execute.
+					parent->mNextLine = body, body->mPrevLine = parent;
+					// If this wasn't unset, an error dialog would walk upward to find a previous line,
+					// then step forward and fail to find the original target line.  Instead, it will
+					// display from the function's block-begin downward, usually including the expression
+					// which contains the function.  Must not change line->mNextLine or line itself because
+					// they are still needed by the current and next iteration of this loop.
+					block_begin->mPrevLine = nullptr;
+					// An alternative approach used in v2.0.17 & .18 was to move the function's body,
+					// but identifying the right place to move it was deceptively complicated:
+					//   if cond
+					//       ; BAD: executed by IF
+					//       f(A()=>)
+					//       ; OK for A
+					//   else
+					//       ; BAD: executed by ELSE
+					//       if f(B()=>)
+					//           ; BAD: executed by IF
+					//           body
+					//           ; OK? Difficult to locate because mRelatedLine points us to the very end of the ladder.
+					//       else ...
+					// This was intended to group the lines together so that the debugger can iterate
+					// over them efficiently, but as demonstrated above, they can't always be kept in a
+					// continuguous sequence.  Instead, the debugger now iterates over the function list.
+					// If ever we do shuffle lines around again, be sure that the loop here is redesigned
+					// to finish preparsing this current "line" and continue iterating correctly.
 				}
 				else if (parent && parent->mActionType != ACT_BLOCK_BEGIN)
 				{
@@ -11269,9 +11307,17 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 				}
 				if (!g.ThrownToken && line->mActionType == ACT_ELSE && result == OK && !jump_to_line)
 				{
-					// Since no exception was thrown, execute the ELSE (by jumping to its first statement).
-					line = line->mNextLine;
-					continue;
+					// Since no exception was thrown, execute the ELSE.
+					if (line->mNextLine->mActionType == ACT_BLOCK_BEGIN)
+					{
+						do
+							result = line->mNextLine->mNextLine->ExecUntil(UNTIL_BLOCK_END, aResultToken, &jump_to_line);
+						while (jump_to_line == line->mNextLine); // The above call encountered a Goto that jumps to the "{". See ACT_BLOCK_BEGIN in ExecUntil() for details.
+					}
+					else
+						result = line->mNextLine->ExecUntil(ONLY_ONE_LINE, aResultToken, &jump_to_line);
+					// Continue on in case there is a FINALLY after this ELSE.
+					UnhandledException_was_not_called = false; // It would have been called by ExecUntil() above if appropriate.
 				}
 			}
 			else // this_act == ACT_CATCH
@@ -11592,6 +11638,10 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			continue;  // Resume looping starting at the above line.  "continue" is actually slightly faster than "break" in these cases.
 
 		case ACT_BLOCK_END:
+			// v2.1: This is handled at runtime rather than by inserting ACT_RETURN avoid complications
+			// with 1) auto-generated __Init methods, and 2) #Warn Unreachable.
+			if (line->mAttribute && ((UserFunc*)line->mAttribute)->mDefaultReturnUnset && aResultToken)
+				aResultToken->symbol = SYM_MISSING;
 			// v2: This check is disabled to reduce code size, as it doesn't seem to be needed
 			// now that GOSUB has been removed.  Validation in PreparseBlocks() should make it
 			// impossible to produce this condition:
