@@ -793,7 +793,7 @@ public:
 //#endif
 	thread_local static int sSourceFileCount; // Number of items in the above array.
 
-	void Free(bool aSkipFatArrowBlockBreakpoint = false);
+	void Free();
 	static void FreeDerefBufIfLarge();
 
 	ResultType ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken = NULL, Line **apJumpToLine = NULL);

@@ -216,10 +216,7 @@ int Debugger::PreExecLine(Line *aLine)
 	{
 		if (bp->temporary)
 		{
-			Line *line = aLine, *prev;
-			while ((prev = line->mPrevLine) && prev->mLineNumber == line->mLineNumber && prev->mFileIndex == line->mFileIndex)
-				line = prev;
-			SetBreakpointForLineGroup(line, nullptr);
+			SetBreakpointForLineGroup(bp->line, nullptr);
 			DeleteBreakpoint(bp);
 		}
 		return Break();
@@ -847,7 +844,7 @@ int Debugger::WriteBreakpointXml(Breakpoint *aBreakpoint)
 		return mResponseBuf.WriteF("<breakpoint id=\"%i\" type=\"exception\" state=\"%s\" exception=\"Any\"/>"
 			, aBreakpoint->id, aBreakpoint->state == BS_Enabled ? "enabled" : "disabled");
 	return mResponseBuf.WriteF("<breakpoint id=\"%i\" type=\"line\" state=\"%s\" filename=\"%r\" lineno=\"%u\"/>"
-		, aBreakpoint->id, aBreakpoint->state ? "enabled" : "disabled"
+		, aBreakpoint->id, aBreakpoint->state == BS_Enabled ? "enabled" : "disabled"
 		, Line::sSourceFile[aBreakpoint->line->mFileIndex], aBreakpoint->line->mLineNumber);
 }
 

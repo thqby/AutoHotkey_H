@@ -8420,15 +8420,7 @@ ResultType Script::PreparseCommands(Line *aStartingLine)
 					// more fat arrow functions.  It won't work that way because If/Else/Loop/etc.
 					// all skip an initial ACT_BLOCK_BEGIN (to avoid an extra ExecUntil call),
 					// which would result in executing the function's body instead of skipping it.
-					Line *body = line->mNextLine;
-					// Remove the fat arrow functions to allow the correct body to execute.
-					parent->mNextLine = body, body->mPrevLine = parent;
-					// If this wasn't unset, an error dialog would walk upward to find a previous line,
-					// then step forward and fail to find the original target line.  Instead, it will
-					// display from the function's block-begin downward, usually including the expression
-					// which contains the function.  Must not change line->mNextLine or line itself because
-					// they are still needed by the current and next iteration of this loop.
-					block_begin->mPrevLine = nullptr;
+					// 
 					// An alternative approach used in v2.0.17 & .18 was to move the function's body,
 					// but identifying the right place to move it was deceptively complicated:
 					//   if cond
@@ -8445,8 +8437,29 @@ ResultType Script::PreparseCommands(Line *aStartingLine)
 					// This was intended to group the lines together so that the debugger can iterate
 					// over them efficiently, but as demonstrated above, they can't always be kept in a
 					// continuguous sequence.  Instead, the debugger now iterates over the function list.
-					// If ever we do shuffle lines around again, be sure that the loop here is redesigned
-					// to finish preparsing this current "line" and continue iterating correctly.
+					// 
+					// ahk_h: To avoid memory leaks, keep the function's body, convert to the following form.
+					//   if cond {
+					//       ; function's body
+					//       f(A()=>)
+					//   } else ...
+					Line *after_body = parent->mRelatedLine;
+					Line *body_end = after_body->mPrevLine;
+					Line *body_start = parent->mNextLine;
+					Line *block_b = new Line(parent->mFileIndex, parent->mLineNumber, ACT_BLOCK_BEGIN, nullptr, 0);
+					Line *block_e = new Line(after_body->mFileIndex, after_body->mLineNumber, ACT_BLOCK_END, nullptr, 0);
+					body_end->mNextLine = after_body->mPrevLine = block_e;
+					block_e->mPrevLine = body_end, block_e->mNextLine = after_body;
+					parent->mNextLine = body_start->mPrevLine = block_b;
+					block_b->mPrevLine = parent, block_b->mNextLine = body_start;
+
+					for (;;)
+					{
+						block_begin->mParentLine = block_b;
+						if (block_begin->mPrevLine->mActionType != ACT_BLOCK_END)
+							break;
+						block_begin = block_begin->mPrevLine->mParentLine;
+					}
 				}
 				else if (parent && parent->mActionType != ACT_BLOCK_BEGIN)
 				{
@@ -10674,7 +10687,7 @@ void Line::FreeDerefBufIfLarge()
 	// having demonstrated that it isn't idle).
 }
 
-void Line::Free(bool aSkipFatArrowBlockBreakpoint)
+void Line::Free()
 {
 	for (int i = 0; i < mArgc; ++i) {
 		ArgStruct &this_arg = mArg[i];
@@ -10688,19 +10701,8 @@ void Line::Free(bool aSkipFatArrowBlockBreakpoint)
 #ifdef CONFIG_DEBUGGER
 	if (mBreakpoint)
 	{
-		auto bp = mBreakpoint;
+		mBreakpoint->state = BS_Deleted;
 		mBreakpoint = nullptr;
-		if (!g_hWnd)
-			return;
-		auto line = this, prev = mPrevLine;
-		while (prev && prev->mLineNumber == mLineNumber && prev->mFileIndex == mFileIndex)
-			prev = (line = prev)->mPrevLine;
-		if (aSkipFatArrowBlockBreakpoint &&
-			line->mActionType == ACT_BLOCK_BEGIN && line->mAttribute && line->mNextLine &&
-			mLineNumber == line->mNextLine->mLineNumber && mFileIndex == line->mNextLine->mFileIndex)
-			return;
-		SetBreakpointForLineGroup(line, nullptr);
-		bp->state = BS_Deleted;
 	}
 #endif
 }
@@ -11685,7 +11687,9 @@ ResultType Line::ExecUntil(ExecUntilMode aMode, ResultToken *aResultToken, Line 
 			line->mPrevLine->mNextLine = line->mNextLine;
 			line->mNextLine->mPrevLine = line->mPrevLine;
 			// AHK_H: Avoid memory leaks when the script exits
-			line->Free(true);
+			if (line->mBreakpoint && line->mBreakpoint->line != line)
+				line->mBreakpoint = nullptr;
+			line->Free();
 			if (aMode == ONLY_ONE_LINE)
 				return result;
 			line = line->mNextLine;
