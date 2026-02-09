@@ -1939,7 +1939,7 @@ static FResult WinSetTrans(COLORREF color, LPCTSTR aAlpha, WINTITLE_PARAMETERS_D
 	// GetClassLong) if aValue is entirely blank.
 
 	DWORD flags = color == CLR_NONE ? 0 : LWA_COLORKEY;
-	BYTE alpha;
+	BYTE alpha = 0; // Initialize for debug checks; the actual value isn't used unless LWA_ALPHA flag is set.
 	if (aAlpha && *aAlpha)
 	{
 		flags |= LWA_ALPHA;

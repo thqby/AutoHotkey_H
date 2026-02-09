@@ -1666,7 +1666,7 @@ LPTSTR GetWin32ErrorText(LPTSTR aBuf, DWORD aBufSize, DWORD aError)
 		*aBuf = '\0';
 		return aBuf;
 	}
-	FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS // Ignore inserts: https://blogs.msdn.microsoft.com/oldnewthing/20071128-00/?p=24353
+	FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS // Ignore inserts: https://devblogs.microsoft.com/oldnewthing/20071128-00/?p=24353
 		, NULL, aError, 0, aBuf, (DWORD)aBufSize - 1, NULL);
 	return aBuf;
 }

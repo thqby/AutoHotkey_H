@@ -555,6 +555,8 @@ void TypedPtrToToken(MdType aType, void *aPtr, ExprTokenType &aToken)
 
 bool MdFunc::ArgIsOutputVar(int aIndex)
 {
+	if (mPrototype)
+		--aIndex; // Account for implicit "this" parameter.
 	auto atp = mArgType;
 	for (int ai = 0; ai < mArgSlots; ++ai, ++atp, --aIndex)
 	{
@@ -579,6 +581,8 @@ bool MdFunc::ArgIsOutputVar(int aIndex)
 
 bool MdFunc::ArgIsOptional(int aIndex)
 {
+	if (mPrototype)
+		--aIndex; // Account for implicit "this" parameter.
 	auto atp = mArgType;
 	for (int ai = 0; ai < mArgSlots; ++ai, ++atp, --aIndex)
 	{

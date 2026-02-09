@@ -1577,7 +1577,7 @@ FResult SetWorkingDir(LPCTSTR aNewDir)
 	// Update in 2018: The reason it wouldn't by default is that "C:" is actually a reference to the
 	// the current directory if it's on C: drive, otherwise a reference to the path contained by the
 	// env var "=C:".  Similarly, "C:x" is a reference to "x" inside that directory.
-	// For details, see https://blogs.msdn.microsoft.com/oldnewthing/20100506-00/?p=14133
+	// For details, see https://devblogs.microsoft.com/oldnewthing/20100506-00/?p=14133
 	// Although the override here creates inconsistency between SetWorkingDir and everything else
 	// that can accept "C:", it is most likely what the user wants, and now there's also backward-
 	// compatibility to consider since this workaround has been in place since 2006.
@@ -1695,44 +1695,44 @@ bif_impl FResult FileSelect(optl<StrArg> aOptions, optl<StrArg> aWorkingDir, opt
 		}
 	}
 
+	TCHAR display_name[128];
 	TCHAR pattern[1024];
-	*pattern = '\0'; // Set default.
+	UINT filter_count = 0;
+	COMDLG_FILTERSPEC filters[2];
+
 	if (aFilter.has_nonempty_value())
 	{
+		filters[0].pszName = filters[0].pszSpec = aFilter.value(); // Set defaults.
+		++filter_count;
+
 		auto pattern_start = _tcschr(aFilter.value(), '(');
 		if (pattern_start)
 		{
-			// Make pattern a separate string because we want to remove any spaces from it.
-			// For example, if the user specified Documents (*.txt; *.doc), the space after
-			// the semicolon should be removed for the pattern string itself but not from
-			// the displayed version of the pattern:
+			// Friendly name is separated from the pattern only to work around an OS bug where the pattern
+			// is duplicated if the friendly name does not contain "*.".  To conserve stack space, unusually
+			// long strings are passed as is.  If a space precedes the parenthesis, it needs to be stripped
+			// out otherwise there will end up being two spaces.  If there is no space, aFilter is passed
+			// as-is for simplicity and to preserve the old behaviour of displaying without a space.
+			size_t name_length = pattern_start - aFilter.value();
+			if (name_length && pattern_start[-1] == ' ' && name_length <= _countof(display_name))
+			{
+				--name_length;
+				tmemcpy(display_name, aFilter.value(), name_length);
+				display_name[name_length] = '\0';
+				filters[0].pszName = display_name;
+			}
+
+			// Make pattern a separate string because we need to terminate at the close parenthesis.
 			tcslcpy(pattern, ++pattern_start, _countof(pattern));
 			LPTSTR pattern_end = _tcsrchr(pattern, ')'); // strrchr() in case there are other literal parentheses.
 			if (pattern_end)
 				*pattern_end = '\0';  // If parentheses are empty, this will set pattern to be the empty string.
+			filters[0].pszSpec = pattern;
+			
+			// Removing leading spaces within a list of patterns such as "*.h; *.cpp" is not necessary,
+			// and embedded spaces can be meaningful so must not be removed (such as for "?? - *.EXT").
+			//StrReplace(pattern, _T(" "), _T(""), SCS_SENSITIVE);
 		}
-		else // No open-paren, so assume the entire string is the filter.
-			tcslcpy(pattern, aFilter.value(), _countof(pattern));
-	}
-	UINT filter_count = 0;
-	COMDLG_FILTERSPEC filters[2];
-	if (*pattern) // aFilter was not omitted or blank.
-	{
-		// Remove any spaces present in the pattern, such as a space after every semicolon
-		// that separates the allowed file extensions.  The API docs specify that there
-		// should be no spaces in the pattern itself, even though it's okay if they exist
-		// in the displayed name of the file-type:
-		// Update by Lexikos: Don't remove spaces, since that gives incorrect behaviour for more
-		// complex patterns like "prefix *.ext" (where the space should be considered part of the
-		// pattern).  Although the docs for OPENFILENAMEW say "Do not include spaces", it may be
-		// just because spaces are considered part of the pattern.  On the other hand, the docs
-		// relating to IFileDialog::SetFileTypes() say nothing about spaces; and in fact, using a
-		// pattern like "*.cpp; *.h" will work correctly (possibly due to how leading spaces work
-		// with the file system).
-		//StrReplace(pattern, _T(" "), _T(""), SCS_SENSITIVE);
-		filters[0].pszName = aFilter.value();
-		filters[0].pszSpec = pattern;
-		++filter_count;
 	}
 	// Always include the All Files (*.*) filter, since there doesn't seem to be much
 	// point to making this an option.  This is because the user could always type
@@ -1763,7 +1763,7 @@ bif_impl FResult FileSelect(optl<StrArg> aOptions, optl<StrArg> aWorkingDir, opt
 	case 'D':
 		++options_str;
 		flags |= FOS_PICKFOLDERS;
-		if (*pattern)
+		if (filter_count > 1)
 			return FR_E_ARG(3);
 		filter_count = 0;
 		break;
@@ -3431,8 +3431,9 @@ BOOL TokenToBOOL(ExprTokenType &aToken)
 	case SYM_FLOAT:
 		return aToken.value_double != 0.0;
 	case SYM_STRING:
+		// Consider any non-empty string beginning with \0 to be TRUE.
 		return ResultToBOOL(aToken.marker)
-			|| aToken.marker_length && !*aToken.marker; // Consider any non-empty string beginning with \0 to be TRUE.
+			|| aToken.marker_length && !*aToken.marker && aToken.marker_length != -1;
 	case SYM_OBJECT:
 #ifdef ENABLE_DECIMAL
 		if (auto d = Decimal::ToDecimal(aToken.object))

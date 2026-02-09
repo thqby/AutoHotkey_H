@@ -132,7 +132,7 @@ FuncEntry g_BIF[] =
 	BIFn(RegExMatch, 2, 4, BIF_RegEx, {3}),
 	BIFn(RegExReplace, 2, 6, BIF_RegEx, {4}),
 	BIFn(RegRead, 0, 3, BIF_Reg),
-	BIFn(RegWrite, 0, 4, BIF_Reg),
+	BIFn(RegWrite, 1, 4, BIF_Reg),
 	BIF1(ResourceLoadLibrary, 1, 1),
 	BIF1(Round, 1, 2),
 	BIFn(RTrim, 1, 2, BIF_Trim),
@@ -431,13 +431,17 @@ Script::Script()
 
 
 
-Script::~Script() // Destructor.
+void Script::DestroyWindows()
 {
+	// This originally just prevented case WM_DESTROY from calling ExitApp(), but is now
+	// also used to prevent DestroyWindows() from being called more than once:
+	g_DestroyWindowCalled = true;
+
+	// The tray icon, menus, hotkeys, clipboard monitoring, etc. can't function without
+	// a window, and might need to be deregistered before the window is destroyed.
+
 	Hotkey::AllDestruct(); // Unregister hooks and hotkeys.
 	Hotstring::AllDestruct();
-
-	if (mIndex < MAX_AHK_THREADS)
-		g_ahkThreads[mIndex] = { 0 };
 
 	if (mNIC.hWnd) // Tray icon is installed.
 		Shell_NotifyIcon(NIM_DELETE, &mNIC); // Remove it.
@@ -445,29 +449,102 @@ Script::~Script() // Destructor.
 	if (mOnClipboardChange.Count()) // Remove from viewer chain.
 		EnableClipboardListener(false);
 
-	// reset count for OnMessage
-	g_MsgMonitor->Dispose();
-	mOnExit.Dispose();
-	mOnClipboardChange.Dispose();
-
 	// The following fixes being unable to paste text copied from an error dialog after the
 	// program exits (if it wasn't already pasted at least once), and may similarly be of
 	// benefit to scripts which directly or indirectly use OLE for clipboard.
+#ifdef _DEBUG
+	// This check appears to be unnecessary in general, but avoids some extraneous debug output.
+	HWND clipboard_owner = GetClipboardOwner(); // This would be an OLE window if OleSetClipboard was used.
+	if (GetWindowThreadProcessId(clipboard_owner, nullptr) == g_MainThreadID && clipboard_owner != g_hWnd)
+#endif
 	OleFlushClipboard();
 
 	// DestroyWindow() will cause MainWindowProc() to immediately receive and process the
 	// WM_DESTROY msg, which should in turn result in any child windows being destroyed
 	// and other cleanup being done:
-	KILL_DEREF_TIMER
-	KILL_INPUT_TIMER
-	KILL_MAIN_TIMER
-	g_DestroyWindowCalled = true;
 	DestroyWindow(g_hWnd);
 	g_hWnd = NULL;
 
 
 	int i;
+	// It is safer/easier to destroy the GUI windows prior to the menus (especially the menu bars).
+	// This is because one GUI window might get destroyed and take with it a menu bar that is still
+	// in use by an existing GUI window.  GuiType::Destroy() adheres to this philosophy by detaching
+	// its menu bar prior to destroying its window.
+	GuiType* gui;
+	while (gui = g_firstGui) // Destroy any remaining GUI windows (due to e.g. circular references). Also: assignment.
+		gui->Destroy();
+	g_lastGui = NULL;
+	for (i = 0; i < GuiType::sFontCount; ++i) // Now that GUI windows are gone, delete all GUI fonts.
+		if (GuiType::sFont[i].hfont)
+			DeleteObject(GuiType::sFont[i].hfont);
+	GuiType::sFontCount = 0;
+	free(GuiType::sFont);
+	GuiType::sFont = NULL;
+	// The above might attempt to delete an HFONT from GetStockObject(DEFAULT_GUI_FONT), etc.
+	// But that should be harmless:
+	// MSDN: "It is not necessary (but it is not harmful) to delete stock objects by calling DeleteObject."
 
+	// Above: Probably best to have removed icon from tray and destroyed any Gui windows that were
+	// using it prior to getting rid of the script's custom icon below:
+	if (mCustomIcon)
+	{
+		DestroyIcon(mCustomIcon);
+		DestroyIcon(mCustomIconSmall); // Should always be non-NULL if mCustomIcon is non-NULL.
+	}
+
+	// Since they're not associated with a window, we must free the resources for all popup menus.
+	// Update: Even if a menu is being used as a GUI window's menu bar, see note above for why menu
+	// destruction is done AFTER the GUI windows are destroyed:
+	for (UserMenu *n, *m = mFirstMenu; m;) // m = m->mNextMenu)
+	{
+		n = m->mNextMenu;
+		m->Dispose();
+		m->Release();
+		m = n;
+	}
+	mFirstMenu = mLastMenu = mTrayMenu = NULL;
+
+	// Since tooltip windows are unowned, they should be destroyed to avoid resource leak:
+	for (i = 0; i < MAX_TOOLTIPS; ++i)
+		if (g_hWndToolTip[i] && IsWindow(g_hWndToolTip[i]))
+			DestroyWindow(g_hWndToolTip[i]);
+
+	if (g_hAccelTable)
+		DestroyAcceleratorTable(g_hAccelTable), g_hAccelTable = NULL;
+}
+
+
+
+Script::~Script() // Destructor.
+{
+	if (mIndex < MAX_AHK_THREADS)
+		g_ahkThreads[mIndex] = { 0 };
+
+	if (!g_DestroyWindowCalled)
+		DestroyWindows();
+
+	// Close any open sound item to prevent hang-on-exit in certain operating systems or conditions.
+	// If there's any chance that a sound was played and not closed out, or that it is still playing,
+	// this check is done.  Otherwise, the check is avoided since it might be a high overhead call,
+	// especially if the sound subsystem part of the OS is currently swapped out or something:
+	if (g_SoundWasPlayed)
+	{
+		TCHAR buf[MAX_PATH * 2]; // See "MAX_PATH note" in Line::SoundPlay for comments.
+		mciSendString(_T("status ") SOUNDPLAY_ALIAS _T(" mode"), buf, _countof(buf), NULL);
+		if (*buf) // "playing" or "stopped"
+			mciSendString(_T("close ") SOUNDPLAY_ALIAS, NULL, 0, NULL);
+		g_SoundWasPlayed = 0;
+	}
+
+	if (g_MainWinClass)
+		UnregisterClass(g_WindowClassMain, g_hInstance), g_WindowClassMain = WINDOW_CLASS_MAIN, g_MainWinClass = 0;
+	if (g_GuiWinClass)
+		UnregisterClass(g_WindowClassGUI, g_hInstance), g_WindowClassGUI = WINDOW_CLASS_GUI, g_GuiWinClass = 0;
+
+	KILL_DEREF_TIMER
+	KILL_INPUT_TIMER
+	KILL_MAIN_TIMER
 	if (mFirstTimer) {
 		auto timer = mFirstTimer;
 		mFirstTimer = NULL;
@@ -476,6 +553,11 @@ Script::~Script() // Destructor.
 			delete t;
 		}
 	}
+
+	// reset count for OnMessage
+	g_MsgMonitor->Dispose();
+	mOnExit.Dispose();
+	mOnClipboardChange.Dispose();
 
 	if (mClassPropertyDef)
 		free(mClassPropertyDef), mClassPropertyDef = NULL;
@@ -495,6 +577,7 @@ Script::~Script() // Destructor.
 	for (auto cp = g_FirstHotExpr; cp; cp = cp->NextExpr)
 		cp->Callback->Release();
 
+	int i;
 	for (i = 0; i < mVars.mCount; i++)
 	{
 		Var& aVar = *mVars.mItem[i];
@@ -537,56 +620,6 @@ Script::~Script() // Destructor.
 	mFuncs = {};
 	mHotFuncs = {};
 
-	// It is safer/easier to destroy the GUI windows prior to the menus (especially the menu bars).
-	// This is because one GUI window might get destroyed and take with it a menu bar that is still
-	// in use by an existing GUI window.  GuiType::Destroy() adheres to this philosophy by detaching
-	// its menu bar prior to destroying its window.
-	if (g_firstGui)
-	{
-		GuiType* gui;
-		while (gui = g_firstGui) // Destroy any remaining GUI windows (due to e.g. circular references). Also: assignment.
-			gui->Destroy();
-		g_firstGui = g_lastGui = NULL;
-	}
-	if (GuiType::sFontCount)
-	{
-		for (i = 0; i < GuiType::sFontCount; ++i) // Now that GUI windows are gone, delete all GUI fonts.
-			if (GuiType::sFont[i].hfont)
-				DeleteObject(GuiType::sFont[i].hfont);
-		GuiType::sFontCount = 0;
-		free(GuiType::sFont);
-		GuiType::sFont = NULL;
-	}
-
-	if (g_MainWinClass)
-		UnregisterClass(g_WindowClassMain, g_hInstance), g_WindowClassMain = WINDOW_CLASS_MAIN, g_MainWinClass = 0;
-	if (g_GuiWinClass)
-		UnregisterClass(g_WindowClassGUI, g_hInstance), g_WindowClassGUI = WINDOW_CLASS_GUI, g_GuiWinClass = 0;
-
-	// The above might attempt to delete an HFONT from GetStockObject(DEFAULT_GUI_FONT), etc.
-	// But that should be harmless:
-	// MSDN: "It is not necessary (but it is not harmful) to delete stock objects by calling DeleteObject."
-
-	// Above: Probably best to have removed icon from tray and destroyed any Gui windows that were
-	// using it prior to getting rid of the script's custom icon below:
-	if (mCustomIcon)
-	{
-		DestroyIcon(mCustomIcon);
-		DestroyIcon(mCustomIconSmall); // Should always be non-NULL if mCustomIcon is non-NULL.
-	}
-
-	// Since they're not associated with a window, we must free the resources for all popup menus.
-	// Update: Even if a menu is being used as a GUI window's menu bar, see note above for why menu
-	// destruction is done AFTER the GUI windows are destroyed:
-	for (UserMenu *n, *m = mFirstMenu; m;) // m = m->mNextMenu)
-	{
-		n = m->mNextMenu;
-		m->Dispose();
-		m->Release();
-		m = n;
-	}
-	mFirstMenu = mLastMenu = mTrayMenu = NULL;
-	
 	// Destroy Labels
 	for (Label *label = mFirstLabel, *nextLabel = NULL; label;)
 	{
@@ -600,30 +633,6 @@ Script::~Script() // Destructor.
 		nextGroup = group->mNextGroup;
 		delete group;
 		group = nextGroup;
-	}
-	
-	mPriorHotkeyStartTime = 0;
-	free_compiled_regex();
-
-	if (g_hAccelTable)
-		DestroyAcceleratorTable(g_hAccelTable);
-
-	// Since tooltip windows are unowned, they should be destroyed to avoid resource leak:
-	for (i = 0; i < MAX_TOOLTIPS; ++i)
-		if (g_hWndToolTip[i] && IsWindow(g_hWndToolTip[i]))
-			DestroyWindow(g_hWndToolTip[i]);
-
-	// Close any open sound item to prevent hang-on-exit in certain operating systems or conditions.
-	// If there's any chance that a sound was played and not closed out, or that it is still playing,
-	// this check is done.  Otherwise, the check is avoided since it might be a high overhead call,
-	// especially if the sound subsystem part of the OS is currently swapped out or something:
-	if (g_SoundWasPlayed)
-	{
-		TCHAR buf[MAX_PATH * 2]; // See "MAX_PATH note" in Line::SoundPlay for comments.
-		mciSendString(_T("status ") SOUNDPLAY_ALIAS _T(" mode"), buf, _countof(buf), NULL);
-		if (*buf) // "playing" or "stopped"
-			mciSendString(_T("close ") SOUNDPLAY_ALIAS, NULL, 0, NULL);
-		g_SoundWasPlayed = 0;
 	}
 
 	for (Line *line = mLastLine; line; line = line->mPrevLine)
@@ -644,6 +653,7 @@ Script::~Script() // Destructor.
 	g_DispNameMax = 0;
 	free(g_DispNameByIdMinus1);
 	free(g_DispIdSortByName);
+	free_compiled_regex();
 
 	// release all prototypes to clean up memory and get rid of memory leaks
 	Free_Prototype(JSON::_false);
@@ -713,6 +723,7 @@ Script::~Script() // Destructor.
 	mCurrLine = NULL;
 	mCurrFileIndex = 0;
 	mCombinedLineNumber = 0;
+	mPriorHotkeyStartTime = 0;
 
 	mFirstGroup = NULL;
 	mLastGroup = NULL;
@@ -1731,6 +1742,19 @@ void Script::TerminateApp(ExitReasons aExitReason, int aExitCode)
 	g_AllowInterruption = FALSE;
 	if (g->IsPaused == true)
 		g->IsPaused = false;
+
+	// PostQuitMessage() might be needed to prevent hang-on-exit.  Once this is done, no message boxes or
+	// other dialogs can be displayed.  MSDN: "The exit value returned to the system must be the wParam
+	// parameter of the WM_QUIT message."  In our case, PostQuitMessage() should announce the same exit code
+	// that we will eventually call exit() with:
+	PostQuitMessage(aExitCode);
+
+	// Windows are destroyed on exit, before the ~Script() destructor is called, to ensure that any
+	// message monitoring callbacks are called while it is still safe to execute script (it may be
+	// unsafe by the time ~Script() is called since other static objects may or may not have been
+	// destructed already).
+	DestroyWindows();
+
 	delete g_script;
 	g_script = NULL;
 	delete g_clip;
@@ -1757,12 +1781,6 @@ void Script::TerminateApp(ExitReasons aExitReason, int aExitCode)
 	if (g_IconSmall)
 		DestroyIcon(g_IconSmall), g_IconSmall = NULL;
 	DeleteCriticalSection(&g_Critical);
-
-	// PostQuitMessage() might be needed to prevent hang-on-exit.  Once this is done, no message boxes or
-	// other dialogs can be displayed.  MSDN: "The exit value returned to the system must be the wParam
-	// parameter of the WM_QUIT message."  In our case, PostQuitMessage() should announce the same exit code
-	// that we will eventually call exit() with:
-	PostQuitMessage(aExitCode);
 
 	// I know this isn't the preferred way to exit the program.  However, due to unusual
 	// conditions such as the script having MsgBoxes or other dialogs displayed on the screen
@@ -2372,10 +2390,18 @@ process_completed_line:
 				case CONDITION_FALSE:
 					hotkey_flag = NULL; // It doesn't look like valid hotkey syntax, so parse it as something else (so the error message won't be ERR_INVALID_KEYNAME).
 					break;
-				//case CONDITION_TRUE:
+				case CONDITION_TRUE:
 					// It's a key that doesn't exist on the current keyboard layout.  Leave hotkey_flag set
 					// so that the section below handles it as a hotkey.  This ensures any same-line action
-					// or trailing block is interpreted correctly.  A warning will be displayed below.
+					// or trailing block is interpreted correctly.
+#ifndef AUTOHOTKEYSC
+					if (!mValidateThenExit) // Current keyboard layout is not relevant in /validate mode.
+#endif
+					{
+						TCHAR msg_text[128];
+						sntprintf(msg_text, _countof(msg_text), _T("Note: The hotkey %s will not be active because it does not exist in the current keyboard layout."), static_cast<LPTSTR>(buf));
+						MsgBox(msg_text);
+					}
 				}
 				*cp = orig_char; // Undo the temp. termination above.
 			}
@@ -2471,6 +2497,12 @@ process_completed_line:
 						// from being a remap (as documented). 
 						// v1.0.40.05: If the destination key has any modifiers,
 						// it is unambiguously a key name rather than a command.
+					}
+					else if (hotkey_validity == CONDITION_TRUE)
+					{
+						// This is valid remap syntax but the source key doesn't exist on the current keyboard layout.
+						// A warning has already been shown.
+						goto continue_main_loop;
 					}
 					else
 					{
@@ -2755,16 +2787,8 @@ process_completed_line:
 						if (hotkey_validity != CONDITION_TRUE)
 							return FAIL; // It already displayed the error.
 						// This hotkey uses a single-character key name, which could be valid on some other
-						// keyboard layout.  Allow the script to start, but warn the user about the problem.
-						// Note that this hotkey's label is still valid even though the hotkey wasn't created.
-#ifndef AUTOHOTKEYSC
-						if (!mValidateThenExit) // Current keyboard layout is not relevant in /validate mode.
-#endif
-						{
-							TCHAR msg_text[128];
-							sntprintf(msg_text, _countof(msg_text), _T("Note: The hotkey %s will not be active because it does not exist in the current keyboard layout."), static_cast<LPTSTR>(buf));
-							MsgBox(msg_text);
-						}
+						// keyboard layout.  Allow the script to start, as the user has already been warned.
+						// Note that this hotkey's function still exists even though the hotkey wasn't created.
 					}
 				}
 			}
@@ -3944,6 +3968,10 @@ size_t Script::GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aInBlo
 			*aBuf = '\0';
 			return 0;
 		}
+		else if (*aBuf == '/' && aBuf[1] == '*')
+			// Avoid stripping ;comments since that would prevent detection of the comment-end
+			// in cases like "/* ; */".
+			return aBuf_length;
 	}
 	//else CONTINUATION_SECTION_WITH_COMMENTS (case #3 above), which due to other checking also means that
 	// this line isn't a comment (though it might have a comment on its right side, which is checked below).
@@ -5432,10 +5460,10 @@ ResultType Script::ParseAndAddLine(LPTSTR aLineText, ActionTypeType aActionType,
 			}
 			if (*last_char == ')')
 			{
-				// Remove the parentheses (and possible open brace) and trailing space.
+				// Remove the parentheses (and possible open brace) and leading/trailing space.
 				ASSERT(action_args == end_marker);
-				++action_args;
-				last_char = omit_trailing_whitespace(end_marker, last_char - 1);
+				action_args = omit_leading_whitespace(end_marker + 1);
+				last_char = omit_trailing_whitespace(action_args, last_char - 1);
 				last_char[1] = '\0';
 				// Treat this like a function call: all parameters are sub-expressions.
 				all_args_are_expressions = true;
@@ -5846,7 +5874,7 @@ ResultType Script::AddLine(ActionTypeType aActionType, LPTSTR aArg[], int aArgc,
 	case ACT_FINALLY:
 		bool expected = false;
 		Line *parent = mPendingRelatedLine;
-		if (parent->mActionType == ACT_BLOCK_BEGIN) // For mPendingRelatedLine, this means an entire block preceding this line.
+		if (parent && parent->mActionType == ACT_BLOCK_BEGIN) // For mPendingRelatedLine, this means an entire block preceding this line.
 			parent = parent->mParentLine;
 		for (;; parent = parent->mParentLine)
 		{
@@ -8059,8 +8087,8 @@ Var *Script::FindUpVar(LPCTSTR aVarName, size_t aVarNameLength, UserFunc &aInner
 		return nullptr;
 	auto &outer = *aInner.mOuterFunc;
 	Var *outer_var;
-	if (  (outer_var = outer.mStaticVars.Find(aVarName)) || aInner.mIsStatic  )
-		return outer_var; // Can be nullptr if aInner.mIsStatic.
+	if (  (outer_var = outer.mStaticVars.Find(aVarName))  )
+		return outer_var;
 	if (  !(outer_var = outer.mVars.Find(aVarName))  )
 	{
 		if (  !(outer.mOuterFunc && (outer_var = FindUpVar(aVarName, aVarNameLength, outer, aDisplayError)))  )
@@ -8070,6 +8098,8 @@ Var *Script::FindUpVar(LPCTSTR aVarName, size_t aVarNameLength, UserFunc &aInner
 		if (!outer_var->IsNonStaticLocal())
 			return outer_var;
 	}
+	if (aInner.mIsStatic) // Function was declared static.
+		return nullptr; // "non-static local variables of the outer function are ignored"
 	// At this point, all var refs used in declarations, assignments or &var in the outer
 	// function should have already been parsed, while it's possible that some read-refs
 	// have not.  Ignore all variables that lack an assignment, &var or declaration.

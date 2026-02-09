@@ -317,6 +317,9 @@ int Debugger::ProcessCommands(LPCSTR aBreakReason)
 	// debugger, since it isn't executing within or being called by the current block.
 	auto excptmode = g->ExcptMode;
 	g->ExcptMode = EXCPTMODE_DEBUGGER;
+	// Line::sDerefBuf might be in use for passing a return value if we're currently
+	// stepping out of a function.  This ensures it won't be overwritten during eval:
+	PRIVATIZE_S_DEREF_BUF;
 
 	// Disable notification of READ readiness and reset socket to synchronous mode.
 	u_long zero = 0;
@@ -416,6 +419,7 @@ int Debugger::ProcessCommands(LPCSTR aBreakReason)
 	}
 	ASSERT(mInternalState != DIS_Break);
 	mProcessingCommands = false;
+	DEPRIVATIZE_S_DEREF_BUF;
 	g->ExcptMode = excptmode;
 	// Register for message-based notification of data arrival.  If a command
 	// is received asynchronously, control will be passed back to the debugger
@@ -2782,7 +2786,7 @@ void Debugger::Buffer::WriteFileURI(LPCWSTR aPath)
 	int c;
 	for (auto ptr = aPath; c = *ptr; ++ptr)
 	{
-		if (cisalnum(c) || strchr("-_.!~*()/", c))
+		if (cisalnum(c) || _tcschr(_T("-_.!~*'()/"), c))
 		{
 			mData[mDataUsed++] = (char)c;
 		}

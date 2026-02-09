@@ -965,7 +965,7 @@ bif_impl FResult FileGetSize(optl<StrArg> aPath, optl<StrArg> aUnits, __int64 &a
 
 	// Try CreateFile() and GetFileSizeEx() first, since they can be more accurate. 
 	// See "Why is the file size reported incorrectly for files that are still being written to?"
-	// http://blogs.msdn.com/b/oldnewthing/archive/2011/12/26/10251026.aspx
+	// https://devblogs.microsoft.com/oldnewthing/20111226-00/?p=8813
 	HANDLE hfile = CreateFile(path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
 		, NULL, OPEN_EXISTING, 0, NULL);
 	if (hfile != INVALID_HANDLE_VALUE)

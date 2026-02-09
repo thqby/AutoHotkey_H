@@ -2677,8 +2677,8 @@ public:
 	void Escape(); // Similar to close, except typically called when the user presses ESCAPE.
 	void VisibilityChanged();
 
-	static GuiType *FindGui(HWND aHwnd);
-	static GuiType *FindGuiParent(HWND aHwnd);
+	static GuiType *FindGui(HWND aHwnd, bool aVerifyProcess = false);
+	static GuiType *FindGuiParent(HWND aHwnd, bool aVerifyProcess = false);
 
 	GuiIndexType FindControl(LPCTSTR aControlID);
 	GuiIndexType FindControlIndex(HWND aHwnd)
@@ -3148,6 +3148,7 @@ public:
 
 	Script();
 	~Script();
+	void DestroyWindows();
 	// Note that the anchors to any linked lists will be lost when this
 	// object goes away, so for now, be sure the destructor is only called
 	// when the program is about to be exited, which will thereby reclaim
