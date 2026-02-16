@@ -533,7 +533,7 @@ BIF_DECL(BIF_StrGetPut) // BIF_DECL(BIF_StrGet), BIF_DECL(BIF_StrPut)
 			// In theory, capping at INT_MAX could let us operate up to the limit of MultiByteToWideChar,
 			// but in practice it will not return a truncated string, because MultiByteToWideChar sets
 			// ERROR_INVALID_PARAMETER whenever length >= INT_MAX/2 (found through testing, not documented).
-			int src_count = (int)min(length, (size_t)INT_MAX);
+			int src_count = (int)min(length, INT_MAX);
 			conv_length = MultiByteToWideChar(encoding, 0, (LPCSTR)address, src_count, NULL, 0);
 			if (!TokenSetResult(aResultToken, NULL, conv_length)) // DO NOT SUBTRACT 1, conv_length might not include a null-terminator.
 				return; // Out of memory.
