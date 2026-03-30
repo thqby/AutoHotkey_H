@@ -817,6 +817,7 @@ Script::~Script() // Destructor.
 	Line::sDerefBufSize = 0;
 	Line::sLargeDerefBufs = 0;
 	Line::sLogNext = 0;
+	TextStream::sLastStream = nullptr;
 
 	g_WorkingDir.~CKuStringT();
 	g_WorkingDirOrig = NULL;
@@ -1755,6 +1756,9 @@ void Script::TerminateApp(ExitReasons aExitReason, int aExitCode)
 	// destructed already).
 	DestroyWindows();
 
+	// Flush write buffers of any open File objects and other streams, such as Loop Read's OutputFile.
+	TextStream::FlushAllWriteBuffers();
+
 	delete g_script;
 	g_script = NULL;
 	delete g_clip;
@@ -2210,7 +2214,6 @@ ResultType Script::LoadIncludedFile(TextStream *fp, int aFileIndex)
 	// File is now open, read lines from it.
 
 	bool has_continuation_section;
-	TCHAR orig_char;
 
 	LPTSTR hotkey_flag, cp, cp1, hotstring_start, hotstring_options;
 	Hotkey *hk;
@@ -2366,23 +2369,21 @@ process_completed_line:
 		if (!hotstring_start) // Not a hotstring (hotstring_start is checked *again* in case above block changed it; otherwise hotkeys like ": & x" aren't recognized).
 		{
 			// Note that there may be an action following the HOTKEY_FLAG (on the same line).
-			if (hotkey_flag = _tcsstr(buf, HOTKEY_FLAG)) // Find the first one from the left, in case there's more than 1.
+			if (hotkey_flag = _tcsstr(buf + 1, HOTKEY_FLAG)) // Find the first one from the left, in case there's more than 1.
 			{
-				if (hotkey_flag == buf && hotkey_flag[2] == ':') // v1.0.46: Support ":::" to mean "colon is a hotkey".
-					++hotkey_flag;
-					// Above: Hotkeys like "^:::" and "l & :::" are not supported because: 1) some cases are
-					// ambiguous, such as "^:::" legitimately remapping caret to colon; 2) retaining support
-					// for colon as a remap target would require larger/more complicated code; 3) such hotkeys
-					// are hard for a human to read/interpret.
+				// Above: The search starts from + 1 to support ":::" to define colon as a hotkey.
+				// Hotkeys like "^:::" and "l & :::" are not supported because: 1) some cases are
+				// ambiguous, such as "^:::" legitimately remapping caret to colon; 2) retaining support
+				// for colon as a remap target would require larger/more complicated code; 3) such hotkeys
+				// are hard for a human to read/interpret.
 				// v1.0.40: It appears to be a hotkey, but validate it as such before committing to processing
 				// it as a hotkey.  If it fails validation as a hotkey, treat it as a command that just happens
 				// to contain a double-colon somewhere.  This avoids the need to escape double colons in scripts.
 				// Note: Hotstrings can't suffer from this type of ambiguity because a leading colon or pair of
 				// colons makes them easier to detect.
-				cp = omit_trailing_whitespace(buf, hotkey_flag); // For maintainability.
-				orig_char = *cp;
+				cp = hotkey_flag;
 				*cp = '\0'; // Temporarily terminate.
-				hotkey_validity = Hotkey::TextInterpret(omit_leading_whitespace(buf), NULL); // Passing NULL calls it in validate-only mode.
+				hotkey_validity = Hotkey::TextInterpret(buf, NULL); // Passing NULL calls it in validate-only mode.
 				switch (hotkey_validity)
 				{
 				case FAIL:
@@ -2403,7 +2404,7 @@ process_completed_line:
 						MsgBox(msg_text);
 					}
 				}
-				*cp = orig_char; // Undo the temp. termination above.
+				*cp = *HOTKEY_FLAG; // Undo the temp. termination above.
 			}
 		}
 
@@ -3499,7 +3500,7 @@ ResultType Script::BalanceExprError(int aBalance, TCHAR aExpect[], LPTSTR aLineT
 ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuffer &next_buf
 	, LineNumberType &phys_line_number, bool &has_continuation_section)
 {
-	bool do_rtrim, literal_escapes, literal_quotes;
+	bool do_rtrim, literal_escapes = false, literal_quotes;
 	#define CONTINUATION_SECTION_WITHOUT_COMMENTS 1 // MUST BE 1 because it's the default set by anything that's boolean-true.
 	#define CONTINUATION_SECTION_WITH_COMMENTS    2 // Zero means "not in a continuation section".
 	int in_continuation_section, indent_level;
@@ -3522,7 +3523,7 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 	{
 		// This increment relies on the fact that this loop always has at least one iteration:
 		++phys_line_number; // Tracks phys. line number in *this* file (independent of any recursion caused by #Include).
-		next_buf_length = GetLine(next_buf, in_continuation_section, in_comment_section, fp);
+		next_buf_length = GetLine(next_buf, in_continuation_section, literal_escapes, in_comment_section, fp);
 		if (!in_continuation_section)
 		{
 			// v2: The comment-end is allowed at the end of the line (vs. just the start) to reduce
@@ -3853,8 +3854,9 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 		}
 		else if (cp_length)
 		{
-			tmemcpy(buf + buf_length, cp, cp_length + 1); // Append this line to prev. and include the zero terminator.
+			tmemcpy(buf + buf_length, cp, cp_length); // Append this line to prev.
 			buf_length += cp_length; // Must be done only after the old value of buf_length was used above.
+			buf[buf_length] = '\0'; // Null-terminator isn't done by tmemcpy() because cp_length might have been adjusted to omit trailing whitespace.
 		}
 	} // for() each sub-line (continued line) that composes this line.
 	return OK;
@@ -3862,7 +3864,7 @@ ResultType Script::GetLineContinuation(TextStream *fp, LineBuffer &buf, LineBuff
 
 
 
-size_t Script::GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aInBlockComment, TextStream *ts)
+size_t Script::GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aLiteralEscape, bool aInBlockComment, TextStream *ts)
 {
 	size_t aBuf_length = 0;
 	for (;;)
@@ -3997,7 +3999,7 @@ size_t Script::GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aInBlo
 			aBuf_length = rtrim_with_nbsp(aBuf, prevp - aBuf); // Since it's our responsibility to return a fully trimmed string.
 			break; // Once the first valid comment-flag is found, nothing after it can matter.
 		}
-		else // No whitespace to the left.
+		else if (!aLiteralEscape)
 		{
 			// The following is done here, at this early stage, to support escaping the comment flag in
 			// hotkeys and directives (the latter is mostly for backward-compatibility).

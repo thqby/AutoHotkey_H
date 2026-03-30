@@ -192,10 +192,12 @@ bif_impl FResult CallbackCreate(IObject *func, optl<StrArg> aOptions, optl<int> 
 #endif
 
 	bool params_specified = aParamCount.has_value();
-	if (pass_params_pointer && require_param_count && !params_specified)
+	int actual_param_count = aParamCount.value_or(0);
+	if (  params_specified
+		? (actual_param_count < 0 || actual_param_count > 255)
+		: (pass_params_pointer && require_param_count)  )
 		return FR_E_ARG(2);
 
-	int actual_param_count = aParamCount.value_or(0);
 	ResultToken result_token; // Just used for .result.
 	auto fr = ValidateFunctor(func
 		, pass_params_pointer ? 1 : actual_param_count // Count of script parameters being passed.

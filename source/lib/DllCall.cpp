@@ -842,9 +842,10 @@ BIF_DECL(BIF_DllCall)
 			if ((this_dyna_param.passed_by_address || this_dyna_param.type == DLL_ARG_STR)
 				&& dynamic_cast<VarRef*>(this_param_obj))
 			{
+				VarRef *varref = static_cast<VarRef*>(this_param_obj);
 				aParam[i] = (ExprTokenType *)_alloca(sizeof(ExprTokenType));
-				aParam[i]->SetVarRef(static_cast<VarRef*>(this_param_obj));
-				this_param_obj = nullptr;
+				aParam[i]->SetVarRef(varref);
+				this_param_obj = varref->ToObject();
 			}
 			else if (this_dyna_param.is_ptr == 1)
 			{

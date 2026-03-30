@@ -2893,7 +2893,7 @@ public:
 		~LineBuffer() { free(p); }
 		operator LPTSTR() const { return p; }
 	};
-	size_t GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aInBlockComment, TextStream *ts);
+	size_t GetLine(LineBuffer &aBuf, int aInContinuationSection, bool aLiteralEscape, bool aInBlockComment, TextStream *ts);
 	ResultType GetLineContinuation(TextStream *ts, LineBuffer &aBuf, LineBuffer &aNextBuf
 		, LineNumberType &aPhysLineNumber, bool &aHasContinuationSection);
 	ResultType GetLineContExpr(TextStream *ts, LineBuffer &aBuf, LineBuffer &aNextBuf

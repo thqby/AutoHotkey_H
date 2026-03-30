@@ -510,7 +510,7 @@ void Hotkey::AllDestruct()
 
 
 
-bool Hotkey::PrefixHasNoEnabledSuffixes(int aVKorSC, bool aIsSC, bool &aSuppress)
+bool Hotkey::PrefixHasEnabledSuffixes(int aVKorSC, bool aIsSC, bool &aSuppress)
 // aVKorSC contains the virtual key or scan code of the specified prefix key (it's a scan code if aIsSC is true).
 // Returns true if this prefix key has no suffixes that can possibly fire.  Each such suffix is prevented from
 // firing by one or more of the following:
@@ -542,7 +542,7 @@ bool Hotkey::PrefixHasNoEnabledSuffixes(int aVKorSC, bool aIsSC, bool &aSuppress
 				continue;
 			//else // This alt-tab hotkey is currently active.
 			if ((hk.mNoSuppress & NO_SUPPRESS_PREFIX) || aSuppress)
-				return false; // Since any stored mHotCriterion are ignored for alt-tab hotkeys, no further checking is needed.
+				return true; // Since any stored mHotCriterion are ignored for alt-tab hotkeys, no further checking is needed.
 			has_enabled_suffix = true;
 			continue; // Still need to check other hotkeys for NO_SUPPRESS_PREFIX.
 		}
@@ -558,7 +558,7 @@ bool Hotkey::PrefixHasNoEnabledSuffixes(int aVKorSC, bool aIsSC, bool &aSuppress
 				&& (!vp->mHotCriterion || HotCriterionAllowsFiring(vp->mHotCriterion, hk.mName))   ) // ... and its criteria allow it to fire.
 			{
 				if ((vp->mNoSuppress & NO_SUPPRESS_PREFIX) || aSuppress)
-					return false; // At least one of this prefix's suffixes is eligible for firing.
+					return true; // At least one of this prefix's suffixes is eligible for firing.
 				has_enabled_suffix = true;
 				if (!(hk.mNoSuppress & NO_SUPPRESS_PREFIX))
 					break; // None of this hotkey's variants have NO_SUPPRESS_PREFIX.
@@ -568,7 +568,7 @@ bool Hotkey::PrefixHasNoEnabledSuffixes(int aVKorSC, bool aIsSC, bool &aSuppress
 	// Since above didn't return, either no hotkeys were found for this prefix that are capable of firing,
 	// or no variants were found with the NO_SUPPRESS_PREFIX flag.
 	aSuppress = has_enabled_suffix;
-	return !has_enabled_suffix;
+	return has_enabled_suffix;
 }
 
 

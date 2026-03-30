@@ -509,10 +509,12 @@ bool Object::Delete()
 			ResultToken *exc = g->ThrownToken;
 			g->ThrownToken = NULL;
 
-			// This prevents an erroneous "The current thread will exit" message when an error occurs,
-			// by causing LineError() to throw an exception:
+			// EXCPTMODE_DELETE is used to replace "The current thread will exit" in error messages
+			// with something more accurate (since an error here can't cause the thread to exit).
+			// EXCPTMODE_CATCH is temporarily removed to ensure the error is actually reported
+			// (otherwise it would be ignored if an object is deleted within try-catch).
 			int outer_excptmode = g->ExcptMode;
-			g->ExcptMode |= EXCPTMODE_DELETE;
+			g->ExcptMode = (g->ExcptMode & ~EXCPTMODE_CATCH) | EXCPTMODE_DELETE;
 
 			{
 				FuncResult rt;
