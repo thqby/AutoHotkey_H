@@ -140,7 +140,7 @@ struct key_type
 	bool it_put_alt_down;  // this key resulted in ALT being pushed down (due to alt-tab).
 	bool it_put_shift_down;  // this key resulted in SHIFT being pushed down (due to shift-alt-tab).
 	bool down_performed_action; // the last key-down resulted in an action (modifiers matched those of a valid hotkey)
-	bool hotkey_down_was_suppressed; // Whether the down-event for a key was suppressed (thus its up-event should be too).
+	UCHAR down_was_suppressed; // Whether the down-event for a key was suppressed (thus its up-event should be too).
 	// The values for "was_just_used" (zero is the initialized default, meaning it wasn't just used):
 	char was_just_used; // a non-modifier key of any kind was pressed while this prefix key was down.
 	// And these are the values for the above (besides 0):

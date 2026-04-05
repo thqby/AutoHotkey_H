@@ -1014,10 +1014,9 @@ int MsgBox(LPCTSTR aText, UINT uType, LPCTSTR aTitle, double aTimeout, HWND aOwn
 	// a negative to be part of the text param.  But if it does happen, timeout after a short time,
 	// which may signal the user that the script passed a bad parameter.
 
-	// v1.0.33: The following is a workaround for the fact that an MsgBox with only an OK button
+	// The following is a workaround for the fact that a MsgBox with only an OK button
 	// doesn't obey EndDialog()'s parameter:
-	g->DialogHWND = NULL;
-	g->MsgBoxTimedOut = false;
+	g_MsgBoxTimedOut[g_nMessageBoxes] = false;
 
 	// At this point, we know a dialog will be displayed.  See macro's comments for details:
 	DIALOG_PREP // Must be done prior to POST_AHK_DIALOG() below.
@@ -1054,7 +1053,7 @@ int MsgBox(LPCTSTR aText, UINT uType, LPCTSTR aTitle, double aTimeout, HWND aOwn
 	// and why the behavior varies:
 	// Unfortunately, it appears that MessageBox() will return zero rather
 	// than AHK_TIMEOUT that was specified in EndDialog() at least under WinXP.
-	if (g->MsgBoxTimedOut || (!result && aTimeout > 0)) // v1.0.33: Added g->MsgBoxTimedOut, see comment higher above.
+	if (g_MsgBoxTimedOut[g_nMessageBoxes] || (!result && aTimeout > 0))
 		// Assume it timed out rather than failed, since failure should be VERY rare.
 		result = AHK_TIMEOUT;
 	// else let the caller handle the display of the error message because only it knows
@@ -1696,9 +1695,11 @@ HWND WindowSearch::IsMatch(bool aInvert)
 		// 2) The specified parent has no children.
 		// Since in both these cases GetLastError() returns ERROR_SUCCESS, we discard the return
 		// value and just check mFoundChild to determine whether a match has been found:
-		mFoundChild = NULL;  // Init prior to each call, in case mFindLastMatch is true.
+		// When mCriterionText is empty and mCriterionExcludeText is not, mFoundChild must
+		// be initialized to a non-null value to avoid excluding windows with no controls.
+		mFoundChild = !*mCriterionText ? mCandidateParent : NULL;  // Init prior to each call, in case mFindLastMatch is true.
 		EnumChildWindows(mCandidateParent, EnumChildFind, (LPARAM)this);
-		if (!mFoundChild) // This parent has no matching child, or no children at all.
+		if (!mFoundChild) // This parent has no matching child, or has an excluded child.
 			return NULL;
 	}
 

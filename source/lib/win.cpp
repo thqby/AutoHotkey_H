@@ -1629,6 +1629,8 @@ bif_impl FResult WinGetTitle(WINTITLE_PARAMETERS_DECL, StrRet &aRetVal)
 	DETERMINE_TARGET_WINDOW;
 
 	auto estimated_length = GetWindowTextLength(target_window);
+	if (!estimated_length)
+		return OK;
 	auto buf = aRetVal.Alloc(estimated_length);
 	if (!buf)
 		return FR_E_OUTOFMEM;

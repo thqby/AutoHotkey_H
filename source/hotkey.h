@@ -79,6 +79,16 @@ inline int InputLevelFromInfo(ULONG_PTR aExtraInfo)
 	return SendLevelMax + 1;
 }
 
+inline UCHAR InputLevelMaskFromInfo(ULONG_PTR aExtraInfo)
+{
+	// Level 0 is ignored and therefore doesn't need a bit.
+	// Levels 1 through 7 get a unique bit to distinguish them from each other and physical input.
+	// Levels 8 and above get the same bit as physical/non-AutoHotkey input.
+	if (aExtraInfo >= KEY_IGNORE_LEVEL(7) && aExtraInfo <= KEY_IGNORE_LEVEL(1))
+		return (UCHAR)(1 << (KEY_IGNORE_LEVEL(0) - aExtraInfo));
+	return 1;
+}
+
 
 
 struct HotkeyVariant

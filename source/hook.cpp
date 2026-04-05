@@ -538,11 +538,20 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 		return AllowKeyToGoToSystem;
 	}
 
-	if (!aKeyUp) // Set defaults for this down event.
-	{
-		// This should be done even for key-repeat, otherwise it can cause a key to become
-		// stuck down if the repeat isn't also suppressed:
-		this_key.hotkey_down_was_suppressed = false;
+	// Set this early since it needs to be reset prior to any of the returns below.
+	const UCHAR down_was_suppressed = this_key.down_was_suppressed & InputLevelMaskFromInfo(aExtraInfo);
+	// This should be done even for key-repeat, otherwise it can cause a key to become
+	// stuck down if the repeat isn't also suppressed.  It is done for key-up because:
+	//  1) If it isn't reset, attempts to send one or more key-up events without a
+	//     key-down might all be suppressed if the InputLevelMask matches.  It seems
+	//     better to suppress just the first one.
+	//  2) Some odd devices send key-down and key-up independently, in which case it
+	//     might be more useful to suppress only the first matching key-up.
+	//  3) That's how it was for many cases prior to v2.0.20 (NO_SUPPRESS_NEXT_UP_EVENT).
+	this_key.down_was_suppressed ^= down_was_suppressed;
+	
+	//if (!aKeyUp) // Set defaults for this down event.
+	//{
 		// Don't do the following because key-repeat should not prevent a previously-selected
 		// key-up hotkey from executing (although it can still be overridden by selecting a
 		// different key-up hotkey below).  If this was done, a key-down hotkey which puts a
@@ -550,7 +559,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 		// key is released prior to key-repeat, or the key-up hotkey explicitly allows it
 		// (which would defeat the purpose of hotkey_to_fire_upon_release).
 		//this_key.hotkey_to_fire_upon_release = HOTKEY_ID_INVALID;
-	}
+	//}
 
 	if (aHook == g_MouseHook)
 	{
@@ -719,10 +728,13 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 		// introduce a new hotkey modifier such as an "up2" keyword that makes any key into a prefix
 		// key even if it never acts as a prefix for other keys, which in turn has the benefit of firing
 		// on key-up, but only if the no other key was pressed while the user was holding it down.
+		// v2.0.23: Check for PREFIX_FORCED independently of has_enabled_suffixes, which should be false
+		// for neutral modifiers so that e.g. Alt & Esc:: won't affect how LAlt:: behaves (suffixes don't
+		// need to be checked for Alt because Alt:: always fires on release).
 		bool suppress_this_prefix = !(this_key.no_suppress & AT_LEAST_ONE_COMBO_HAS_TILDE); // Set default.
-		bool has_enabled_suffixes = (this_key.used_as_prefix == PREFIX_ACTUAL)
+		bool has_enabled_suffixes = (this_key.used_as_prefix & PREFIX_ACTUAL)
 			&& Hotkey::PrefixHasEnabledSuffixes(sc_takes_precedence ? aSC : aVK, sc_takes_precedence, suppress_this_prefix);
-		if (has_enabled_suffixes)
+		if (has_enabled_suffixes || (this_key.used_as_prefix & PREFIX_FORCED))
 		{
 			// This check is necessary in cases such as the following, in which the "A" key continues
 			// to repeat because pressing a mouse button (unlike pressing a keyboard key) does not
@@ -738,9 +750,6 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 				// key2 is both a prefix and a suffix, we want to leave key1 in effect as a prefix,
 				// rather than key2.  Hence, a null-check was added in the above if-stmt:
 				pPrefixKey = &this_key;
-				// It seems easier (and may perform better than alternative ways) to init this
-				// here rather than say, upon the release of the prefix key:
-				this_key.was_just_used = 0; // Init to indicate it hasn't yet been used in its role as a prefix.
 			}
 		}
 		//else this prefix has no enabled suffixes, so its role as prefix is also disabled.
@@ -855,7 +864,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 
 		if (hotkey_id_with_flags == HOTKEY_ID_INVALID)
 		{
-			if (!has_enabled_suffixes && this_key.used_as_prefix == PREFIX_ACTUAL)
+			if (!has_enabled_suffixes && (this_key.used_as_prefix & PREFIX_ACTUAL))
 				pKeyHistoryCurr->event_type = _T('#'); // '#' to indicate this prefix key is disabled due to #HotIf WinActive/Exist criterion.
 			// In this case, a key-down event can't trigger a suffix, so return immediately.
 			// If our caller is the mouse hook, both of the following will always be false:
@@ -866,7 +875,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 				(this_key.as_modifiersLR || !suppress_this_prefix || this_toggle_key_can_be_toggled))
 				return AllowKeyToGoToSystem;
 			// Mark this key as having been suppressed, so key-up will also be suppressed.
-			this_key.hotkey_down_was_suppressed = true;
+			this_key.down_was_suppressed |= InputLevelMaskFromInfo(aExtraInfo);
 			return SuppressThisKey;
 		}
 		//else valid suffix hotkey has been found; this will now fall through to Case #4 by virtue of aKeyUp==false.
@@ -908,7 +917,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 		// In light of the above, it seems best to keep this documented here as a known limitation for now.
 
 		if (!this_key.used_as_key_up)
-			return this_key.hotkey_down_was_suppressed ? SuppressThisKey : AllowKeyToGoToSystem;
+			return down_was_suppressed ? SuppressThisKey : AllowKeyToGoToSystem;
 		//else continue checking to see if the right modifiers are down to trigger one of this
 		// suffix key's key-up hotkeys.
 	}
@@ -940,8 +949,14 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 			KeyEvent(KEYUP, VK_SHIFT);
 		}
 
+		auto was_just_used = this_key.was_just_used;
+		// Reset this on key-up, since next time it is pressed might not be as a prefix,
+		// such as with combinations like a & b, b & a, a up, b up, where pressing "a & b"
+		// would consult b.was_just_used on key-up.
+		this_key.was_just_used = 0;
+
 		if (this_toggle_key_can_be_toggled // Always false if our caller is the mouse hook.
-			&& !this_key.hotkey_down_was_suppressed)
+			&& !down_was_suppressed)
 		{
 			// It's done this way because CapsLock, for example, is a key users often
 			// press quickly while typing.  I suspect many users are like me in that
@@ -955,7 +970,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 			// Toggle the key by replacing this key-up event with a new sequence
 			// of our own.  This entire-replacement is done so that the system
 			// will see all three events in the right order:
-			if (this_key.was_just_used == AS_PREFIX_FOR_HOTKEY) // If this is true, it's probably impossible for hotkey_id_with_flags to be valid by means of this_key.hotkey_to_fire_upon_release.
+			if (was_just_used == AS_PREFIX_FOR_HOTKEY) // If this is true, it's probably impossible for hotkey_id_with_flags to be valid by means of this_key.hotkey_to_fire_upon_release.
 			{
 				KEYEVENT_PHYS(KEYUP, aVK, aSC); // Mark it as physical for any other hook instances.
 				KeyEvent(KEYDOWNANDUP, aVK, aSC);
@@ -970,12 +985,12 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 		// If the key isn't used as a suffix, we're done, so also return in that case.
 		// Don't do "DisguiseWinAlt" because we want the key's native key-up function to
 		// take effect if the event isn't being suppressed.
-		if ((this_key.was_just_used > 0 // AS_PREFIX or AS_PREFIX_FOR_HOTKEY.  v1.1.34.02: Excludes AS_PASSTHROUGH_PREFIX, which would indicate the prefix key's suffix hotkey should always fire.
+		if ((was_just_used > 0 // AS_PREFIX or AS_PREFIX_FOR_HOTKEY.  v1.1.34.02: Excludes AS_PASSTHROUGH_PREFIX, which would indicate the prefix key's suffix hotkey should always fire.
 			|| !this_key.used_as_suffix)
 			&& hotkey_id_with_flags == HOTKEY_ID_INVALID) // v1.0.44.04: Must check this because this prefix might be being used in its role as a suffix instead.  At this point id is only set if modifiers are held down.
 			// For simplicity and to ensure consistency with the used_as_suffix == true case,
 			// don't reevaluate the conditions which were already evaluated on key-down.
-			return this_key.hotkey_down_was_suppressed ? SuppressThisKey : AllowKeyToGoToSystem;
+			return down_was_suppressed ? SuppressThisKey : AllowKeyToGoToSystem;
 
 		// Since the above didn't return, this key is both a prefix and a suffix, and no
 		// other keys were pressed while this prefix was held down, so continue below to
@@ -1175,7 +1190,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 			}
 			pKeyHistoryCurr->event_type = 'h'; // h = hook hotkey (not one registered with RegisterHotkey)
 			if (!aKeyUp)
-				this_key.hotkey_down_was_suppressed = true;
+				this_key.down_was_suppressed |= InputLevelMaskFromInfo(aExtraInfo);
 			return SuppressThisKey;
 		} // end of alt-tab section.
 		// Since above didn't return, this isn't a prefix-triggered alt-tab action (though it might be
@@ -1248,9 +1263,9 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 			if (aKeyUp)
 			{
 				// The hotkey found above should fire if it's a prefix key and wasn't fired on key-down,
-				// unless it was used in a combination or this up event wasn't preceded by a down event.
+				// unless this up event wasn't preceded by a down event.  If the prefix key was combined
+				// with another key, the hook already returned before getting to this point.
 				bool fire_down_hotkey = this_key.used_as_prefix
-					&& this_key.was_just_used == 0
 					&& !down_performed_action
 					&& was_down_before_up;
 				// Otherwise, check for a key-up hotkey to fire instead.
@@ -1292,7 +1307,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 			if (aKeyUp)
 				// This takes into account both prefix keys and key-up hotkeys: suppress if and only if
 				// key-down was suppressed.
-				return this_key.hotkey_down_was_suppressed ? SuppressThisKey : AllowKeyToGoToSystem;
+				return down_was_suppressed ? SuppressThisKey : AllowKeyToGoToSystem;
 
 			// For execution to have reached this point, the following must be true:
 			// 1) aKeyUp==false
@@ -1318,7 +1333,8 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 				, aExtraInfo // May affect the result due to #InputLevel.  Assume the key-up's SendLevel will be the same as the key-down.
 				, fire_with_no_suppress, NULL)) // fire_with_no_suppress is the value we really need to get back from it.
 				fire_with_no_suppress = true; // Although it's not "firing" in this case; just for use below.
-			this_key.hotkey_down_was_suppressed = !fire_with_no_suppress; // Fixed for v1.1.33.01: If this isn't set, the key-up won't be suppressed even after the key-down is.
+			if (!fire_with_no_suppress)
+				this_key.down_was_suppressed |= InputLevelMaskFromInfo(aExtraInfo);
 			return fire_with_no_suppress ? AllowKeyToGoToSystem : SuppressThisKey;
 		}
 		//else an eligible hotkey was found.
@@ -1345,7 +1361,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 		//     In that case, the documentation indicates the key-down will be suppressed.
 		//     Prior to v1.1.08, neither event was suppressed.
 		if (aKeyUp)
-			return this_key.hotkey_down_was_suppressed ? SuppressThisKey : AllowKeyToGoToSystem;
+			return down_was_suppressed ? SuppressThisKey : AllowKeyToGoToSystem;
 		if (this_key.hotkey_to_fire_upon_release == HOTKEY_ID_INVALID)
 			return AllowKeyToGoToSystem;
 		// Otherwise, this is a key-down event with a corresponding key-up hotkey.
@@ -1358,7 +1374,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 		if (!firing_is_certain || fire_with_no_suppress)
 			return AllowKeyToGoToSystem;
 		// Both this down event and the corresponding up event should be suppressed.
-		this_key.hotkey_down_was_suppressed = true;
+		this_key.down_was_suppressed |= InputLevelMaskFromInfo(aExtraInfo);
 		return SuppressThisKey;
 	}
 	hotkey_id_temp = hotkey_id_with_flags & HOTKEY_ID_MASK; // Update in case CriterionFiringIsCertain() changed the naked/raw ID.
@@ -1655,7 +1671,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 
 	if (aKeyUp)
 	{
-		if (fire_with_no_suppress || !this_key.hotkey_down_was_suppressed)
+		if (fire_with_no_suppress || !down_was_suppressed)
 		{
 			// Although it seems more sensible to suppress the key-up if the key-down was suppressed,
 			// it probably does no harm to let the key-up pass through, and in this case, it's exactly
@@ -1728,7 +1744,7 @@ LRESULT LowLevelCommon(const HHOOK aHook, int aCode, WPARAM wParam, LPARAM lPara
 	
 	// Otherwise:
 	if (!aKeyUp)
-		this_key.hotkey_down_was_suppressed = true;
+		this_key.down_was_suppressed |= InputLevelMaskFromInfo(aExtraInfo);
 	return SuppressThisKey;
 }
 
@@ -3160,38 +3176,38 @@ void SetModifierAsPrefix(vk_type aVK, sc_type aSC, bool aAlwaysSetAsPrefix = fal
 			switch (aVK)
 			{
 			case VK_MENU:
-				kvk[VK_MENU].used_as_prefix = PREFIX_FORCED;
-				kvk[VK_LMENU].used_as_prefix = PREFIX_FORCED;
-				kvk[VK_RMENU].used_as_prefix = PREFIX_FORCED;
-				ksc[SC_LALT].used_as_prefix = PREFIX_FORCED;
-				ksc[SC_RALT].used_as_prefix = PREFIX_FORCED;
+				kvk[VK_MENU].used_as_prefix |= PREFIX_FORCED;
+				kvk[VK_LMENU].used_as_prefix |= PREFIX_FORCED;
+				kvk[VK_RMENU].used_as_prefix |= PREFIX_FORCED;
+				ksc[SC_LALT].used_as_prefix |= PREFIX_FORCED;
+				ksc[SC_RALT].used_as_prefix |= PREFIX_FORCED;
 				break;
 			case VK_SHIFT:
-				kvk[VK_SHIFT].used_as_prefix = PREFIX_FORCED;
-				kvk[VK_LSHIFT].used_as_prefix = PREFIX_FORCED;
-				kvk[VK_RSHIFT].used_as_prefix = PREFIX_FORCED;
-				ksc[SC_LSHIFT].used_as_prefix = PREFIX_FORCED;
-				ksc[SC_RSHIFT].used_as_prefix = PREFIX_FORCED;
+				kvk[VK_SHIFT].used_as_prefix |= PREFIX_FORCED;
+				kvk[VK_LSHIFT].used_as_prefix |= PREFIX_FORCED;
+				kvk[VK_RSHIFT].used_as_prefix |= PREFIX_FORCED;
+				ksc[SC_LSHIFT].used_as_prefix |= PREFIX_FORCED;
+				ksc[SC_RSHIFT].used_as_prefix |= PREFIX_FORCED;
 				break;
 			case VK_CONTROL:
-				kvk[VK_CONTROL].used_as_prefix = PREFIX_FORCED;
-				kvk[VK_LCONTROL].used_as_prefix = PREFIX_FORCED;
-				kvk[VK_RCONTROL].used_as_prefix = PREFIX_FORCED;
-				ksc[SC_LCONTROL].used_as_prefix = PREFIX_FORCED;
-				ksc[SC_RCONTROL].used_as_prefix = PREFIX_FORCED;
+				kvk[VK_CONTROL].used_as_prefix |= PREFIX_FORCED;
+				kvk[VK_LCONTROL].used_as_prefix |= PREFIX_FORCED;
+				kvk[VK_RCONTROL].used_as_prefix |= PREFIX_FORCED;
+				ksc[SC_LCONTROL].used_as_prefix |= PREFIX_FORCED;
+				ksc[SC_RCONTROL].used_as_prefix |= PREFIX_FORCED;
 				break;
 			}
 			break;
 
-		default:  // vk is a left/right modifier key such as VK_LCONTROL or VK_LWIN:
-			if (aAlwaysSetAsPrefix)
-				kvk[aVK].used_as_prefix = PREFIX_ACTUAL;
+		//default:  // vk is a left/right modifier key such as VK_LCONTROL or VK_LWIN:
 		}
+		if (aAlwaysSetAsPrefix)
+			kvk[aVK].used_as_prefix |= PREFIX_ACTUAL;
 		return;
 	}
 	// Since above didn't return, using scan code instead of virtual key:
 	if (aAlwaysSetAsPrefix)
-		ksc[aSC].used_as_prefix = PREFIX_ACTUAL;
+		ksc[aSC].used_as_prefix |= PREFIX_ACTUAL;
 }
 
 
@@ -3444,7 +3460,7 @@ void ChangeHookState(Hotkey *aHK[], int aHK_count, HookType aWhichHook, HookType
 					// The hotkey's ModifierVK is itself a modifier.
 					SetModifierAsPrefix(hk.mModifierVK, 0, true);
 				else
-					kvk[hk.mModifierVK].used_as_prefix = PREFIX_ACTUAL;
+					kvk[hk.mModifierVK].used_as_prefix |= PREFIX_ACTUAL;
 				// Record the use of ~ on this prefix even if it's a standard modifier which wouldn't normally be
 				// suppressed, since this also affects whether the key's own hotkeys fire on press vs. release.
 				if (hk.mNoSuppress & NO_SUPPRESS_PREFIX)
@@ -3457,7 +3473,7 @@ void ChangeHookState(Hotkey *aHK[], int aHK_count, HookType aWhichHook, HookType
 					SetModifierAsPrefix(0, hk.mModifierSC, true);
 				else
 				{
-					ksc[hk.mModifierSC].used_as_prefix = PREFIX_ACTUAL;
+					ksc[hk.mModifierSC].used_as_prefix |= PREFIX_ACTUAL;
 					// For some scan codes this was already set above.  But to support explicit scan code prefixes,
 					// such as "SC118 & SC122::MsgBox", make sure it's set for every prefix that uses an explicit
 					// scan code:
@@ -4273,7 +4289,7 @@ void ResetKeyTypeState(key_type &key)
 	key.it_put_alt_down = false;
 	key.it_put_shift_down = false;
 	key.down_performed_action = false;
-	key.hotkey_down_was_suppressed = false;
+	key.down_was_suppressed = 0;
 	key.was_just_used = 0;
 	key.hotkey_to_fire_upon_release = HOTKEY_ID_INVALID;
 	// ABOVE line was added in v1.0.48.03 to fix various ways in which the hook didn't receive the key-down

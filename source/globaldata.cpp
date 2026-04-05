@@ -134,6 +134,7 @@ int g_ScreenDPI = GetScreenDPI();
 thread_local bool g_MenuIsVisible = false;
 thread_local HMENU g_MenuIsTempModeless = NULL;
 thread_local bool g_MenuIsTempTopmost = false;
+thread_local bool g_MsgBoxTimedOut[MAX_MSGBOXES];
 thread_local int g_nMessageBoxes = 0;
 thread_local int g_nFileDialogs = 0;
 thread_local int g_nFolderDialogs = 0;

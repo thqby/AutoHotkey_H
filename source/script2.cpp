@@ -202,12 +202,6 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 		HWND top_box = FindOurTopDialog();
 		if (top_box)
 		{
-
-			// v1.0.33: The following is probably reliable since the AHK_DIALOG should
-			// be in front of any messages that would launch an interrupting thread.  In other
-			// words, the "g" struct should still be the one that owns this MsgBox/dialog window.
-			g->DialogHWND = top_box; // This is used to work around an AHK_TIMEOUT issue in which a MsgBox that has only an OK button fails to deliver the Timeout indicator to the script.
-
 			SetForegroundWindowEx(top_box);
 
 			// Setting the big icon makes AutoHotkey dialogs more distinct in the Alt-tab menu.
@@ -223,13 +217,24 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lPar
 			// without adding any significant benefit:
 			//SendMessage(top_box, WM_SETICON, ICON_SMALL, main_icon);
 
+			// The following is probably reliable since the AHK_DIALOG message should be in front
+			// of any messages that would launch an interrupting thread or otherwise be capable of
+			// bringing one of our dialogs to the top.
 			UINT timeout = (UINT)lParam;  // Caller has ensured that this is non-negative.
 			if (timeout)
+			{
 				// Caller told us to establish a timeout for this modal dialog (currently always MessageBox).
 				// In addition to any other reasons, the first param of the below must not be NULL because
 				// that would cause the 2nd param to be ignored.  We want the 2nd param to be the actual
 				// ID assigned to this timer.
-				SetTimer(top_box, g_nMessageBoxes, (UINT)timeout, MsgBoxTimeout);
+				SetTimer(top_box, g_nMessageBoxes, timeout, MsgBoxTimeout);
+			}
+			// If there's a timer check pending, skip it for this interval to avoid interrupting the
+			// dialog loop before it shows the dialog window.  Otherwise, the MsgBox might disappear
+			// immediately since we've already started the timeout.
+			MSG msg;
+			if (PeekMessage(&msg, g_hWnd, WM_TIMER, WM_TIMER, PM_NOREMOVE) && msg.wParam == TIMER_ID_MAIN && !msg.lParam)
+				PeekMessage(&msg, g_hWnd, WM_TIMER, WM_TIMER, PM_REMOVE);
 		}
 		// else: if !top_box: no error reporting currently.
 		return 0;

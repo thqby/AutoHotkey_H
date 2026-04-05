@@ -7,8 +7,6 @@
 #include "script_func_impl.h"
 
 
-extern BuiltInFunc *OpFunc_GetProp, *OpFunc_GetItem, *OpFunc_SetProp, *OpFunc_SetItem;
-
 //
 // Object()
 //

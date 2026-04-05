@@ -2044,31 +2044,21 @@ BOOL IsInterruptible()
 VOID CALLBACK MsgBoxTimeout(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 {
 	// Unfortunately, it appears that MessageBox() will return zero rather
-	// than AHK_TIMEOUT, specified below -- at least under WinXP.  This
+	// than AHK_TIMEOUT, specified below -- at least in some cases.  This
 	// makes it impossible to distinguish between a MessageBox() that's been
 	// timed out (destroyed) by this function and one that couldn't be
-	// created in the first place due to some other error.  But since
-	// MessageBox() errors are rare, we assume that they timed out if
-	// the MessageBox() returns 0.  UPDATE: Due to the fact that TimerProc()'s
-	// are called via WM_TIMER messages in our msg queue, make sure that the
-	// window really exists before calling EndDialog(), because if it doesn't,
-	// chances are that EndDialog() was already called with another value.
-	// UPDATE #2: Actually that isn't strictly needed because MessageBox()
-	// ignores the AHK_TIMEOUT value we send here.  But it feels safer:
-	if (IsWindow(hWnd))
-		EndDialog(hWnd, AHK_TIMEOUT);
+	// created in the first place due to some other error.  To fix this,
+	// we track whether it timed out.
+	// EndDialog() and KillTimer() both fail if the window has been destroyed.
+	// Testing indicates that a WM_TIMER message with invalid non-NULL HWND
+	// never results in the TimerProc being called, but we check to be safe,
+	// since g_MsgBoxTimedOut[idEvent - 1] could be reused for another dialog.
+	if (!IsWindow(hWnd))
+		return;
+	EndDialog(hWnd, AHK_TIMEOUT);
 	KillTimer(hWnd, idEvent);
-	// v1.0.33: The following was added to fix the fact that a MsgBox with only an OK button
-	// does not actually send back the code sent by EndDialog() above.  The HWND is checked
-	// in case "g" is no longer the original thread due to another thread having interrupted it.
-	// v1.1.30.01: The loop was added so that the timeout can be detected even if the thread
-	// which owns the dialog was interrupted.
-	for (auto *dialog_g = g; dialog_g >= g_array; --dialog_g)
-		if (dialog_g->DialogHWND == hWnd) // Regardless of whether IsWindow() is true.
-		{
-			dialog_g->MsgBoxTimedOut = true;
-			break;
-		}
+	if (idEvent && idEvent <= MAX_MSGBOXES)
+		g_MsgBoxTimedOut[idEvent - 1] = true;
 }
 
 

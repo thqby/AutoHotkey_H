@@ -893,7 +893,6 @@ struct ScriptThreadState
 	ScriptTimer *CurrentTimer; // The timer that launched this thread (if any).
 	HWND hWndLastUsed;  // In many cases, it's better to use GetValidLastUsedWindow() when referring to this.
 	EventInfoType EventInfo;
-	HWND DialogHWND; // MsgBox being shown by this thread.
 	HWND DialogOwner; // This thread's dialog owner, if any.
 #define THREAD_DIALOG_OWNER (IsWindow(::g->DialogOwner) ? ::g->DialogOwner : (::g->DialogOwner = NULL)) // Reset to NULL if invalid to mitigate the risk of errors due to HWND reuse by the OS.
 	ResultToken* ThrownToken;
@@ -907,7 +906,6 @@ struct ScriptThreadState
 	DWORD CalledByIsDialogMessageOrDispatchMsg; // Detects the fact that some messages (like WM_KEYDOWN->WM_NOTIFY for UpDown controls) are translated to different message numbers by IsDialogMessage (and maybe Dispatch too).
 
 	bool IsPaused;
-	bool MsgBoxTimedOut; // Meaningful only while a MsgBox call is in progress.
 	bool CalledByIsDialogMessageOrDispatch; // Helps avoid launching a monitor function twice for the same message.  This would probably be okay if it were a normal global rather than in the g-struct, but due to messaging complexity, this lends peace of mind and robustness.
 	bool AllowThreadToBeInterrupted; // Whether this thread can be interrupted by custom menu items, hotkeys, or timers.  Separate from g_AllowInterruption because that's for use by ongoing operations, such as SendKeys, and should override the thread's setting.
 	UserFunc* CurrentMacro;
@@ -980,7 +978,6 @@ inline void global_clear_state(ScriptThreadState &g)
 	//g.IsPaused = false;
 	//g.Priority = 0;
 	//g.UninterruptedLineCount = 0;
-	//g.DialogHWND = NULL;
 	//g.DialogOwner = NULL;
 	//g.CalledByIsDialogMessageOrDispatch = false; // CalledByIsDialogMessageOrDispatchMsg doesn't need to be cleared because it's value is only considered relevant when CalledByIsDialogMessageOrDispatch==true.
 	// Above line is done because allowing it to be permanently changed by the auto-exec section
