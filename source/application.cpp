@@ -596,9 +596,10 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 			// at the very least, WM_KEYDOWN (VK_ESC) must be intercepted for GuiEscape to work.
 			if (pgui->mControlCount || msg.message != WM_SYSCHAR)
 			{
+				HWND top_level_window = (pgui->mExStyle & WS_EX_CONTROLPARENT) ? GetAncestor(pgui->mHwnd, GA_ROOT) : NULL; // Support Tab-key navigation with nested Gui windows.
 				g->CalledByIsDialogMessageOrDispatch = true;
 				g->CalledByIsDialogMessageOrDispatchMsg = msg.message; // Added in v1.0.44.11 because it's known that IsDialogMessage can change the message number (e.g. WM_KEYDOWN->WM_NOTIFY for UpDowns)
-				msg_was_handled = IsDialogMessage(pgui->mHwnd, &msg); // Pass the dialog HWND, not msg.hwnd, which is often a control.
+				msg_was_handled = IsDialogMessage(top_level_window ? top_level_window : pgui->mHwnd, &msg);
 				g->CalledByIsDialogMessageOrDispatch = false;
 				if (msg_was_handled) // This message was handled by IsDialogMessage() above.
 					continue; // Continue with the main message loop.
