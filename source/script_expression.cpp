@@ -783,24 +783,17 @@ LPTSTR Line::ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *a
 		case SYM_REF:
 			if (right.symbol != SYM_VAR) // Syntax error?
 				goto abort_with_exception;
-			if (this_token.var_usage != VARREF_READ)
+			if (this_token.var_usage != VARREF_READ // Creating a VarRef can be avoided.
+				&& !(right.var->IsAlias() && right.var->IsObject())) // It doesn't already have a VarRef.
 			{
-				if (this_token.var_usage != VARREF_REF)
-				{
-					// VARREF_ISSET or VARREF_OUTPUT_VAR -> SYM_VAR.
-					this_token.SetVarRef(right.var);
-					goto push_this_token;
-				}
 				Var *target_var = right.var->ResolveAlias();
 				if (!target_var->IsNonStaticLocal()
-					|| !this_token.object
+					|| !this_token.object // Being passed to a built-in function.
 					|| !((UserFunc *)this_token.object)->mInstances)
 				{
 					// target_var definitely isn't a local var of the function being called,
-					// so it's safe to pass as SYM_VAR.  Pass right.var and not target_var,
-					// otherwise GetRef() won't be able to identify the existing VarRef and
-					// may create a new VarRef and a circular reference.
-					this_token.SetVarRef(right.var);
+					// so it's safe to pass as SYM_VAR.
+					this_token.SetVarRef(target_var);
 					goto push_this_token;
 				}
 			}
@@ -1926,7 +1919,7 @@ bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aPar
 		{
 			ExprTokenType &this_param_token = *aParam[j];
 			if (this_param_token.symbol != SYM_VAR
-				|| VARREF_IS_WRITE(this_param_token.var_usage)) // VARREF_REF indicates SYM_VAR is being passed ByRef.
+				|| VARREF_IS_WRITE(this_param_token.var_usage)) // VARREF_REF indicates SYM_VAR is being passed ByRef (and caller should have verified that it is not our local variable).
 				continue;
 			// Since this SYM_VAR is being passed by value, convert it to a non-var to allow
 			// the variables to be backed up and reset further below without corrupting any

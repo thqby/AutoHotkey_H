@@ -1109,7 +1109,7 @@ FResult Hotkey::Dynamic(LPCTSTR aHotkeyName, LPCTSTR aOptions, IObject *aCallbac
 				hk = AddHotkey(aCallback, 0, aHotkeyName, no_suppress);
 			}
 			if (!hk)
-				return FAIL; // AddHotkey() already displayed the error.
+				return FR_FAIL; // AddHotkey() already displayed the error.
 			variant = hk->mLastVariant; // Update for use with the options-parsing section further below.
 			update_all_hotkeys = true;
 			variant_was_just_created = true;
